@@ -75,6 +75,20 @@ async def get_bundle(
     }
 
 
+@router.get("/bundles/{bundle_id}/digest")
+async def get_bundle_digest(
+    bundle_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    from krewhub.repositories.digest_repo import DigestRepo
+
+    digest = await DigestRepo(db).get_by_bundle(bundle_id)
+    if digest is None:
+        raise HTTPException(status_code=404, detail="Digest not found")
+
+    return {"digest": digest.model_dump(mode="json")}
+
+
 @router.patch("/bundles/{bundle_id}")
 async def cancel_bundle(
     bundle_id: str,
