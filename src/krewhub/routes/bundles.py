@@ -9,6 +9,7 @@ from krewhub.db.connection import get_db
 from krewhub.models import BundleStatus, DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
+from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
 from krewhub.services.digest_service import DigestService
@@ -28,6 +29,10 @@ async def create_bundle(
     req: CreateBundleRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
+    recipe = await RecipeRepo(db).get(recipe_id)
+    if recipe is None:
+        raise HTTPException(status_code=404, detail="Recipe not found")
+
     svc = BundleService(db)
     bundle, tasks = await svc.create_bundle(
         recipe_id=recipe_id,
@@ -88,6 +93,10 @@ async def add_task_to_bundle(
     req: AddTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+
     from krewhub.services.task_service import TaskService
     svc = TaskService(db)
     task = await svc.add_task(

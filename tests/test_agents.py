@@ -65,3 +65,16 @@ async def test_agents_visible_in_recipe(client):
     agents = resp.json()["agents"]
     assert len(agents) == 1
     assert agents[0]["agent_id"] == "agent_gamma"
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_requires_existing_recipe(client):
+    resp = await client.post("/api/v1/agents/heartbeat", json={
+        "agent_id": "agent_missing",
+        "recipe_id": "rec_missing",
+        "display_name": "Missing",
+        "capabilities": ["claim"],
+    })
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Recipe not found"

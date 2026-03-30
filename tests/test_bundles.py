@@ -102,3 +102,25 @@ async def test_add_task_to_bundle(client):
     })
     assert resp.status_code == 200
     assert resp.json()["task"]["title"] == "Added later"
+
+
+@pytest.mark.asyncio
+async def test_create_bundle_requires_existing_recipe(client):
+    resp = await client.post("/api/v1/recipes/rec_missing/bundles", json={
+        "prompt": "Should fail",
+        "requested_by": "human_1",
+        "tasks": [{"title": "No parent recipe"}],
+    })
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Recipe not found"
+
+
+@pytest.mark.asyncio
+async def test_add_task_requires_existing_bundle(client):
+    resp = await client.post("/api/v1/bundles/bun_missing/tasks", json={
+        "title": "Should fail",
+    })
+
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Bundle not found"
