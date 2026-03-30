@@ -144,3 +144,34 @@ async def test_dependency_blocks_claim(client):
         "agent_id": "agent_alpha",
     })
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_agent_can_only_hold_one_active_task(client):
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/one-active-task",
+        "repo_url": "git@github.com:test/one-active-task.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Two parallel tasks",
+        "requested_by": "human_1",
+        "tasks": [
+            {"title": "Task one"},
+            {"title": "Task two"},
+        ],
+    })
+    task_1_id = resp.json()["tasks"][0]["id"]
+    task_2_id = resp.json()["tasks"][1]["id"]
+
+    first_claim = await client.post(f"/api/v1/tasks/{task_1_id}/claim", json={
+        "agent_id": "agent_alpha",
+    })
+    second_claim = await client.post(f"/api/v1/tasks/{task_2_id}/claim", json={
+        "agent_id": "agent_alpha",
+    })
+
+    assert first_claim.status_code == 200
+    assert second_claim.status_code == 400

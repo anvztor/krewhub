@@ -33,6 +33,10 @@ class TaskService:
         if task is None or task.status != TaskStatus.OPEN:
             return None
 
+        active_tasks = await self._tasks.list_active_by_agent(recipe_id, agent_id)
+        if active_tasks:
+            return None
+
         deps = task.depends_on_task_ids
         if deps:
             for dep_id in deps:
