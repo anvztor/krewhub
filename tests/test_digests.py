@@ -123,3 +123,61 @@ async def test_cannot_submit_digest_with_open_tasks(client):
         "summary": "Premature digest",
     })
     assert resp.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cannot_submit_digest_for_cancelled_bundle(client):
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/cancelled-digest",
+        "repo_url": "git@github.com:test/cancelled-digest.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Cancel then digest",
+        "requested_by": "human_1",
+        "tasks": [{"title": "Cancelled task"}],
+    })
+    bundle_id = resp.json()["bundle"]["id"]
+
+    cancel = await client.patch(f"/api/v1/bundles/{bundle_id}")
+    assert cancel.status_code == 200
+    assert cancel.json()["bundle"]["status"] == "cancelled"
+
+    digest = await client.post(f"/api/v1/bundles/{bundle_id}/digest", json={
+        "submitted_by": "agent_alpha",
+        "summary": "Should fail",
+    })
+    assert digest.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_can_submit_digest_for_blocked_bundle(client):
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/blocked-digest",
+        "repo_url": "git@github.com:test/blocked-digest.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Blocked digest",
+        "requested_by": "human_1",
+        "tasks": [{"title": "Blocked task"}],
+    })
+    bundle_id = resp.json()["bundle"]["id"]
+    task_id = resp.json()["tasks"][0]["id"]
+
+    await client.post(f"/api/v1/tasks/{task_id}/claim", json={"agent_id": "agent_alpha"})
+    await client.patch(f"/api/v1/tasks/{task_id}/status", json={
+        "status": "blocked",
+        "blocked_reason": "Missing dependency",
+    })
+
+    digest = await client.post(f"/api/v1/bundles/{bundle_id}/digest", json={
+        "submitted_by": "agent_alpha",
+        "summary": "Blocked but summarized",
+        "task_results": [{"task_id": task_id, "outcome": "Blocked"}],
+    })
+    assert digest.status_code == 200

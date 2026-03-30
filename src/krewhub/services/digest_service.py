@@ -47,6 +47,8 @@ class DigestService:
         bundle = await self._bundles.get(bundle_id)
         if bundle is None:
             return None
+        if bundle.status not in (BundleStatus.COOKED, BundleStatus.BLOCKED):
+            return None
 
         tasks = await self._tasks.list_by_bundle(bundle_id)
         all_terminal = all(
