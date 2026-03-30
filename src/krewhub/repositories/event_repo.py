@@ -6,6 +6,7 @@ from datetime import datetime
 import aiosqlite
 
 from krewhub.models import Event, EventType, FactRef, CodeRef
+from krewhub.tape.manager import TapeManager
 
 
 class EventRepo:
@@ -25,6 +26,7 @@ class EventRepo:
              event.created_at.isoformat(),
              event.expires_at.isoformat() if event.expires_at else None),
         )
+        await TapeManager(self._db, event.recipe_id).record_event(event)
         await self._db.commit()
         return event
 
