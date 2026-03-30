@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import pytest
 
+from krewhub.db.connection import get_db
+from krewhub.repositories.event_repo import EventRepo
+
 
 async def _create_cooked_bundle(client) -> tuple[str, str, list[str]]:
     resp = await client.post("/api/v1/recipes", json={
@@ -100,6 +103,11 @@ async def test_reject_digest(client):
     # Bundle should be rejected
     bundle_resp = await client.get(f"/api/v1/bundles/{bundle_id}")
     assert bundle_resp.json()["bundle"]["status"] == "rejected"
+
+    db = await get_db()
+    events = await EventRepo(db).list_by_bundle(bundle_id)
+    assert events
+    assert all(event.expires_at is not None for event in events)
 
 
 @pytest.mark.asyncio

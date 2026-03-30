@@ -115,6 +115,7 @@ class DigestService:
                 bundle_id, BundleStatus.DIGESTED, digested_at=now
             )
             event_type = EventType.DIGEST_APPROVED
+            event_expires_at = None
             # Create durable tape anchor for approved digest
             tape = TapeManager(self._db, updated.recipe_id)
             await tape.create_digest_anchor(updated)
@@ -123,6 +124,7 @@ class DigestService:
             expires_at = now + timedelta(days=self._retention_days)
             await self._events.set_expiry_for_bundle(bundle_id, expires_at)
             event_type = EventType.DIGEST_REJECTED
+            event_expires_at = expires_at
 
         decision_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
@@ -133,6 +135,7 @@ class DigestService:
             actor_type=ActorType.HUMAN,
             body=f"Digest {decision}.",
             created_at=now,
+            expires_at=event_expires_at,
         )
         await self._events.create(decision_event)
 
