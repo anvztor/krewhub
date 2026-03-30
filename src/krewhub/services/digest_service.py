@@ -1,0 +1,142 @@
+from __future__ import annotations
+
+import uuid
+from datetime import datetime, timedelta, timezone
+
+import aiosqlite
+
+from krewhub.models import (
+    ActorType,
+    Bundle,
+    BundleStatus,
+    CodeRef,
+    Digest,
+    DigestDecision,
+    DigestTaskResult,
+    Event,
+    EventType,
+    FactRef,
+    TaskStatus,
+)
+from krewhub.repositories.bundle_repo import BundleRepo
+from krewhub.repositories.digest_repo import DigestRepo
+from krewhub.repositories.event_repo import EventRepo
+from krewhub.repositories.task_repo import TaskRepo
+from krewhub.services.sse_service import sse_service
+from krewhub.tape.manager import TapeManager
+
+
+class DigestService:
+    def __init__(self, db: aiosqlite.Connection, retention_days: int = 7) -> None:
+        self._db = db
+        self._bundles = BundleRepo(db)
+        self._tasks = TaskRepo(db)
+        self._digests = DigestRepo(db)
+        self._events = EventRepo(db)
+        self._retention_days = retention_days
+
+    async def submit_digest(
+        self,
+        bundle_id: str,
+        submitted_by: str,
+        summary: str,
+        task_results: list[dict],
+        facts: list[dict],
+        code_refs: list[dict],
+    ) -> Digest | None:
+        bundle = await self._bundles.get(bundle_id)
+        if bundle is None:
+            return None
+
+        tasks = await self._tasks.list_by_bundle(bundle_id)
+        all_terminal = all(
+            t.status in (TaskStatus.DONE, TaskStatus.BLOCKED, TaskStatus.CANCELLED)
+            for t in tasks
+        )
+        if not all_terminal:
+            return None
+
+        existing = await self._digests.get_by_bundle(bundle_id)
+        if existing is not None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        digest = Digest(
+            id=f"dig_{uuid.uuid4().hex[:8]}",
+            recipe_id=bundle.recipe_id,
+            bundle_id=bundle_id,
+            summary=summary,
+            task_results=[DigestTaskResult(**tr) for tr in task_results],
+            facts=[FactRef(**f) for f in facts],
+            code_refs=[CodeRef(**c) for c in code_refs],
+            submitted_by=submitted_by,
+            submitted_at=now,
+        )
+        digest = await self._digests.create(digest)
+
+        submit_event = Event(
+            id=f"evt_{uuid.uuid4().hex[:8]}",
+            recipe_id=bundle.recipe_id,
+            bundle_id=bundle_id,
+            type=EventType.DIGEST_SUBMITTED,
+            actor_id=submitted_by,
+            actor_type=ActorType.AGENT,
+            body=f"Digest submitted: {summary[:100]}",
+            created_at=now,
+        )
+        await self._events.create(submit_event)
+
+        await sse_service.publish(bundle.recipe_id, "bundle.digest_submitted", {
+            "bundle_id": bundle_id,
+            "digest_id": digest.id,
+        })
+
+        return digest
+
+    async def decide(
+        self,
+        bundle_id: str,
+        decision: DigestDecision,
+        decided_by: str,
+    ) -> Digest | None:
+        digest = await self._digests.get_by_bundle(bundle_id)
+        if digest is None or digest.decision != DigestDecision.PENDING:
+            return None
+
+        now = datetime.now(timezone.utc)
+        updated = await self._digests.update_decision(
+            digest.id, decision, decided_by, now
+        )
+
+        if decision == DigestDecision.APPROVED:
+            await self._bundles.update_status(
+                bundle_id, BundleStatus.DIGESTED, digested_at=now
+            )
+            event_type = EventType.DIGEST_APPROVED
+            # Create durable tape anchor for approved digest
+            tape = TapeManager(self._db, updated.recipe_id)
+            await tape.create_digest_anchor(updated)
+        else:
+            await self._bundles.update_status(bundle_id, BundleStatus.REJECTED)
+            expires_at = now + timedelta(days=self._retention_days)
+            await self._events.set_expiry_for_bundle(bundle_id, expires_at)
+            event_type = EventType.DIGEST_REJECTED
+
+        decision_event = Event(
+            id=f"evt_{uuid.uuid4().hex[:8]}",
+            recipe_id=digest.recipe_id,
+            bundle_id=bundle_id,
+            type=event_type,
+            actor_id=decided_by,
+            actor_type=ActorType.HUMAN,
+            body=f"Digest {decision}.",
+            created_at=now,
+        )
+        await self._events.create(decision_event)
+
+        await sse_service.publish(digest.recipe_id, "bundle.decision", {
+            "bundle_id": bundle_id,
+            "decision": decision,
+        })
+
+        return updated
