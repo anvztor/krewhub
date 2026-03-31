@@ -70,6 +70,7 @@ async def test_approve_digest(client):
     resp = await client.post(f"/api/v1/bundles/{bundle_id}/decision", json={
         "decision": "approved",
         "decided_by": "human_1",
+        "note": "Ship it after the final review pass.",
     })
     assert resp.status_code == 200
     assert resp.json()["digest"]["decision"] == "approved"
@@ -81,6 +82,14 @@ async def test_approve_digest(client):
     # Should appear in approved digests
     hist_resp = await client.get(f"/api/v1/recipes/{recipe_id}/digests")
     assert len(hist_resp.json()["digests"]) >= 1
+
+    db = await get_db()
+    events = await EventRepo(db).list_by_bundle(bundle_id)
+    assert any(
+        event.type == "digest_approved"
+        and "Ship it after the final review pass." in event.body
+        for event in events
+    )
 
 
 @pytest.mark.asyncio

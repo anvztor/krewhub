@@ -153,7 +153,7 @@ async def decide_digest(
 ):
     svc = DigestService(db)
     decision = DigestDecision(req.decision)
-    digest = await svc.decide(bundle_id, decision, req.decided_by)
+    digest = await svc.decide(bundle_id, decision, req.decided_by, req.note)
     if digest is None:
         raise HTTPException(
             status_code=400,

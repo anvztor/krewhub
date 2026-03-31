@@ -100,6 +100,7 @@ class DigestService:
         bundle_id: str,
         decision: DigestDecision,
         decided_by: str,
+        note: str | None = None,
     ) -> Digest | None:
         digest = await self._digests.get_by_bundle(bundle_id)
         if digest is None or digest.decision != DigestDecision.PENDING:
@@ -126,6 +127,7 @@ class DigestService:
             event_type = EventType.DIGEST_REJECTED
             event_expires_at = expires_at
 
+        decision_note = note.strip() if note else ""
         decision_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=digest.recipe_id,
@@ -133,7 +135,11 @@ class DigestService:
             type=event_type,
             actor_id=decided_by,
             actor_type=ActorType.HUMAN,
-            body=f"Digest {decision}.",
+            body=(
+                f"Digest {decision}. {decision_note}"
+                if decision_note
+                else f"Digest {decision}."
+            ),
             created_at=now,
             expires_at=event_expires_at,
         )
