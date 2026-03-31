@@ -5,7 +5,7 @@ description = "KrewHub — control plane and system of record for Cookrew"
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.115.0",
-    "uvicorn[standard]>=0.34.0",
+    "uvicorn>=0.34.0",
     "aiosqlite>=0.20.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
