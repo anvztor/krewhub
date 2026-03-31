@@ -79,6 +79,17 @@ class BundleRepo:
         await self._db.commit()
         return await self.get(bundle_id)
 
+    async def reopen_for_rerun(self, bundle_id: str) -> Bundle | None:
+        await self._db.execute(
+            """UPDATE bundles
+               SET status = 'open',
+                   blocked_reason = NULL
+               WHERE id = ?""",
+            (bundle_id,),
+        )
+        await self._db.commit()
+        return await self.get(bundle_id)
+
 
 def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
     return Bundle(

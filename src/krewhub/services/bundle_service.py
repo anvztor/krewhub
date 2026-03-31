@@ -130,4 +130,47 @@ class BundleService:
             return await self._bundles.update_status(
                 bundle_id, BundleStatus.CLAIMED, claimed_at=now
             )
-        return await self._bundles.get(bundle_id)
+        return await self._bundles.update_status(bundle_id, BundleStatus.OPEN)
+
+    async def rerun_blocked_tasks(self, bundle_id: str) -> Bundle | None:
+        bundle = await self._bundles.get(bundle_id)
+        if bundle is None or bundle.status in (BundleStatus.CANCELLED, BundleStatus.DIGESTED):
+            return None
+
+        tasks = await self._tasks.list_by_bundle(bundle_id)
+        blocked_tasks = [task for task in tasks if task.status == TaskStatus.BLOCKED]
+        if not blocked_tasks:
+            return None
+
+        for task in blocked_tasks:
+            await self._tasks.reopen_for_rerun(task.id)
+
+        updated_bundle = await self._bundles.reopen_for_rerun(bundle_id)
+        if updated_bundle is None:
+            return None
+
+        now = datetime.now(timezone.utc)
+        rerun_event = Event(
+            id=f"evt_{uuid.uuid4().hex[:8]}",
+            recipe_id=bundle.recipe_id,
+            bundle_id=bundle_id,
+            type=EventType.PLAN,
+            actor_id="system",
+            actor_type=ActorType.SYSTEM,
+            body=(
+                f"Re-run requested for {len(blocked_tasks)} blocked task"
+                f"{'' if len(blocked_tasks) == 1 else 's'}. "
+                "Tasks reopened for reassignment."
+            ),
+            created_at=now,
+        )
+        await self._events.create(rerun_event)
+
+        for task in blocked_tasks:
+            await sse_service.publish(bundle.recipe_id, "task.updated", {
+                "task_id": task.id,
+                "status": TaskStatus.OPEN,
+                "bundle_id": bundle_id,
+            })
+
+        return updated_bundle

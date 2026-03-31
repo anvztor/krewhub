@@ -93,6 +93,30 @@ async def test_mark_task_blocked(client):
 
 
 @pytest.mark.asyncio
+async def test_rerun_reopens_blocked_tasks(client):
+    _, bundle_id, task_id = await _setup_bundle_with_task(client)
+
+    await client.post(f"/api/v1/tasks/{task_id}/claim", json={
+        "agent_id": "agent_alpha",
+    })
+    await client.patch(f"/api/v1/tasks/{task_id}/status", json={
+        "status": "blocked",
+        "blocked_reason": "Missing dependency",
+    })
+
+    rerun = await client.post(f"/api/v1/bundles/{bundle_id}/rerun")
+    assert rerun.status_code == 200
+    assert rerun.json()["bundle"]["status"] == "open"
+    assert rerun.json()["bundle"]["blocked_reason"] is None
+
+    bundle = await client.get(f"/api/v1/bundles/{bundle_id}")
+    task = bundle.json()["tasks"][0]
+    assert task["status"] == "open"
+    assert task["blocked_reason"] is None
+    assert task["claimed_by_agent_id"] is None
+
+
+@pytest.mark.asyncio
 async def test_edit_task(client):
     _, _, task_id = await _setup_bundle_with_task(client)
 

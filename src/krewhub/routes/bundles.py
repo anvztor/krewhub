@@ -101,6 +101,21 @@ async def cancel_bundle(
     return {"bundle": updated.model_dump(mode="json")}
 
 
+@router.post("/bundles/{bundle_id}/rerun")
+async def rerun_blocked_bundle(
+    bundle_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    svc = BundleService(db)
+    updated = await svc.rerun_blocked_tasks(bundle_id)
+    if updated is None:
+        raise HTTPException(
+            status_code=400,
+            detail="No blocked tasks are available to rerun.",
+        )
+    return {"bundle": updated.model_dump(mode="json")}
+
+
 @router.post("/bundles/{bundle_id}/tasks")
 async def add_task_to_bundle(
     bundle_id: str,

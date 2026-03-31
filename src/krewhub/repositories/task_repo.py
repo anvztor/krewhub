@@ -129,6 +129,20 @@ class TaskRepo:
         await self._db.commit()
         return cursor.rowcount > 0
 
+    async def reopen_for_rerun(self, task_id: str) -> Task | None:
+        await self._db.execute(
+            """UPDATE tasks
+               SET status = 'open',
+                   claimed_by_agent_id = NULL,
+                   claimed_at = NULL,
+                   completed_at = NULL,
+                   blocked_reason = NULL
+               WHERE id = ?""",
+            (task_id,),
+        )
+        await self._db.commit()
+        return await self.get(task_id)
+
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
     return Task(
