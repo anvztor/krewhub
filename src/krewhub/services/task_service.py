@@ -14,6 +14,7 @@ from krewhub.models import (
     Task,
     TaskStatus,
 )
+from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
@@ -25,6 +26,7 @@ class TaskService:
         self._tasks = TaskRepo(db)
         self._events = EventRepo(db)
         self._agents = AgentRepo(db)
+        self._bundles = BundleRepo(db)
 
     async def claim_task(
         self, task_id: str, agent_id: str, recipe_id: str
@@ -116,15 +118,27 @@ class TaskService:
         return event
 
     async def mark_done(self, task_id: str) -> Task | None:
+        task = await self._tasks.get(task_id)
+        if task is None:
+            return None
+
         now = datetime.now(timezone.utc)
-        return await self._tasks.update(
+        updated = await self._tasks.update(
             task_id, status=TaskStatus.DONE, completed_at=now
         )
+        await self._publish_task_status(task.bundle_id, task_id, TaskStatus.DONE)
+        return updated
 
     async def mark_blocked(self, task_id: str, reason: str) -> Task | None:
-        return await self._tasks.update(
+        task = await self._tasks.get(task_id)
+        if task is None:
+            return None
+
+        updated = await self._tasks.update(
             task_id, status=TaskStatus.BLOCKED, blocked_reason=reason
         )
+        await self._publish_task_status(task.bundle_id, task_id, TaskStatus.BLOCKED)
+        return updated
 
     async def add_task(
         self,
@@ -162,3 +176,23 @@ class TaskService:
         if task is None or task.status != TaskStatus.OPEN:
             return False
         return await self._tasks.delete(task_id)
+
+    async def _publish_task_status(
+        self,
+        bundle_id: str,
+        task_id: str,
+        status: TaskStatus,
+    ) -> None:
+        bundle = await self._bundles.get(bundle_id)
+        if bundle is None:
+            return
+
+        await sse_service.publish(
+            bundle.recipe_id,
+            "task.updated",
+            {
+                "task_id": task_id,
+                "status": status,
+                "bundle_id": bundle_id,
+            },
+        )
