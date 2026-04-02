@@ -9,13 +9,30 @@ from krewhub.db.connection import close_db, init_db
 from krewhub.routes import agents, bundles, recipes, stream, tasks
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
+from krewhub.controllers.manager import ControllerManager
+from krewhub.controllers.globals import set_controller_manager, clear_controller_manager
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     db = await init_db()
-    set_watch_service(WatchService(db))
+    watch = WatchService(db)
+    set_watch_service(watch)
+
+    from krewhub.config import get_settings
+    settings = get_settings()
+
+    manager = ControllerManager(
+        db, watch,
+        heartbeat_timeout=settings.heartbeat_timeout_seconds,
+    )
+    set_controller_manager(manager)
+    await manager.start_all()
+
     yield
+
+    await manager.stop_all()
+    clear_controller_manager()
     clear_watch_service()
     await close_db()
 
