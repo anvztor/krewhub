@@ -39,7 +39,7 @@ async def create_bundle(
         recipe_id=recipe_id,
         prompt=req.prompt,
         created_by=req.requested_by,
-        tasks=[t.model_dump() for t in req.tasks],
+        tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
     )
     return {
         "bundle": bundle.model_dump(mode="json"),

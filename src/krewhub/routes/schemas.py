@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class CreateRecipeRequest(BaseModel):
@@ -17,6 +17,8 @@ class InviteMemberRequest(BaseModel):
 
 
 class CreateTaskInput(BaseModel):
+    model_config = {"populate_by_name": True}
+    task_id: str | None = Field(None, alias="id")
     title: str
     description: str | None = None
     depends_on_task_ids: list[str] = []
