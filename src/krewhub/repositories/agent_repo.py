@@ -16,20 +16,21 @@ class AgentRepo:
         await self._db.execute(
             """INSERT INTO agent_presence
                (agent_id, recipe_id, display_name, capabilities,
-                max_concurrent_tasks, status,
+                max_concurrent_tasks, endpoint_url, status,
                 last_heartbeat_at, current_task_id, resource_version)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
                ON CONFLICT(agent_id, recipe_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 capabilities = excluded.capabilities,
                 max_concurrent_tasks = excluded.max_concurrent_tasks,
+                endpoint_url = excluded.endpoint_url,
                 status = excluded.status,
                 last_heartbeat_at = excluded.last_heartbeat_at,
                 current_task_id = excluded.current_task_id,
                 resource_version = agent_presence.resource_version + 1""",
             (presence.agent_id, presence.recipe_id, presence.display_name,
              json.dumps(presence.capabilities), presence.max_concurrent_tasks,
-             presence.status,
+             presence.endpoint_url, presence.status,
              presence.last_heartbeat_at.isoformat(), presence.current_task_id),
         )
         await self._db.commit()
@@ -73,6 +74,7 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
         display_name=row["display_name"],
         capabilities=json.loads(row["capabilities"]),
         max_concurrent_tasks=row["max_concurrent_tasks"],
+        endpoint_url=row["endpoint_url"],
         status=row["status"],
         last_heartbeat_at=datetime.fromisoformat(row["last_heartbeat_at"]),
         current_task_id=row["current_task_id"],

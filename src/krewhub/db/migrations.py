@@ -23,6 +23,7 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _add_column_if_missing(db, "tasks", "assigned_agent_id", "TEXT")
     await _add_column_if_missing(db, "agent_presence", "resource_version", "INTEGER NOT NULL DEFAULT 1")
     await _add_column_if_missing(db, "agent_presence", "max_concurrent_tasks", "INTEGER NOT NULL DEFAULT 1")
+    await _add_column_if_missing(db, "agent_presence", "endpoint_url", "TEXT")
     await _add_column_if_missing(db, "digests", "resource_version", "INTEGER NOT NULL DEFAULT 1")
     await _add_column_if_missing(db, "digests", "generation", "INTEGER NOT NULL DEFAULT 1")
 

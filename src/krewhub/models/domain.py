@@ -95,6 +95,7 @@ class AgentPresence(BaseModel, frozen=True):
     display_name: str
     capabilities: list[str]
     max_concurrent_tasks: int = 1
+    endpoint_url: str | None = None
     status: AgentStatus
     last_heartbeat_at: datetime
     current_task_id: str | None = None

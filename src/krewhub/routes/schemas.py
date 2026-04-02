@@ -78,6 +78,7 @@ class HeartbeatRequest(BaseModel):
     display_name: str
     capabilities: list[str] = []
     max_concurrent_tasks: int = 1
+    endpoint_url: str | None = None
     current_task_id: str | None = None
 
 
@@ -87,3 +88,9 @@ class RegisterAgentRequest(BaseModel):
     display_name: str
     capabilities: list[str] = []
     max_concurrent_tasks: int = 1
+    endpoint_url: str | None = None
+
+
+class PlanRequest(BaseModel):
+    prompt: str
+    recipe_id: str

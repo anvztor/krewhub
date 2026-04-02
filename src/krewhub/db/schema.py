@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     display_name TEXT NOT NULL,
     capabilities TEXT NOT NULL DEFAULT '[]',
     max_concurrent_tasks INTEGER NOT NULL DEFAULT 1,
+    endpoint_url TEXT,
     status TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('online', 'offline', 'busy')),
     last_heartbeat_at TEXT NOT NULL,
     current_task_id TEXT,
