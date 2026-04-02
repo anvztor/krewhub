@@ -5,6 +5,7 @@ from pathlib import Path
 
 from krewhub.config import get_settings
 from krewhub.db.schema import SCHEMA_SQL
+from krewhub.db.migrations import run_migrations
 
 _db: aiosqlite.Connection | None = None
 
@@ -27,6 +28,7 @@ async def init_db() -> aiosqlite.Connection:
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.execute("PRAGMA foreign_keys=ON")
     await _db.executescript(SCHEMA_SQL)
+    await run_migrations(_db)
     await _db.commit()
     return _db
 
