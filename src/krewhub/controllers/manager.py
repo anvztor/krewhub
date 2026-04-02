@@ -7,6 +7,7 @@ import aiosqlite
 from krewhub.controllers.base import BaseController
 from krewhub.controllers.bundle_controller import BundleController
 from krewhub.controllers.presence_controller import PresenceController
+from krewhub.controllers.task_scheduler import TaskSchedulerController
 from krewhub.watch.service import WatchService
 
 logger = logging.getLogger(__name__)
@@ -28,6 +29,7 @@ class ControllerManager:
     ) -> None:
         self._controllers: list[BaseController] = [
             BundleController(db, watch, interval=2.0),
+            TaskSchedulerController(db, watch, interval=2.0),
             PresenceController(db, watch, interval=5.0, heartbeat_timeout=heartbeat_timeout),
         ]
 

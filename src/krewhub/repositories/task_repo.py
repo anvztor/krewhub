@@ -17,11 +17,12 @@ class TaskRepo:
         await self._db.execute(
             """INSERT INTO tasks
                (id, bundle_id, title, description, status, depends_on_task_ids,
-                claimed_by_agent_id, claimed_at, completed_at, blocked_reason,
-                resource_version, generation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                assigned_agent_id, claimed_by_agent_id, claimed_at, completed_at,
+                blocked_reason, resource_version, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task.id, task.bundle_id, task.title, task.description, task.status,
              json.dumps(task.depends_on_task_ids),
+             task.assigned_agent_id,
              task.claimed_by_agent_id,
              task.claimed_at.isoformat() if task.claimed_at else None,
              task.completed_at.isoformat() if task.completed_at else None,
@@ -82,6 +83,7 @@ class TaskRepo:
         title: str | None = None,
         description: str | None = None,
         status: TaskStatus | None = None,
+        assigned_agent_id: str | None = None,
         claimed_by_agent_id: str | None = None,
         claimed_at: datetime | None = None,
         completed_at: datetime | None = None,
@@ -93,7 +95,12 @@ class TaskRepo:
         params: list[object] = []
 
         # Track whether spec fields changed (for generation bump)
-        spec_changed = title is not None or description is not None or depends_on_task_ids is not None
+        spec_changed = (
+            title is not None
+            or description is not None
+            or depends_on_task_ids is not None
+            or assigned_agent_id is not None
+        )
 
         if title is not None:
             parts.append("title = ?")
@@ -104,6 +111,9 @@ class TaskRepo:
         if status is not None:
             parts.append("status = ?")
             params.append(status)
+        if assigned_agent_id is not None:
+            parts.append("assigned_agent_id = ?")
+            params.append(assigned_agent_id)
         if claimed_by_agent_id is not None:
             parts.append("claimed_by_agent_id = ?")
             params.append(claimed_by_agent_id)
@@ -157,6 +167,7 @@ class TaskRepo:
         await self._db.execute(
             """UPDATE tasks
                SET status = 'open',
+                   assigned_agent_id = NULL,
                    claimed_by_agent_id = NULL,
                    claimed_at = NULL,
                    completed_at = NULL,
@@ -177,6 +188,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         description=row["description"],
         status=row["status"],
         depends_on_task_ids=json.loads(row["depends_on_task_ids"]),
+        assigned_agent_id=row["assigned_agent_id"],
         claimed_by_agent_id=row["claimed_by_agent_id"],
         claimed_at=datetime.fromisoformat(row["claimed_at"]) if row["claimed_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,

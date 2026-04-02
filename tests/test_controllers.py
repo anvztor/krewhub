@@ -7,6 +7,7 @@ import pytest
 
 from krewhub.controllers.bundle_controller import BundleController, _compute_bundle_phase
 from krewhub.controllers.presence_controller import PresenceController
+from krewhub.controllers.task_scheduler import TaskSchedulerController
 from krewhub.controllers.manager import ControllerManager
 from krewhub.db.connection import get_db
 from krewhub.models import BundleStatus, TaskStatus, AgentStatus
@@ -254,8 +255,174 @@ async def test_controller_manager_start_stop():
     assert all(running for running in health.values())
     assert "BundleController" in health
     assert "PresenceController" in health
+    assert "TaskSchedulerController" in health
 
     await manager.stop_all()
 
     health = manager.health()
     assert all(not running for running in health.values())
+
+
+# --- TaskSchedulerController tests ---
+
+
+@pytest.mark.asyncio
+async def test_task_scheduler_assigns_task_to_online_agent(client):
+    """Scheduler should assign open tasks to available online agents."""
+    db = await get_db()
+    watch = get_watch_service()
+
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/scheduler",
+        "repo_url": "git@github.com:test/scheduler.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    # Register an agent
+    await client.post("/api/v1/agents/register", json={
+        "agent_id": "agent_sched",
+        "recipe_id": recipe_id,
+        "display_name": "Scheduler Agent",
+        "capabilities": ["claim"],
+    })
+
+    # Create a bundle with a task
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Test scheduler assignment",
+        "requested_by": "human_1",
+        "tasks": [{"title": "Schedulable task"}],
+    })
+    task_id = resp.json()["tasks"][0]["id"]
+
+    # Verify task is unassigned
+    task_repo = TaskRepo(db)
+    task = await task_repo.get(task_id)
+    assert task.assigned_agent_id is None
+
+    # Run scheduler
+    scheduler = TaskSchedulerController(db, watch)
+    await scheduler.reconcile()
+
+    # Task should now be assigned
+    task = await task_repo.get(task_id)
+    assert task.assigned_agent_id == "agent_sched"
+
+
+@pytest.mark.asyncio
+async def test_task_scheduler_respects_dependencies(client):
+    """Scheduler should not assign tasks whose dependencies aren't done."""
+    db = await get_db()
+    watch = get_watch_service()
+
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/sched-deps",
+        "repo_url": "git@github.com:test/sched-deps.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    await client.post("/api/v1/agents/register", json={
+        "agent_id": "agent_deps",
+        "recipe_id": recipe_id,
+        "display_name": "Deps Agent",
+        "capabilities": ["claim"],
+    })
+
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Test dependency scheduling",
+        "requested_by": "human_1",
+        "tasks": [
+            {"title": "First task"},
+            {"title": "Second task", "depends_on_task_ids": []},
+        ],
+    })
+    task_a = resp.json()["tasks"][0]
+    task_b = resp.json()["tasks"][1]
+
+    # Manually set dependency: task_b depends on task_a
+    task_repo = TaskRepo(db)
+    await task_repo.update(task_b["id"], depends_on_task_ids=[task_a["id"]])
+
+    # Run scheduler
+    scheduler = TaskSchedulerController(db, watch)
+    await scheduler.reconcile()
+
+    # task_a should be assigned, task_b should not (dep not done)
+    task_a_result = await task_repo.get(task_a["id"])
+    task_b_result = await task_repo.get(task_b["id"])
+    assert task_a_result.assigned_agent_id == "agent_deps"
+    assert task_b_result.assigned_agent_id is None
+
+
+@pytest.mark.asyncio
+async def test_task_scheduler_respects_capacity(client):
+    """Scheduler should not assign more tasks than agent capacity."""
+    db = await get_db()
+    watch = get_watch_service()
+
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/sched-cap",
+        "repo_url": "git@github.com:test/sched-cap.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    # Register agent with max 1 concurrent task
+    await client.post("/api/v1/agents/register", json={
+        "agent_id": "agent_cap",
+        "recipe_id": recipe_id,
+        "display_name": "Capacity Agent",
+        "capabilities": ["claim"],
+        "max_concurrent_tasks": 1,
+    })
+
+    # Create bundle with 2 tasks
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Test capacity",
+        "requested_by": "human_1",
+        "tasks": [{"title": "Task 1"}, {"title": "Task 2"}],
+    })
+    tasks = resp.json()["tasks"]
+
+    # Claim the first task (simulating agent already working)
+    await client.post(f"/api/v1/tasks/{tasks[0]['id']}/claim", json={
+        "agent_id": "agent_cap",
+    })
+
+    # Run scheduler
+    scheduler = TaskSchedulerController(db, watch)
+    await scheduler.reconcile()
+
+    # Second task should NOT be assigned (agent at capacity)
+    task_repo = TaskRepo(db)
+    task_2 = await task_repo.get(tasks[1]["id"])
+    assert task_2.assigned_agent_id is None
+
+
+# --- Agent Registration tests ---
+
+
+@pytest.mark.asyncio
+async def test_agent_registration(client):
+    """POST /agents/register should create agent presence."""
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/register",
+        "repo_url": "git@github.com:test/register.git",
+        "created_by": "human_1",
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+
+    resp = await client.post("/api/v1/agents/register", json={
+        "agent_id": "agent_reg",
+        "recipe_id": recipe_id,
+        "display_name": "Registered Agent",
+        "capabilities": ["claim", "milestones"],
+        "max_concurrent_tasks": 2,
+    })
+    assert resp.status_code == 200
+    presence = resp.json()["presence"]
+    assert presence["agent_id"] == "agent_reg"
+    assert presence["status"] == "online"
+    assert presence["max_concurrent_tasks"] == 2
+    assert presence["capabilities"] == ["claim", "milestones"]

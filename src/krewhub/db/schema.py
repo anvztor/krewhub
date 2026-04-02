@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     recipe_id TEXT NOT NULL REFERENCES recipes(id),
     display_name TEXT NOT NULL,
     capabilities TEXT NOT NULL DEFAULT '[]',
+    max_concurrent_tasks INTEGER NOT NULL DEFAULT 1,
     status TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('online', 'offline', 'busy')),
     last_heartbeat_at TEXT NOT NULL,
     current_task_id TEXT,
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     status TEXT NOT NULL DEFAULT 'open'
         CHECK(status IN ('open', 'claimed', 'working', 'done', 'blocked', 'cancelled')),
     depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
+    assigned_agent_id TEXT,
     claimed_by_agent_id TEXT,
     claimed_at TEXT,
     completed_at TEXT,
@@ -68,6 +70,7 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,

@@ -94,6 +94,7 @@ class AgentPresence(BaseModel, frozen=True):
     recipe_id: str
     display_name: str
     capabilities: list[str]
+    max_concurrent_tasks: int = 1
     status: AgentStatus
     last_heartbeat_at: datetime
     current_task_id: str | None = None
@@ -122,6 +123,7 @@ class Task(BaseModel, frozen=True):
     description: str | None = None
     status: TaskStatus
     depends_on_task_ids: list[str] = Field(default_factory=list)
+    assigned_agent_id: str | None = None
     claimed_by_agent_id: str | None = None
     claimed_at: datetime | None = None
     completed_at: datetime | None = None
