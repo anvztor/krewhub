@@ -27,8 +27,16 @@ async def init_db() -> aiosqlite.Connection:
     _db.row_factory = aiosqlite.Row
     await _db.execute("PRAGMA journal_mode=WAL")
     await _db.execute("PRAGMA foreign_keys=ON")
-    await _db.executescript(SCHEMA_SQL)
+
+    # Migrations first: add new columns to existing tables so that
+    # the schema script's CREATE INDEX statements can reference them.
+    # On a fresh DB this is a no-op (tables don't exist yet).
     await run_migrations(_db)
+
+    # Schema second: CREATE TABLE IF NOT EXISTS + indexes.
+    # On a fresh DB this creates everything; on an existing DB it
+    # only creates missing tables (watch_log) and indexes.
+    await _db.executescript(SCHEMA_SQL)
     await _db.commit()
     return _db
 

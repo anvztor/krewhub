@@ -51,6 +51,10 @@ async def _add_column_if_missing(
     column: str,
     column_def: str,
 ) -> None:
+    # Skip if table doesn't exist yet (fresh DB — schema will create it)
+    if not await _table_exists(db, table):
+        return
+
     cursor = await db.execute(f"PRAGMA table_info({table})")
     columns = await cursor.fetchall()
     existing = {row["name"] for row in columns}
@@ -58,6 +62,14 @@ async def _add_column_if_missing(
     if column not in existing:
         await db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_def}")
         logger.info("Migration: added %s.%s", table, column)
+
+
+async def _table_exists(db: aiosqlite.Connection, table: str) -> bool:
+    cursor = await db.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+        (table,),
+    )
+    return await cursor.fetchone() is not None
 
 
 async def _create_table_if_missing(
@@ -80,6 +92,9 @@ async def _create_index_if_missing(
     table: str,
     columns: str,
 ) -> None:
+    if not await _table_exists(db, table):
+        return
+
     cursor = await db.execute(
         "SELECT name FROM sqlite_master WHERE type='index' AND name=?",
         (index_name,),
