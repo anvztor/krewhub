@@ -6,6 +6,7 @@ from datetime import datetime
 import aiosqlite
 
 from krewhub.models import Task, TaskStatus
+from krewhub.repositories.bundle_repo import StaleResourceError
 
 
 class TaskRepo:
@@ -16,14 +17,16 @@ class TaskRepo:
         await self._db.execute(
             """INSERT INTO tasks
                (id, bundle_id, title, description, status, depends_on_task_ids,
-                claimed_by_agent_id, claimed_at, completed_at, blocked_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                claimed_by_agent_id, claimed_at, completed_at, blocked_reason,
+                resource_version, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task.id, task.bundle_id, task.title, task.description, task.status,
              json.dumps(task.depends_on_task_ids),
              task.claimed_by_agent_id,
              task.claimed_at.isoformat() if task.claimed_at else None,
              task.completed_at.isoformat() if task.completed_at else None,
-             task.blocked_reason),
+             task.blocked_reason,
+             task.resource_version, task.generation),
         )
         await self._db.commit()
         return task
@@ -84,9 +87,13 @@ class TaskRepo:
         completed_at: datetime | None = None,
         blocked_reason: str | None = None,
         depends_on_task_ids: list[str] | None = None,
+        expected_version: int | None = None,
     ) -> Task | None:
-        parts: list[str] = []
+        parts: list[str] = ["resource_version = resource_version + 1"]
         params: list[object] = []
+
+        # Track whether spec fields changed (for generation bump)
+        spec_changed = title is not None or description is not None or depends_on_task_ids is not None
 
         if title is not None:
             parts.append("title = ?")
@@ -113,15 +120,32 @@ class TaskRepo:
             parts.append("depends_on_task_ids = ?")
             params.append(json.dumps(depends_on_task_ids))
 
-        if not parts:
+        if spec_changed:
+            parts.append("generation = generation + 1")
+
+        if len(parts) == 1:
+            # Only resource_version bump, nothing actually changed
             return await self.get(task_id)
 
+        where = "id = ?"
         params.append(task_id)
-        await self._db.execute(
-            f"UPDATE tasks SET {', '.join(parts)} WHERE id = ?",
+
+        if expected_version is not None:
+            where += " AND resource_version = ?"
+            params.append(expected_version)
+
+        cursor = await self._db.execute(
+            f"UPDATE tasks SET {', '.join(parts)} WHERE {where}",
             params,
         )
         await self._db.commit()
+
+        if expected_version is not None and cursor.rowcount == 0:
+            existing = await self.get(task_id)
+            if existing is not None:
+                raise StaleResourceError("task", task_id)
+            return None
+
         return await self.get(task_id)
 
     async def delete(self, task_id: str) -> bool:
@@ -136,7 +160,8 @@ class TaskRepo:
                    claimed_by_agent_id = NULL,
                    claimed_at = NULL,
                    completed_at = NULL,
-                   blocked_reason = NULL
+                   blocked_reason = NULL,
+                   resource_version = resource_version + 1
                WHERE id = ?""",
             (task_id,),
         )
@@ -156,4 +181,6 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         claimed_at=datetime.fromisoformat(row["claimed_at"]) if row["claimed_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
         blocked_reason=row["blocked_reason"],
+        resource_version=row["resource_version"],
+        generation=row["generation"],
     )

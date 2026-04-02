@@ -15,13 +15,17 @@ from krewhub.config import get_settings
 get_settings.cache_clear()
 
 from krewhub.app import create_app
-from krewhub.db.connection import init_db, close_db
+from krewhub.db.connection import init_db, close_db, get_db
+from krewhub.watch.service import WatchService
+from krewhub.watch.globals import set_watch_service, clear_watch_service
 
 
 @pytest_asyncio.fixture(autouse=True)
 async def _setup_db():
-    await init_db()
+    db = await init_db()
+    set_watch_service(WatchService(db))
     yield
+    clear_watch_service()
     await close_db()
 
 

@@ -8,11 +8,11 @@ import aiosqlite
 
 from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
-from krewhub.models import AgentPresence, AgentStatus
+from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest
-from krewhub.services.sse_service import sse_service
+from krewhub.watch.globals import get_watch_service
 
 router = APIRouter(tags=["agents"], dependencies=[Depends(verify_api_key)])
 
@@ -40,12 +40,12 @@ async def heartbeat(
     )
 
     repo = AgentRepo(db)
-    await repo.upsert_presence(presence)
+    updated = await repo.upsert_presence(presence)
 
-    await sse_service.publish(req.recipe_id, "agent.presence", {
-        "agent_id": req.agent_id,
-        "status": status,
-        "display_name": req.display_name,
-    })
+    watch = get_watch_service()
+    await watch.record_resource(
+        "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+        recipe_id=req.recipe_id,
+    )
 
-    return {"presence": presence.model_dump(mode="json")}
+    return {"presence": updated.model_dump(mode="json")}

@@ -8,27 +8,53 @@ import pytest
 from krewhub.db.connection import get_db
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.services.retention_service import RetentionService
-from krewhub.services.sse_service import sse_service
+from krewhub.watch.globals import get_watch_service
+from krewhub.watch.types import WatchEvent, WatchOptions
 
 
-async def _expect_sse_event(
-    recipe_id: str,
-    queue: asyncio.Queue[dict[str, object]],
-    expected_event: str,
-) -> dict[str, object]:
+async def _expect_watch_event(
+    queue: asyncio.Queue[WatchEvent],
+    expected_resource_type: str,
+) -> WatchEvent:
     try:
-        message = await asyncio.wait_for(queue.get(), timeout=1.0)
-    except TimeoutError as exc:  # pragma: no cover - keeps failures readable
+        event = await asyncio.wait_for(queue.get(), timeout=2.0)
+    except TimeoutError as exc:
         raise AssertionError(
-            f"Timed out waiting for SSE event {expected_event!r} on recipe {recipe_id}"
+            f"Timed out waiting for watch event resource_type={expected_resource_type!r}"
         ) from exc
 
-    assert message["event"] == expected_event
-    return message
+    assert event.resource_type == expected_resource_type
+    return event
+
+
+async def _drain_until(
+    queue: asyncio.Queue[WatchEvent],
+    resource_type: str,
+    event_type: str | None = None,
+    timeout: float = 2.0,
+) -> WatchEvent:
+    """Drain events until one matches the criteria."""
+    deadline = asyncio.get_event_loop().time() + timeout
+    while True:
+        remaining = deadline - asyncio.get_event_loop().time()
+        if remaining <= 0:
+            raise AssertionError(
+                f"Timed out waiting for {resource_type}/{event_type}"
+            )
+        try:
+            event = await asyncio.wait_for(queue.get(), timeout=remaining)
+        except TimeoutError as exc:
+            raise AssertionError(
+                f"Timed out waiting for {resource_type}/{event_type}"
+            ) from exc
+
+        if event.resource_type == resource_type:
+            if event_type is None or event.event_type == event_type:
+                return event
 
 
 @pytest.mark.asyncio
-async def test_full_lifecycle_emits_sse_and_persists_history(client):
+async def test_full_lifecycle_emits_watch_events_and_persists_history(client):
     recipe_response = await client.post(
         "/api/v1/recipes",
         json={
@@ -41,7 +67,10 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
     assert recipe_response.status_code == 200
     recipe_id = recipe_response.json()["recipe"]["id"]
 
-    queue = sse_service.subscribe(recipe_id)
+    watch = get_watch_service()
+    options = WatchOptions(recipe_id=recipe_id)
+    queue = watch.subscribe(options)
+
     try:
         bundle_response = await client.post(
             f"/api/v1/recipes/{recipe_id}/bundles",
@@ -55,9 +84,8 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         bundle_id = bundle_response.json()["bundle"]["id"]
         task_id = bundle_response.json()["tasks"][0]["id"]
 
-        bundle_created = await _expect_sse_event(recipe_id, queue, "bundle.created")
-        assert bundle_created["data"]["bundle_id"] == bundle_id
-        assert bundle_created["data"]["task_count"] == 1
+        bundle_created = await _drain_until(queue, "bundle", "ADDED")
+        assert bundle_created.resource_id == bundle_id
 
         heartbeat_response = await client.post(
             "/api/v1/agents/heartbeat",
@@ -70,9 +98,9 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert heartbeat_response.status_code == 200
 
-        agent_presence = await _expect_sse_event(recipe_id, queue, "agent.presence")
-        assert agent_presence["data"]["agent_id"] == "agent_phase4"
-        assert agent_presence["data"]["status"] == "online"
+        agent_presence = await _drain_until(queue, "agent")
+        assert agent_presence.object["agent_id"] == "agent_phase4"
+        assert agent_presence.object["status"] == "online"
 
         claim_response = await client.post(
             f"/api/v1/tasks/{task_id}/claim",
@@ -80,9 +108,8 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert claim_response.status_code == 200
 
-        claimed = await _expect_sse_event(recipe_id, queue, "task.claimed")
-        assert claimed["data"]["task_id"] == task_id
-        assert claimed["data"]["bundle_id"] == bundle_id
+        claimed = await _drain_until(queue, "task", "MODIFIED")
+        assert claimed.resource_id == task_id
 
         milestone_response = await client.post(
             f"/api/v1/tasks/{task_id}/events",
@@ -109,9 +136,9 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert milestone_response.status_code == 200
 
-        milestone = await _expect_sse_event(recipe_id, queue, "task.updated")
-        assert milestone["data"]["task_id"] == task_id
-        assert milestone["data"]["event_type"] == "milestone"
+        # post_event transitions claimed→working, which emits a watch event
+        working_event = await _drain_until(queue, "task", "MODIFIED")
+        assert working_event.resource_id == task_id
 
         done_response = await client.patch(
             f"/api/v1/tasks/{task_id}/status",
@@ -119,9 +146,9 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert done_response.status_code == 200
 
-        done = await _expect_sse_event(recipe_id, queue, "task.updated")
-        assert done["data"]["task_id"] == task_id
-        assert done["data"]["status"] == "done"
+        done = await _drain_until(queue, "task", "MODIFIED")
+        assert done.resource_id == task_id
+        assert done.object["status"] == "done"
 
         bundle_detail_response = await client.get(f"/api/v1/bundles/{bundle_id}")
         assert bundle_detail_response.status_code == 200
@@ -157,12 +184,8 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert digest_response.status_code == 200
 
-        digest_submitted = await _expect_sse_event(
-            recipe_id,
-            queue,
-            "bundle.digest_submitted",
-        )
-        assert digest_submitted["data"]["bundle_id"] == bundle_id
+        digest_submitted = await _drain_until(queue, "digest", "ADDED")
+        assert digest_submitted.object["bundle_id"] == bundle_id
 
         decision_response = await client.post(
             f"/api/v1/bundles/{bundle_id}/decision",
@@ -174,9 +197,9 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         )
         assert decision_response.status_code == 200
 
-        decision = await _expect_sse_event(recipe_id, queue, "bundle.decision")
-        assert decision["data"]["bundle_id"] == bundle_id
-        assert decision["data"]["decision"] == "approved"
+        decision = await _drain_until(queue, "digest", "MODIFIED")
+        assert decision.object["bundle_id"] == bundle_id
+        assert decision.object["decision"] == "approved"
 
         recipe_detail_response = await client.get(f"/api/v1/recipes/{recipe_id}")
         assert recipe_detail_response.status_code == 200
@@ -189,7 +212,7 @@ async def test_full_lifecycle_emits_sse_and_persists_history(client):
         assert history_response.json()["digests"][0]["decision"] == "approved"
 
     finally:
-        sse_service.unsubscribe(recipe_id, queue)
+        watch.unsubscribe(queue)
 
 
 @pytest.mark.asyncio

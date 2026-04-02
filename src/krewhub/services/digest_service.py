@@ -16,22 +16,26 @@ from krewhub.models import (
     EventType,
     FactRef,
     TaskStatus,
+    WatchEventType,
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.digest_repo import DigestRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
-from krewhub.services.sse_service import sse_service
 from krewhub.tape.manager import TapeManager
+from krewhub.watch.service import WatchService
 
 
 class DigestService:
-    def __init__(self, db: aiosqlite.Connection, retention_days: int = 7) -> None:
+    def __init__(
+        self, db: aiosqlite.Connection, watch: WatchService, retention_days: int = 7
+    ) -> None:
         self._db = db
         self._bundles = BundleRepo(db)
         self._tasks = TaskRepo(db)
         self._digests = DigestRepo(db)
         self._events = EventRepo(db)
+        self._watch = watch
         self._retention_days = retention_days
 
     async def submit_digest(
@@ -87,10 +91,10 @@ class DigestService:
         )
         await self._events.create(submit_event)
 
-        await sse_service.publish(bundle.recipe_id, "bundle.digest_submitted", {
-            "bundle_id": bundle_id,
-            "digest_id": digest.id,
-        })
+        await self._watch.record_resource(
+            "digest", digest.id, WatchEventType.ADDED, digest,
+            recipe_id=bundle.recipe_id,
+        )
 
         return digest
 
@@ -111,7 +115,7 @@ class DigestService:
         )
 
         if decision == DigestDecision.APPROVED:
-            await self._bundles.update_status(
+            bundle = await self._bundles.update_status(
                 bundle_id, BundleStatus.DIGESTED, digested_at=now
             )
             event_type = EventType.DIGEST_APPROVED
@@ -120,7 +124,7 @@ class DigestService:
             tape = TapeManager(self._db, updated.recipe_id)
             await tape.create_digest_anchor(updated)
         else:
-            await self._bundles.update_status(bundle_id, BundleStatus.REJECTED)
+            bundle = await self._bundles.update_status(bundle_id, BundleStatus.REJECTED)
             expires_at = now + timedelta(days=self._retention_days)
             await self._events.set_expiry_for_bundle(bundle_id, expires_at)
             event_type = EventType.DIGEST_REJECTED
@@ -144,9 +148,15 @@ class DigestService:
         )
         await self._events.create(decision_event)
 
-        await sse_service.publish(digest.recipe_id, "bundle.decision", {
-            "bundle_id": bundle_id,
-            "decision": decision,
-        })
+        if updated is not None:
+            await self._watch.record_resource(
+                "digest", updated.id, WatchEventType.MODIFIED, updated,
+                recipe_id=digest.recipe_id,
+            )
+        if bundle is not None:
+            await self._watch.record_resource(
+                "bundle", bundle_id, WatchEventType.MODIFIED, bundle,
+                recipe_id=digest.recipe_id,
+            )
 
         return updated

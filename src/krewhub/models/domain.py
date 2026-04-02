@@ -62,6 +62,12 @@ class DigestDecision(StrEnum):
     REJECTED = "rejected"
 
 
+class WatchEventType(StrEnum):
+    ADDED = "ADDED"
+    MODIFIED = "MODIFIED"
+    DELETED = "DELETED"
+
+
 # --- Domain Models ---
 
 
@@ -91,6 +97,7 @@ class AgentPresence(BaseModel, frozen=True):
     status: AgentStatus
     last_heartbeat_at: datetime
     current_task_id: str | None = None
+    resource_version: int = 1
 
 
 class Bundle(BaseModel, frozen=True):
@@ -104,6 +111,8 @@ class Bundle(BaseModel, frozen=True):
     cooked_at: datetime | None = None
     digested_at: datetime | None = None
     blocked_reason: str | None = None
+    resource_version: int = 1
+    generation: int = 1
 
 
 class Task(BaseModel, frozen=True):
@@ -117,6 +126,8 @@ class Task(BaseModel, frozen=True):
     claimed_at: datetime | None = None
     completed_at: datetime | None = None
     blocked_reason: str | None = None
+    resource_version: int = 1
+    generation: int = 1
 
 
 class FactRef(BaseModel, frozen=True):
@@ -168,3 +179,16 @@ class Digest(BaseModel, frozen=True):
     decision: DigestDecision = DigestDecision.PENDING
     decided_by: str | None = None
     decided_at: datetime | None = None
+    resource_version: int = 1
+    generation: int = 1
+
+
+class WatchEntry(BaseModel, frozen=True):
+    seq: int
+    resource_type: str
+    resource_id: str
+    event_type: WatchEventType
+    resource_version: int
+    payload: dict
+    recipe_id: str | None = None
+    created_at: datetime

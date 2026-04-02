@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     status TEXT NOT NULL DEFAULT 'offline' CHECK(status IN ('online', 'offline', 'busy')),
     last_heartbeat_at TEXT NOT NULL,
     current_task_id TEXT,
+    resource_version INTEGER NOT NULL DEFAULT 1,
     PRIMARY KEY (agent_id, recipe_id)
 );
 
@@ -43,7 +44,9 @@ CREATE TABLE IF NOT EXISTS bundles (
     claimed_at TEXT,
     cooked_at TEXT,
     digested_at TEXT,
-    blocked_reason TEXT
+    blocked_reason TEXT,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
@@ -59,7 +62,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     claimed_by_agent_id TEXT,
     claimed_at TEXT,
     completed_at TEXT,
-    blocked_reason TEXT
+    blocked_reason TEXT,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
@@ -100,7 +105,9 @@ CREATE TABLE IF NOT EXISTS digests (
     submitted_at TEXT NOT NULL,
     decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending', 'approved', 'rejected')),
     decided_by TEXT,
-    decided_at TEXT
+    decided_at TEXT,
+    resource_version INTEGER NOT NULL DEFAULT 1,
+    generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_digests_recipe ON digests(recipe_id);
@@ -116,4 +123,18 @@ CREATE TABLE IF NOT EXISTS tape_entries (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tape_entries_tape ON tape_entries(tape_name);
+
+CREATE TABLE IF NOT EXISTS watch_log (
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    event_type TEXT NOT NULL CHECK(event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
+    resource_version INTEGER NOT NULL,
+    payload TEXT NOT NULL DEFAULT '{}',
+    recipe_id TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_watch_log_type_seq ON watch_log(resource_type, seq);
+CREATE INDEX IF NOT EXISTS idx_watch_log_recipe_seq ON watch_log(recipe_id, seq);
 """

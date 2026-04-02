@@ -7,12 +7,16 @@ from fastapi import FastAPI
 
 from krewhub.db.connection import close_db, init_db
 from krewhub.routes import agents, bundles, recipes, stream, tasks
+from krewhub.watch.service import WatchService
+from krewhub.watch.globals import set_watch_service, clear_watch_service
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
-    await init_db()
+    db = await init_db()
+    set_watch_service(WatchService(db))
     yield
+    clear_watch_service()
     await close_db()
 
 

@@ -12,6 +12,7 @@ from krewhub.models import (
     DigestTaskResult,
     FactRef,
 )
+from krewhub.repositories.bundle_repo import StaleResourceError
 
 
 class DigestRepo:
@@ -22,15 +23,17 @@ class DigestRepo:
         await self._db.execute(
             """INSERT INTO digests
                (id, recipe_id, bundle_id, summary, task_results, facts, code_refs,
-                submitted_by, submitted_at, decision, decided_by, decided_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                submitted_by, submitted_at, decision, decided_by, decided_at,
+                resource_version, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (digest.id, digest.recipe_id, digest.bundle_id, digest.summary,
              json.dumps([tr.model_dump() for tr in digest.task_results]),
              json.dumps([f.model_dump() for f in digest.facts]),
              json.dumps([c.model_dump() for c in digest.code_refs]),
              digest.submitted_by, digest.submitted_at.isoformat(),
              digest.decision, digest.decided_by,
-             digest.decided_at.isoformat() if digest.decided_at else None),
+             digest.decided_at.isoformat() if digest.decided_at else None,
+             digest.resource_version, digest.generation),
         )
         await self._db.commit()
         return digest
@@ -69,12 +72,33 @@ class DigestRepo:
         decision: DigestDecision,
         decided_by: str,
         decided_at: datetime,
+        *,
+        expected_version: int | None = None,
     ) -> Digest | None:
-        await self._db.execute(
-            "UPDATE digests SET decision = ?, decided_by = ?, decided_at = ? WHERE id = ?",
-            (decision, decided_by, decided_at.isoformat(), digest_id),
+        where = "id = ?"
+        params: list[object] = [
+            decision, decided_by, decided_at.isoformat(), digest_id,
+        ]
+
+        if expected_version is not None:
+            where += " AND resource_version = ?"
+            params.append(expected_version)
+
+        cursor = await self._db.execute(
+            f"""UPDATE digests
+                SET decision = ?, decided_by = ?, decided_at = ?,
+                    resource_version = resource_version + 1
+                WHERE {where}""",
+            params,
         )
         await self._db.commit()
+
+        if expected_version is not None and cursor.rowcount == 0:
+            existing = await self.get(digest_id)
+            if existing is not None:
+                raise StaleResourceError("digest", digest_id)
+            return None
+
         return await self.get(digest_id)
 
 
@@ -92,4 +116,6 @@ def _row_to_digest(row: aiosqlite.Row) -> Digest:
         decision=row["decision"],
         decided_by=row["decided_by"],
         decided_at=datetime.fromisoformat(row["decided_at"]) if row["decided_at"] else None,
+        resource_version=row["resource_version"],
+        generation=row["generation"],
     )

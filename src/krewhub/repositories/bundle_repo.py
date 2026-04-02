@@ -7,6 +7,17 @@ import aiosqlite
 from krewhub.models import Bundle, BundleStatus
 
 
+class StaleResourceError(Exception):
+    """Raised when an update targets a stale resource_version."""
+
+    def __init__(self, resource_type: str, resource_id: str) -> None:
+        self.resource_type = resource_type
+        self.resource_id = resource_id
+        super().__init__(
+            f"Conflict: {resource_type} {resource_id} has been modified"
+        )
+
+
 class BundleRepo:
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db = db
@@ -15,14 +26,16 @@ class BundleRepo:
         await self._db.execute(
             """INSERT INTO bundles
                (id, recipe_id, prompt, status, created_by, created_at,
-                claimed_at, cooked_at, digested_at, blocked_reason)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                claimed_at, cooked_at, digested_at, blocked_reason,
+                resource_version, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (bundle.id, bundle.recipe_id, bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
              bundle.cooked_at.isoformat() if bundle.cooked_at else None,
              bundle.digested_at.isoformat() if bundle.digested_at else None,
-             bundle.blocked_reason),
+             bundle.blocked_reason,
+             bundle.resource_version, bundle.generation),
         )
         await self._db.commit()
         return bundle
@@ -53,8 +66,9 @@ class BundleRepo:
         cooked_at: datetime | None = None,
         digested_at: datetime | None = None,
         blocked_reason: str | None = None,
+        expected_version: int | None = None,
     ) -> Bundle | None:
-        parts: list[str] = ["status = ?"]
+        parts: list[str] = ["status = ?", "resource_version = resource_version + 1"]
         params: list[object] = [status]
 
         if claimed_at is not None:
@@ -70,19 +84,33 @@ class BundleRepo:
             parts.append("blocked_reason = ?")
             params.append(blocked_reason)
 
+        where = "id = ?"
         params.append(bundle_id)
-        await self._db.execute(
-            f"UPDATE bundles SET {', '.join(parts)} WHERE id = ?",
+
+        if expected_version is not None:
+            where += " AND resource_version = ?"
+            params.append(expected_version)
+
+        cursor = await self._db.execute(
+            f"UPDATE bundles SET {', '.join(parts)} WHERE {where}",
             params,
         )
         await self._db.commit()
+
+        if expected_version is not None and cursor.rowcount == 0:
+            existing = await self.get(bundle_id)
+            if existing is not None:
+                raise StaleResourceError("bundle", bundle_id)
+            return None
+
         return await self.get(bundle_id)
 
     async def reopen_for_rerun(self, bundle_id: str) -> Bundle | None:
         await self._db.execute(
             """UPDATE bundles
                SET status = 'open',
-                   blocked_reason = NULL
+                   blocked_reason = NULL,
+                   resource_version = resource_version + 1
                WHERE id = ?""",
             (bundle_id,),
         )
@@ -102,4 +130,6 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         cooked_at=datetime.fromisoformat(row["cooked_at"]) if row["cooked_at"] else None,
         digested_at=datetime.fromisoformat(row["digested_at"]) if row["digested_at"] else None,
         blocked_reason=row["blocked_reason"],
+        resource_version=row["resource_version"],
+        generation=row["generation"],
     )

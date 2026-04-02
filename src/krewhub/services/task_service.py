@@ -13,20 +13,22 @@ from krewhub.models import (
     FactRef,
     Task,
     TaskStatus,
+    WatchEventType,
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
-from krewhub.services.sse_service import sse_service
+from krewhub.watch.service import WatchService
 
 
 class TaskService:
-    def __init__(self, db: aiosqlite.Connection) -> None:
+    def __init__(self, db: aiosqlite.Connection, watch: WatchService) -> None:
         self._tasks = TaskRepo(db)
         self._events = EventRepo(db)
         self._agents = AgentRepo(db)
         self._bundles = BundleRepo(db)
+        self._watch = watch
 
     async def claim_task(
         self, task_id: str, agent_id: str, recipe_id: str
@@ -67,11 +69,11 @@ class TaskService:
         )
         await self._events.create(claim_event)
 
-        await sse_service.publish(recipe_id, "task.claimed", {
-            "task_id": task_id,
-            "agent_id": agent_id,
-            "bundle_id": task.bundle_id,
-        })
+        if updated is not None:
+            await self._watch.record_resource(
+                "task", task_id, WatchEventType.MODIFIED, updated,
+                recipe_id=recipe_id,
+            )
 
         return updated
 
@@ -91,7 +93,12 @@ class TaskService:
             raise ValueError(f"Task {task_id} not found")
 
         if task.status == TaskStatus.CLAIMED:
-            await self._tasks.update(task_id, status=TaskStatus.WORKING)
+            updated = await self._tasks.update(task_id, status=TaskStatus.WORKING)
+            if updated is not None:
+                await self._watch.record_resource(
+                    "task", task_id, WatchEventType.MODIFIED, updated,
+                    recipe_id=recipe_id,
+                )
 
         now = datetime.now(timezone.utc)
         event = Event(
@@ -109,12 +116,6 @@ class TaskService:
         )
         await self._events.create(event)
 
-        await sse_service.publish(recipe_id, "task.updated", {
-            "task_id": task_id,
-            "event_type": event_type,
-            "bundle_id": task.bundle_id,
-        })
-
         return event
 
     async def mark_done(self, task_id: str) -> Task | None:
@@ -126,7 +127,8 @@ class TaskService:
         updated = await self._tasks.update(
             task_id, status=TaskStatus.DONE, completed_at=now
         )
-        await self._publish_task_status(task.bundle_id, task_id, TaskStatus.DONE)
+        if updated is not None:
+            await self._publish_task_update(updated)
         return updated
 
     async def mark_blocked(self, task_id: str, reason: str) -> Task | None:
@@ -137,7 +139,8 @@ class TaskService:
         updated = await self._tasks.update(
             task_id, status=TaskStatus.BLOCKED, blocked_reason=reason
         )
-        await self._publish_task_status(task.bundle_id, task_id, TaskStatus.BLOCKED)
+        if updated is not None:
+            await self._publish_task_update(updated)
         return updated
 
     async def add_task(
@@ -155,7 +158,16 @@ class TaskService:
             status=TaskStatus.OPEN,
             depends_on_task_ids=depends_on_task_ids or [],
         )
-        return await self._tasks.create(task)
+        created = await self._tasks.create(task)
+
+        bundle = await self._bundles.get(bundle_id)
+        if bundle is not None:
+            await self._watch.record_resource(
+                "task", created.id, WatchEventType.ADDED, created,
+                recipe_id=bundle.recipe_id,
+            )
+
+        return created
 
     async def edit_task(
         self,
@@ -164,35 +176,38 @@ class TaskService:
         description: str | None = None,
         depends_on_task_ids: list[str] | None = None,
     ) -> Task | None:
-        return await self._tasks.update(
+        updated = await self._tasks.update(
             task_id,
             title=title,
             description=description,
             depends_on_task_ids=depends_on_task_ids,
         )
+        if updated is not None:
+            await self._publish_task_update(updated)
+        return updated
 
     async def remove_task(self, task_id: str) -> bool:
         task = await self._tasks.get(task_id)
         if task is None or task.status != TaskStatus.OPEN:
             return False
-        return await self._tasks.delete(task_id)
 
-    async def _publish_task_status(
-        self,
-        bundle_id: str,
-        task_id: str,
-        status: TaskStatus,
-    ) -> None:
-        bundle = await self._bundles.get(bundle_id)
+        deleted = await self._tasks.delete(task_id)
+        if deleted:
+            bundle = await self._bundles.get(task.bundle_id)
+            recipe_id = bundle.recipe_id if bundle else None
+            await self._watch.record(
+                "task", task_id, WatchEventType.DELETED,
+                resource_version=task.resource_version,
+                payload=task.model_dump(mode="json"),
+                recipe_id=recipe_id,
+            )
+        return deleted
+
+    async def _publish_task_update(self, task: Task) -> None:
+        bundle = await self._bundles.get(task.bundle_id)
         if bundle is None:
             return
-
-        await sse_service.publish(
-            bundle.recipe_id,
-            "task.updated",
-            {
-                "task_id": task_id,
-                "status": status,
-                "bundle_id": bundle_id,
-            },
+        await self._watch.record_resource(
+            "task", task.id, WatchEventType.MODIFIED, task,
+            recipe_id=bundle.recipe_id,
         )

@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
+from krewhub.watch.globals import get_watch_service
 from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus
@@ -35,7 +36,8 @@ async def claim_task(
     if bundle is None:
         raise HTTPException(status_code=404, detail="Bundle not found")
 
-    svc = TaskService(db)
+    watch = get_watch_service()
+    svc = TaskService(db, watch)
     updated = await svc.claim_task(task_id, req.agent_id, bundle.recipe_id)
     if updated is None:
         raise HTTPException(
@@ -43,7 +45,7 @@ async def claim_task(
             detail="Cannot claim task. Check status and dependencies.",
         )
 
-    await BundleService(db).recompute_bundle_status(task.bundle_id)
+    await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
 
     return {"task": updated.model_dump(mode="json")}
 
@@ -66,7 +68,7 @@ async def post_task_event(
     facts = [FactRef(**f) for f in req.facts] if req.facts else []
     code_refs = [CodeRef(**c) for c in req.code_refs] if req.code_refs else []
 
-    svc = TaskService(db)
+    svc = TaskService(db, get_watch_service())
     event = await svc.post_event(
         task_id=task_id,
         recipe_id=bundle.recipe_id,
@@ -86,7 +88,8 @@ async def update_task_status(
     req: UpdateTaskStatusRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = TaskService(db)
+    watch = get_watch_service()
+    svc = TaskService(db, watch)
     status = TaskStatus(req.status)
 
     if status == TaskStatus.DONE:
@@ -101,7 +104,7 @@ async def update_task_status(
 
     task = await TaskRepo(db).get(task_id)
     if task:
-        await BundleService(db).recompute_bundle_status(task.bundle_id)
+        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
 
     return {"task": updated.model_dump(mode="json")}
 
@@ -112,7 +115,7 @@ async def edit_task(
     req: EditTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = TaskService(db)
+    svc = TaskService(db, get_watch_service())
     updated = await svc.edit_task(
         task_id=task_id,
         title=req.title,
@@ -129,7 +132,7 @@ async def remove_task(
     task_id: str,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = TaskService(db)
+    svc = TaskService(db, get_watch_service())
     removed = await svc.remove_task(task_id)
     if not removed:
         raise HTTPException(status_code=400, detail="Cannot remove task (not found or not open)")

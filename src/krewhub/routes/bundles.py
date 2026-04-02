@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
+from krewhub.watch.globals import get_watch_service
 from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
 from krewhub.models import DigestDecision
@@ -33,7 +34,7 @@ async def create_bundle(
     if recipe is None:
         raise HTTPException(status_code=404, detail="Recipe not found")
 
-    svc = BundleService(db)
+    svc = BundleService(db, get_watch_service())
     bundle, tasks = await svc.create_bundle(
         recipe_id=recipe_id,
         prompt=req.prompt,
@@ -94,7 +95,7 @@ async def cancel_bundle(
     bundle_id: str,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = BundleService(db)
+    svc = BundleService(db, get_watch_service())
     updated = await svc.cancel_bundle(bundle_id, "system")
     if updated is None:
         raise HTTPException(status_code=400, detail="Cannot cancel this bundle")
@@ -106,7 +107,7 @@ async def rerun_blocked_bundle(
     bundle_id: str,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = BundleService(db)
+    svc = BundleService(db, get_watch_service())
     updated = await svc.rerun_blocked_tasks(bundle_id)
     if updated is None:
         raise HTTPException(
@@ -127,7 +128,7 @@ async def add_task_to_bundle(
         raise HTTPException(status_code=404, detail="Bundle not found")
 
     from krewhub.services.task_service import TaskService
-    svc = TaskService(db)
+    svc = TaskService(db, get_watch_service())
     task = await svc.add_task(
         bundle_id=bundle_id,
         title=req.title,
@@ -143,7 +144,7 @@ async def submit_digest(
     req: SubmitDigestRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = DigestService(db)
+    svc = DigestService(db, get_watch_service())
     digest = await svc.submit_digest(
         bundle_id=bundle_id,
         submitted_by=req.submitted_by,
@@ -166,7 +167,7 @@ async def decide_digest(
     req: DecisionRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    svc = DigestService(db)
+    svc = DigestService(db, get_watch_service())
     decision = DigestDecision(req.decision)
     digest = await svc.decide(bundle_id, decision, req.decided_by, req.note)
     if digest is None:

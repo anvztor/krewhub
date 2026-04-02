@@ -16,6 +16,8 @@ from krewhub.models.domain import (
     Role,
     Task,
     TaskStatus,
+    WatchEntry,
+    WatchEventType,
 )
 
 __all__ = [
@@ -36,4 +38,6 @@ __all__ = [
     "Role",
     "Task",
     "TaskStatus",
+    "WatchEntry",
+    "WatchEventType",
 ]

@@ -16,20 +16,21 @@ class AgentRepo:
         await self._db.execute(
             """INSERT INTO agent_presence
                (agent_id, recipe_id, display_name, capabilities, status,
-                last_heartbeat_at, current_task_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+                last_heartbeat_at, current_task_id, resource_version)
+               VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                ON CONFLICT(agent_id, recipe_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 capabilities = excluded.capabilities,
                 status = excluded.status,
                 last_heartbeat_at = excluded.last_heartbeat_at,
-                current_task_id = excluded.current_task_id""",
+                current_task_id = excluded.current_task_id,
+                resource_version = agent_presence.resource_version + 1""",
             (presence.agent_id, presence.recipe_id, presence.display_name,
              json.dumps(presence.capabilities), presence.status,
              presence.last_heartbeat_at.isoformat(), presence.current_task_id),
         )
         await self._db.commit()
-        return presence
+        return await self.get(presence.agent_id, presence.recipe_id) or presence
 
     async def list_by_recipe(self, recipe_id: str) -> list[AgentPresence]:
         cursor = await self._db.execute(
@@ -51,7 +52,10 @@ class AgentRepo:
 
     async def mark_offline_stale(self, cutoff: datetime) -> int:
         cursor = await self._db.execute(
-            """UPDATE agent_presence SET status = 'offline', current_task_id = NULL
+            """UPDATE agent_presence
+               SET status = 'offline',
+                   current_task_id = NULL,
+                   resource_version = resource_version + 1
                WHERE last_heartbeat_at < ? AND status != 'offline'""",
             (cutoff.isoformat(),),
         )
@@ -68,4 +72,5 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
         status=row["status"],
         last_heartbeat_at=datetime.fromisoformat(row["last_heartbeat_at"]),
         current_task_id=row["current_task_id"],
+        resource_version=row["resource_version"],
     )

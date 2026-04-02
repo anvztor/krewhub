@@ -13,18 +13,20 @@ from krewhub.models import (
     EventType,
     Task,
     TaskStatus,
+    WatchEventType,
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
-from krewhub.services.sse_service import sse_service
+from krewhub.watch.service import WatchService
 
 
 class BundleService:
-    def __init__(self, db: aiosqlite.Connection) -> None:
+    def __init__(self, db: aiosqlite.Connection, watch: WatchService) -> None:
         self._bundles = BundleRepo(db)
         self._tasks = TaskRepo(db)
         self._events = EventRepo(db)
+        self._watch = watch
 
     async def create_bundle(
         self,
@@ -82,11 +84,15 @@ class BundleService:
         )
         await self._events.create(plan_event)
 
-        await sse_service.publish(recipe_id, "bundle.created", {
-            "bundle_id": bundle_id,
-            "status": bundle.status,
-            "task_count": len(created_tasks),
-        })
+        await self._watch.record_resource(
+            "bundle", bundle_id, WatchEventType.ADDED, bundle,
+            recipe_id=recipe_id,
+        )
+        for task in created_tasks:
+            await self._watch.record_resource(
+                "task", task.id, WatchEventType.ADDED, task,
+                recipe_id=recipe_id,
+            )
 
         return bundle, created_tasks
 
@@ -104,6 +110,12 @@ class BundleService:
             if task.status not in (TaskStatus.DONE, TaskStatus.CANCELLED):
                 await self._tasks.update(task.id, status=TaskStatus.CANCELLED)
 
+        if updated is not None:
+            await self._watch.record_resource(
+                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+                recipe_id=bundle.recipe_id,
+            )
+
         return updated
 
     async def recompute_bundle_status(self, bundle_id: str) -> Bundle | None:
@@ -117,20 +129,29 @@ class BundleService:
         any_claimed = any(t.status in (TaskStatus.CLAIMED, TaskStatus.WORKING) for t in tasks)
 
         if all_done:
-            return await self._bundles.update_status(
+            updated = await self._bundles.update_status(
                 bundle_id, BundleStatus.COOKED, cooked_at=now
             )
         elif any_blocked:
             blocked_reasons = [t.blocked_reason for t in tasks if t.blocked_reason]
-            return await self._bundles.update_status(
+            updated = await self._bundles.update_status(
                 bundle_id, BundleStatus.BLOCKED,
                 blocked_reason="; ".join(blocked_reasons) if blocked_reasons else "Task blocked",
             )
         elif any_claimed:
-            return await self._bundles.update_status(
+            updated = await self._bundles.update_status(
                 bundle_id, BundleStatus.CLAIMED, claimed_at=now
             )
-        return await self._bundles.update_status(bundle_id, BundleStatus.OPEN)
+        else:
+            updated = await self._bundles.update_status(bundle_id, BundleStatus.OPEN)
+
+        if updated is not None:
+            await self._watch.record_resource(
+                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+                recipe_id=updated.recipe_id,
+            )
+
+        return updated
 
     async def rerun_blocked_tasks(self, bundle_id: str) -> Bundle | None:
         bundle = await self._bundles.get(bundle_id)
@@ -143,7 +164,12 @@ class BundleService:
             return None
 
         for task in blocked_tasks:
-            await self._tasks.reopen_for_rerun(task.id)
+            reopened = await self._tasks.reopen_for_rerun(task.id)
+            if reopened is not None:
+                await self._watch.record_resource(
+                    "task", task.id, WatchEventType.MODIFIED, reopened,
+                    recipe_id=bundle.recipe_id,
+                )
 
         updated_bundle = await self._bundles.reopen_for_rerun(bundle_id)
         if updated_bundle is None:
@@ -166,11 +192,9 @@ class BundleService:
         )
         await self._events.create(rerun_event)
 
-        for task in blocked_tasks:
-            await sse_service.publish(bundle.recipe_id, "task.updated", {
-                "task_id": task.id,
-                "status": TaskStatus.OPEN,
-                "bundle_id": bundle_id,
-            })
+        await self._watch.record_resource(
+            "bundle", bundle_id, WatchEventType.MODIFIED, updated_bundle,
+            recipe_id=bundle.recipe_id,
+        )
 
         return updated_bundle
