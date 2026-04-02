@@ -5,7 +5,7 @@ from datetime import datetime
 
 import aiosqlite
 
-from krewhub.models import AgentPresence, AgentStatus
+from krewhub.models import AgentPresence
 
 
 class AgentRepo:

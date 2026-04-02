@@ -5,7 +5,7 @@ from datetime import datetime
 
 import aiosqlite
 
-from krewhub.models import Event, EventType, FactRef, CodeRef
+from krewhub.models import Event, FactRef, CodeRef
 from krewhub.tape.manager import TapeManager
 
 

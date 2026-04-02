@@ -13,7 +13,7 @@ from typing import Any
 
 import aiosqlite
 
-from krewhub.models import CodeRef, Digest, DigestTaskResult, Event, FactRef
+from krewhub.models import Digest, Event
 from krewhub.tape.store import TapeEntry, TapeStore
 
 

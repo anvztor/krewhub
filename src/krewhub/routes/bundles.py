@@ -6,7 +6,7 @@ import aiosqlite
 
 from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
-from krewhub.models import BundleStatus, DigestDecision
+from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo

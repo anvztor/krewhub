@@ -7,7 +7,6 @@ import aiosqlite
 
 from krewhub.models import (
     ActorType,
-    Bundle,
     BundleStatus,
     CodeRef,
     Digest,
