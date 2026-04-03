@@ -15,11 +15,11 @@ class AgentRepo:
     async def upsert_presence(self, presence: AgentPresence) -> AgentPresence:
         await self._db.execute(
             """INSERT INTO agent_presence
-               (agent_id, recipe_id, display_name, capabilities,
+               (agent_id, cookbook_id, display_name, capabilities,
                 max_concurrent_tasks, endpoint_url, status,
                 last_heartbeat_at, current_task_id, resource_version)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
-               ON CONFLICT(agent_id, recipe_id) DO UPDATE SET
+               ON CONFLICT(agent_id, cookbook_id) DO UPDATE SET
                 display_name = excluded.display_name,
                 capabilities = excluded.capabilities,
                 max_concurrent_tasks = excluded.max_concurrent_tasks,
@@ -28,26 +28,37 @@ class AgentRepo:
                 last_heartbeat_at = excluded.last_heartbeat_at,
                 current_task_id = excluded.current_task_id,
                 resource_version = agent_presence.resource_version + 1""",
-            (presence.agent_id, presence.recipe_id, presence.display_name,
+            (presence.agent_id, presence.cookbook_id, presence.display_name,
              json.dumps(presence.capabilities), presence.max_concurrent_tasks,
              presence.endpoint_url, presence.status,
              presence.last_heartbeat_at.isoformat(), presence.current_task_id),
         )
         await self._db.commit()
-        return await self.get(presence.agent_id, presence.recipe_id) or presence
+        return await self.get(presence.agent_id, presence.cookbook_id) or presence
+
+    async def list_by_cookbook(self, cookbook_id: str) -> list[AgentPresence]:
+        cursor = await self._db.execute(
+            "SELECT * FROM agent_presence WHERE cookbook_id = ?",
+            (cookbook_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_presence(r) for r in rows]
 
     async def list_by_recipe(self, recipe_id: str) -> list[AgentPresence]:
+        """List agents available for a recipe via its cookbook."""
         cursor = await self._db.execute(
-            "SELECT * FROM agent_presence WHERE recipe_id = ?",
+            """SELECT ap.* FROM agent_presence ap
+               JOIN recipes r ON r.cookbook_id = ap.cookbook_id
+               WHERE r.id = ?""",
             (recipe_id,),
         )
         rows = await cursor.fetchall()
         return [_row_to_presence(r) for r in rows]
 
-    async def get(self, agent_id: str, recipe_id: str) -> AgentPresence | None:
+    async def get(self, agent_id: str, cookbook_id: str) -> AgentPresence | None:
         cursor = await self._db.execute(
-            "SELECT * FROM agent_presence WHERE agent_id = ? AND recipe_id = ?",
-            (agent_id, recipe_id),
+            "SELECT * FROM agent_presence WHERE agent_id = ? AND cookbook_id = ?",
+            (agent_id, cookbook_id),
         )
         row = await cursor.fetchone()
         if row is None:
@@ -70,7 +81,7 @@ class AgentRepo:
 def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
     return AgentPresence(
         agent_id=row["agent_id"],
-        recipe_id=row["recipe_id"],
+        cookbook_id=row["cookbook_id"],
         display_name=row["display_name"],
         capabilities=json.loads(row["capabilities"]),
         max_concurrent_tasks=row["max_concurrent_tasks"],

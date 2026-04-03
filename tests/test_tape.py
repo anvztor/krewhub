@@ -7,10 +7,16 @@ from krewhub.db.connection import get_db
 
 @pytest.mark.asyncio
 async def test_events_are_written_to_tape_and_approved_digest_creates_anchor(client):
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape",
         "repo_url": "git@github.com:test/tape.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 

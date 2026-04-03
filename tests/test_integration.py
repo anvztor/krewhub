@@ -55,6 +55,16 @@ async def _drain_until(
 
 @pytest.mark.asyncio
 async def test_full_lifecycle_emits_watch_events_and_persists_history(client):
+    cookbook_response = await client.post(
+        "/api/v1/cookbooks",
+        json={
+            "name": "test-phase4-lifecycle-cookbook",
+            "owner_id": "qa.lead",
+        },
+    )
+    assert cookbook_response.status_code == 200
+    cookbook_id = cookbook_response.json()["cookbook"]["id"]
+
     recipe_response = await client.post(
         "/api/v1/recipes",
         json={
@@ -62,6 +72,7 @@ async def test_full_lifecycle_emits_watch_events_and_persists_history(client):
             "repo_url": "git@github.com:test/phase4-lifecycle.git",
             "default_branch": "release/integration",
             "created_by": "qa.lead",
+            "cookbook_id": cookbook_id,
         },
     )
     assert recipe_response.status_code == 200
@@ -91,7 +102,7 @@ async def test_full_lifecycle_emits_watch_events_and_persists_history(client):
             "/api/v1/agents/heartbeat",
             json={
                 "agent_id": "agent_phase4",
-                "recipe_id": recipe_id,
+                "cookbook_id": cookbook_id,
                 "display_name": "Phase 4 Agent",
                 "capabilities": ["claim", "milestones", "digests"],
             },
@@ -217,12 +228,18 @@ async def test_full_lifecycle_emits_watch_events_and_persists_history(client):
 
 @pytest.mark.asyncio
 async def test_rejected_bundle_events_expire_after_retention_cleanup(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-phase4-retention-cookbook",
+        "owner_id": "qa.lead",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     recipe_response = await client.post(
         "/api/v1/recipes",
         json={
             "name": "test/phase4-retention",
             "repo_url": "git@github.com:test/phase4-retention.git",
             "created_by": "qa.lead",
+            "cookbook_id": cookbook_id,
         },
     )
     recipe_id = recipe_response.json()["recipe"]["id"]

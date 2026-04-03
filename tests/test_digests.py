@@ -7,10 +7,16 @@ from krewhub.repositories.event_repo import EventRepo
 
 
 async def _create_cooked_bundle(client) -> tuple[str, str, list[str]]:
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-digests-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/digests",
         "repo_url": "git@github.com:test/digests.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -121,10 +127,16 @@ async def test_reject_digest(client):
 
 @pytest.mark.asyncio
 async def test_cannot_submit_digest_with_open_tasks(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-incomplete-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/incomplete",
         "repo_url": "git@github.com:test/incomplete.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -144,10 +156,16 @@ async def test_cannot_submit_digest_with_open_tasks(client):
 
 @pytest.mark.asyncio
 async def test_cannot_submit_digest_for_cancelled_bundle(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-cancelled-digest-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/cancelled-digest",
         "repo_url": "git@github.com:test/cancelled-digest.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -171,10 +189,16 @@ async def test_cannot_submit_digest_for_cancelled_bundle(client):
 
 @pytest.mark.asyncio
 async def test_can_submit_digest_for_blocked_bundle(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-blocked-digest-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/blocked-digest",
         "repo_url": "git@github.com:test/blocked-digest.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 

@@ -4,10 +4,16 @@ import pytest
 
 
 async def _setup_bundle_with_task(client) -> tuple[str, str, str]:
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tasks-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tasks",
         "repo_url": "git@github.com:test/tasks.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -139,10 +145,16 @@ async def test_remove_task(client):
 
 @pytest.mark.asyncio
 async def test_dependency_blocks_claim(client):
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-deps-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/deps",
         "repo_url": "git@github.com:test/deps.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -172,10 +184,16 @@ async def test_dependency_blocks_claim(client):
 
 @pytest.mark.asyncio
 async def test_agent_can_only_hold_one_active_task(client):
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-one-active-task-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/one-active-task",
         "repo_url": "git@github.com:test/one-active-task.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 

@@ -3,18 +3,31 @@ from __future__ import annotations
 import pytest
 
 
+async def _create_cookbook(client, name="test-cookbook"):
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": name,
+        "owner_id": "human_1",
+    })
+    return resp.json()["cookbook"]["id"]
+
+
+async def _create_recipe_in_cookbook(client, cookbook_id, name="test/agents"):
+    resp = await client.post("/api/v1/recipes", json={
+        "name": name,
+        "repo_url": f"git@github.com:{name}.git",
+        "created_by": "human_1",
+        "cookbook_id": cookbook_id,
+    })
+    return resp.json()["recipe"]["id"]
+
+
 @pytest.mark.asyncio
 async def test_heartbeat(client):
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/agents",
-        "repo_url": "git@github.com:test/agents.git",
-        "created_by": "human_1",
-    })
-    recipe_id = resp.json()["recipe"]["id"]
+    cookbook_id = await _create_cookbook(client)
 
     resp = await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_alpha",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Agent Alpha",
         "capabilities": ["claim", "milestones", "facts", "code_refs"],
     })
@@ -27,16 +40,11 @@ async def test_heartbeat(client):
 
 @pytest.mark.asyncio
 async def test_heartbeat_busy_when_working(client):
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/busy",
-        "repo_url": "git@github.com:test/busy.git",
-        "created_by": "human_1",
-    })
-    recipe_id = resp.json()["recipe"]["id"]
+    cookbook_id = await _create_cookbook(client, "test-busy")
 
     resp = await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_beta",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Agent Beta",
         "capabilities": ["claim"],
         "current_task_id": "task_123",
@@ -47,16 +55,12 @@ async def test_heartbeat_busy_when_working(client):
 
 @pytest.mark.asyncio
 async def test_agents_visible_in_recipe(client):
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/visible",
-        "repo_url": "git@github.com:test/visible.git",
-        "created_by": "human_1",
-    })
-    recipe_id = resp.json()["recipe"]["id"]
+    cookbook_id = await _create_cookbook(client, "test-visible")
+    recipe_id = await _create_recipe_in_cookbook(client, cookbook_id, "test/visible")
 
     await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_gamma",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Gamma",
         "capabilities": ["claim"],
     })
@@ -68,13 +72,13 @@ async def test_agents_visible_in_recipe(client):
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_requires_existing_recipe(client):
+async def test_heartbeat_requires_existing_cookbook(client):
     resp = await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_missing",
-        "recipe_id": "rec_missing",
+        "cookbook_id": "cb_missing",
         "display_name": "Missing",
         "capabilities": ["claim"],
     })
 
     assert resp.status_code == 404
-    assert resp.json()["detail"] == "Recipe not found"
+    assert resp.json()["detail"] == "Cookbook not found"

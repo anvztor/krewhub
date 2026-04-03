@@ -72,10 +72,16 @@ async def test_bundle_controller_reconciles_status(client):
     watch = get_watch_service()
 
     # Create a recipe and bundle via API
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-ctrl-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/ctrl",
         "repo_url": "git@github.com:test/ctrl.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -113,10 +119,16 @@ async def test_bundle_controller_skips_terminal_bundles(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-ctrl-terminal-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/ctrl-terminal",
         "repo_url": "git@github.com:test/ctrl-terminal.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -150,23 +162,29 @@ async def test_presence_controller_marks_stale_agents_offline(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-presence-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/presence",
         "repo_url": "git@github.com:test/presence.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
-    recipe_id = resp.json()["recipe"]["id"]
 
     # Register agent via heartbeat
     await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_stale",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Stale Agent",
         "capabilities": ["claim"],
     })
 
     agent_repo = AgentRepo(db)
-    agent = await agent_repo.get("agent_stale", recipe_id)
+    agent = await agent_repo.get("agent_stale", cookbook_id)
     assert agent.status == AgentStatus.ONLINE
 
     # Backdate the heartbeat to simulate staleness
@@ -181,7 +199,7 @@ async def test_presence_controller_marks_stale_agents_offline(client):
     controller = PresenceController(db, watch, heartbeat_timeout=30.0)
     await controller.reconcile()
 
-    agent = await agent_repo.get("agent_stale", recipe_id)
+    agent = await agent_repo.get("agent_stale", cookbook_id)
     assert agent.status == AgentStatus.OFFLINE
 
 
@@ -191,10 +209,17 @@ async def test_presence_controller_releases_tasks_from_offline_agents(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-presence-release-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/presence-release",
         "repo_url": "git@github.com:test/presence-release.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -208,7 +233,7 @@ async def test_presence_controller_releases_tasks_from_offline_agents(client):
 
     await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_release",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Release Agent",
         "capabilities": ["claim"],
     })
@@ -272,17 +297,24 @@ async def test_task_scheduler_assigns_task_to_online_agent(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-scheduler-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/scheduler",
         "repo_url": "git@github.com:test/scheduler.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
     # Register an agent
     await client.post("/api/v1/agents/register", json={
         "agent_id": "agent_sched",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Scheduler Agent",
         "capabilities": ["claim"],
     })
@@ -315,16 +347,23 @@ async def test_task_scheduler_respects_dependencies(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-sched-deps-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/sched-deps",
         "repo_url": "git@github.com:test/sched-deps.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
     await client.post("/api/v1/agents/register", json={
         "agent_id": "agent_deps",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Deps Agent",
         "capabilities": ["claim"],
     })
@@ -361,17 +400,24 @@ async def test_task_scheduler_respects_capacity(client):
     db = await get_db()
     watch = get_watch_service()
 
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-sched-cap-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/sched-cap",
         "repo_url": "git@github.com:test/sched-cap.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
     # Register agent with max 1 concurrent task
     await client.post("/api/v1/agents/register", json={
         "agent_id": "agent_cap",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Capacity Agent",
         "capabilities": ["claim"],
         "max_concurrent_tasks": 1,
@@ -406,16 +452,15 @@ async def test_task_scheduler_respects_capacity(client):
 @pytest.mark.asyncio
 async def test_agent_registration(client):
     """POST /agents/register should create agent presence."""
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/register",
-        "repo_url": "git@github.com:test/register.git",
-        "created_by": "human_1",
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-register-cookbook",
+        "owner_id": "human_1",
     })
-    recipe_id = resp.json()["recipe"]["id"]
+    cookbook_id = resp.json()["cookbook"]["id"]
 
     resp = await client.post("/api/v1/agents/register", json={
         "agent_id": "agent_reg",
-        "recipe_id": recipe_id,
+        "cookbook_id": cookbook_id,
         "display_name": "Registered Agent",
         "capabilities": ["claim", "milestones"],
         "max_concurrent_tasks": 2,

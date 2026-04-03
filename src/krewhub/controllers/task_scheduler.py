@@ -5,6 +5,7 @@ import logging
 from krewhub.controllers.base import BaseController
 from krewhub.models import AgentStatus, TaskStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
+from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 
 logger = logging.getLogger(__name__)
@@ -13,14 +14,8 @@ logger = logging.getLogger(__name__)
 class TaskSchedulerController(BaseController):
     """Assigns open tasks to available agents.
 
-    This is the K8s scheduler equivalent. Instead of agents self-claiming
-    tasks, the scheduler examines all open/unassigned tasks and available
-    agents, then sets task.assigned_agent_id based on capability matching
-    and dependency readiness.
-
-    The agent (via krewcli NodeAgent) watches for tasks assigned to it
-    and confirms by claiming. The existing claim API is preserved as
-    backward-compatible fallback for agents that don't use watch.
+    Agents register at cookbook level. The scheduler finds cookbooks with
+    online agents, then schedules tasks per recipe within those cookbooks.
 
     Level-triggered: safe to restart. Examines current state each cycle.
     """
@@ -28,36 +23,42 @@ class TaskSchedulerController(BaseController):
     async def reconcile(self) -> None:
         agent_repo = AgentRepo(self._db)
         task_repo = TaskRepo(self._db)
+        recipe_repo = RecipeRepo(self._db)
 
-        # Get all recipes with online agents
+        # Get all cookbooks with online agents
         cursor = await self._db.execute(
-            """SELECT DISTINCT recipe_id FROM agent_presence
+            """SELECT DISTINCT cookbook_id FROM agent_presence
                WHERE status IN ('online', 'busy')"""
         )
-        recipe_rows = await cursor.fetchall()
+        cookbook_rows = await cursor.fetchall()
 
-        for recipe_row in recipe_rows:
-            recipe_id = recipe_row["recipe_id"]
-            await self._schedule_for_recipe(recipe_id, agent_repo, task_repo)
+        for cookbook_row in cookbook_rows:
+            cookbook_id = cookbook_row["cookbook_id"]
+            # Get all recipes in this cookbook
+            recipes = await recipe_repo.list_by_cookbook(cookbook_id)
+            # Get all agents available for this cookbook
+            agents = await agent_repo.list_by_cookbook(cookbook_id)
+            online_agents = [
+                a for a in agents if a.status in (AgentStatus.ONLINE, AgentStatus.BUSY)
+            ]
+            if not online_agents:
+                continue
+
+            for recipe in recipes:
+                await self._schedule_for_recipe(
+                    recipe.id, online_agents, task_repo,
+                )
 
     async def _schedule_for_recipe(
         self,
         recipe_id: str,
-        agent_repo: AgentRepo,
+        online_agents: list,
         task_repo: TaskRepo,
     ) -> None:
         # Get open, unassigned tasks
         open_tasks = await task_repo.list_open_by_recipe(recipe_id)
         unassigned = [t for t in open_tasks if t.assigned_agent_id is None]
         if not unassigned:
-            return
-
-        # Get available agents
-        agents = await agent_repo.list_by_recipe(recipe_id)
-        online_agents = [
-            a for a in agents if a.status in (AgentStatus.ONLINE, AgentStatus.BUSY)
-        ]
-        if not online_agents:
             return
 
         # Build agent capacity map: how many more tasks each can take
@@ -80,7 +81,7 @@ class TaskSchedulerController(BaseController):
             if not await self._deps_satisfied(task_repo, task.depends_on_task_ids):
                 continue
 
-            # Find first agent with matching capabilities and capacity
+            # Find first agent with capacity
             assigned_agent_id = self._find_agent(
                 task, online_agents, capacity
             )
@@ -123,7 +124,5 @@ class TaskSchedulerController(BaseController):
         for agent in agents:
             if agent.agent_id not in capacity:
                 continue
-            # For now, any online agent with capacity can take any task.
-            # Future: match task requirements against agent capabilities.
             return agent.agent_id
         return None

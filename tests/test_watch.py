@@ -188,10 +188,16 @@ async def test_watch_service_filter_by_resource_type():
 @pytest.mark.asyncio
 async def test_optimistic_concurrency_in_bundle_update(client):
     """Test that resource_version increments on update and is returned."""
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-versioning-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/versioning",
         "repo_url": "git@github.com:test/versioning.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -226,10 +232,16 @@ async def test_optimistic_concurrency_in_bundle_update(client):
 @pytest.mark.asyncio
 async def test_watch_endpoint_returns_events(client):
     """Test the /watch endpoint returns events via SSE format."""
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-watch-endpoint-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/watch-endpoint",
         "repo_url": "git@github.com:test/watch-endpoint.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 

@@ -10,6 +10,7 @@ from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
+from krewhub.repositories.cookbook_repo import CookbookRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest, RegisterAgentRequest
 from krewhub.watch.globals import get_watch_service
@@ -24,17 +25,17 @@ async def register_agent(
 ):
     """Register an agent node with krewhub.
 
-    This is the kubelet registration step. The agent declares its
-    capabilities and capacity before starting to receive task assignments.
+    The agent declares its capabilities and capacity at the cookbook level,
+    making it available for all recipes in that cookbook.
     """
-    recipe = await RecipeRepo(db).get(req.recipe_id)
-    if recipe is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
+    cookbook = await CookbookRepo(db).get(req.cookbook_id)
+    if cookbook is None:
+        raise HTTPException(status_code=404, detail="Cookbook not found")
 
     now = datetime.now(timezone.utc)
     presence = AgentPresence(
         agent_id=req.agent_id,
-        recipe_id=req.recipe_id,
+        cookbook_id=req.cookbook_id,
         display_name=req.display_name,
         capabilities=req.capabilities,
         max_concurrent_tasks=req.max_concurrent_tasks,
@@ -47,10 +48,16 @@ async def register_agent(
     updated = await repo.upsert_presence(presence)
 
     watch = get_watch_service()
-    await watch.record_resource(
-        "agent", req.agent_id, WatchEventType.ADDED, updated,
-        recipe_id=req.recipe_id,
-    )
+    recipes = await RecipeRepo(db).list_by_cookbook(req.cookbook_id)
+    for recipe in recipes:
+        await watch.record_resource(
+            "agent", req.agent_id, WatchEventType.ADDED, updated,
+            recipe_id=recipe.id,
+        )
+    if not recipes:
+        await watch.record_resource(
+            "agent", req.agent_id, WatchEventType.ADDED, updated,
+        )
 
     return {"presence": updated.model_dump(mode="json")}
 
@@ -60,16 +67,16 @@ async def heartbeat(
     req: HeartbeatRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
-    recipe = await RecipeRepo(db).get(req.recipe_id)
-    if recipe is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
+    cookbook = await CookbookRepo(db).get(req.cookbook_id)
+    if cookbook is None:
+        raise HTTPException(status_code=404, detail="Cookbook not found")
 
     now = datetime.now(timezone.utc)
     status = AgentStatus.BUSY if req.current_task_id else AgentStatus.ONLINE
 
     presence = AgentPresence(
         agent_id=req.agent_id,
-        recipe_id=req.recipe_id,
+        cookbook_id=req.cookbook_id,
         display_name=req.display_name,
         capabilities=req.capabilities,
         max_concurrent_tasks=req.max_concurrent_tasks,
@@ -83,11 +90,15 @@ async def heartbeat(
     updated = await repo.upsert_presence(presence)
 
     watch = get_watch_service()
-    await watch.record_resource(
-        "agent", req.agent_id, WatchEventType.MODIFIED, updated,
-        recipe_id=req.recipe_id,
-    )
+    recipes = await RecipeRepo(db).list_by_cookbook(req.cookbook_id)
+    for recipe in recipes:
+        await watch.record_resource(
+            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+            recipe_id=recipe.id,
+        )
+    if not recipes:
+        await watch.record_resource(
+            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+        )
 
     return {"presence": updated.model_dump(mode="json")}
-
-

@@ -8,6 +8,7 @@ class CreateRecipeRequest(BaseModel):
     repo_url: str
     default_branch: str = "main"
     created_by: str
+    cookbook_id: str
 
 
 class InviteMemberRequest(BaseModel):
@@ -76,7 +77,7 @@ class DecisionRequest(BaseModel):
 
 class HeartbeatRequest(BaseModel):
     agent_id: str
-    recipe_id: str
+    cookbook_id: str
     display_name: str
     capabilities: list[str] = []
     max_concurrent_tasks: int = 1
@@ -86,11 +87,25 @@ class HeartbeatRequest(BaseModel):
 
 class RegisterAgentRequest(BaseModel):
     agent_id: str
-    recipe_id: str
+    cookbook_id: str
     display_name: str
     capabilities: list[str] = []
     max_concurrent_tasks: int = 1
     endpoint_url: str | None = None
+
+
+class CreateCookbookRequest(BaseModel):
+    name: str
+    owner_id: str
+
+
+class PostRecipeEventRequest(BaseModel):
+    type: str
+    actor_id: str
+    actor_type: str = "agent"
+    body: str = ""
+    facts: list[dict] = []
+    code_refs: list[dict] = []
 
 
 class PlanRequest(BaseModel):

@@ -6,7 +6,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from krewhub.db.connection import close_db, init_db
-from krewhub.routes import agents, bundles, recipes, stream, tapes, tasks
+from krewhub.routes import agents, bundles, cookbooks, recipes, stream, tapes, tasks
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
 from krewhub.controllers.manager import ControllerManager
@@ -45,6 +45,7 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    app.include_router(cookbooks.router, prefix="/api/v1")
     app.include_router(recipes.router, prefix="/api/v1")
     app.include_router(bundles.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")

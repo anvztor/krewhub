@@ -13,10 +13,16 @@ async def test_list_tapes_empty(client):
 @pytest.mark.asyncio
 async def test_append_and_read_tape_entry(client):
     # Create a recipe first (tape name = recipe id)
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-api-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape-api",
         "repo_url": "git@github.com:test/tape-api.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -41,10 +47,16 @@ async def test_append_and_read_tape_entry(client):
 
 @pytest.mark.asyncio
 async def test_tape_context_since_anchor(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-anchor-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape-anchor",
         "repo_url": "git@github.com:test/tape-anchor.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -82,10 +94,16 @@ async def test_tape_context_since_anchor(client):
 
 @pytest.mark.asyncio
 async def test_list_tape_anchors(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-anchors-list-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape-anchors-list",
         "repo_url": "git@github.com:test/tape-anchors-list.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -108,10 +126,16 @@ async def test_list_tape_anchors(client):
 
 @pytest.mark.asyncio
 async def test_tape_history(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-history-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape-history",
         "repo_url": "git@github.com:test/tape-history.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 
@@ -127,10 +151,16 @@ async def test_tape_history(client):
 
 @pytest.mark.asyncio
 async def test_tapes_listed_after_entries(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-tape-list-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/tape-list",
         "repo_url": "git@github.com:test/tape-list.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = resp.json()["recipe"]["id"]
 

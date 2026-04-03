@@ -38,6 +38,14 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
+    async def list_by_recipe_type(self, recipe_id: str, event_type: str) -> list[Event]:
+        cursor = await self._db.execute(
+            "SELECT * FROM events WHERE recipe_id = ? AND type = ? ORDER BY created_at",
+            (recipe_id, event_type),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_event(r) for r in rows]
+
     async def list_by_bundle(self, bundle_id: str) -> list[Event]:
         cursor = await self._db.execute(
             "SELECT * FROM events WHERE bundle_id = ? ORDER BY created_at",

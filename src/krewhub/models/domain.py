@@ -42,6 +42,11 @@ class EventType(StrEnum):
     DIGEST_SUBMITTED = "digest_submitted"
     DIGEST_APPROVED = "digest_approved"
     DIGEST_REJECTED = "digest_rejected"
+    # Agent-level events (from hook listener)
+    SESSION_START = "session_start"
+    SESSION_END = "session_end"
+    TOOL_USE = "tool_use"
+    AGENT_REPLY = "agent_reply"
 
 
 class AgentStatus(StrEnum):
@@ -71,6 +76,13 @@ class WatchEventType(StrEnum):
 # --- Domain Models ---
 
 
+class Cookbook(BaseModel, frozen=True):
+    id: str
+    name: str
+    owner_id: str
+    created_at: datetime
+
+
 class Recipe(BaseModel, frozen=True):
     id: str
     name: str
@@ -78,6 +90,7 @@ class Recipe(BaseModel, frozen=True):
     default_branch: str
     created_by: str
     created_at: datetime
+    cookbook_id: str
 
 
 class RecipeMember(BaseModel, frozen=True):
@@ -91,7 +104,7 @@ class RecipeMember(BaseModel, frozen=True):
 
 class AgentPresence(BaseModel, frozen=True):
     agent_id: str
-    recipe_id: str
+    cookbook_id: str
     display_name: str
     capabilities: list[str]
     max_concurrent_tasks: int = 1
@@ -152,7 +165,7 @@ class CodeRef(BaseModel, frozen=True):
 class Event(BaseModel, frozen=True):
     id: str
     recipe_id: str
-    bundle_id: str
+    bundle_id: str | None = None
     task_id: str | None = None
     type: EventType
     actor_id: str

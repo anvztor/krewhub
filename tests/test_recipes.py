@@ -5,11 +5,17 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_create_recipe(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-create-recipe-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "platform/core",
         "repo_url": "git@github.com:org/core.git",
         "default_branch": "main",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     assert resp.status_code == 200
     data = resp.json()
@@ -19,10 +25,16 @@ async def test_create_recipe(client):
 
 @pytest.mark.asyncio
 async def test_list_recipes(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-list-recipes-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     await client.post("/api/v1/recipes", json={
         "name": "platform/web",
         "repo_url": "git@github.com:org/web.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     resp = await client.get("/api/v1/recipes")
     assert resp.status_code == 200
@@ -32,10 +44,16 @@ async def test_list_recipes(client):
 
 @pytest.mark.asyncio
 async def test_get_recipe_detail(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-get-recipe-detail-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     create = await client.post("/api/v1/recipes", json={
         "name": "platform/detail",
         "repo_url": "git@github.com:org/detail.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = create.json()["recipe"]["id"]
 
@@ -48,10 +66,16 @@ async def test_get_recipe_detail(client):
 
 @pytest.mark.asyncio
 async def test_invite_member(client):
+    cb = await client.post("/api/v1/cookbooks", json={
+        "name": "test-invite-member-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = cb.json()["cookbook"]["id"]
     create = await client.post("/api/v1/recipes", json={
         "name": "platform/invite",
         "repo_url": "git@github.com:org/invite.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     recipe_id = create.json()["recipe"]["id"]
 

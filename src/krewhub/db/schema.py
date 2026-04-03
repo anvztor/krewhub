@@ -1,12 +1,22 @@
 SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS cookbooks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS recipes (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     repo_url TEXT NOT NULL,
     default_branch TEXT NOT NULL DEFAULT 'main',
     created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_recipes_cookbook ON recipes(cookbook_id);
 
 CREATE TABLE IF NOT EXISTS recipe_members (
     id TEXT PRIMARY KEY,
@@ -21,7 +31,7 @@ CREATE INDEX IF NOT EXISTS idx_recipe_members_recipe ON recipe_members(recipe_id
 
 CREATE TABLE IF NOT EXISTS agent_presence (
     agent_id TEXT NOT NULL,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
+    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
     display_name TEXT NOT NULL,
     capabilities TEXT NOT NULL DEFAULT '[]',
     max_concurrent_tasks INTEGER NOT NULL DEFAULT 1,
@@ -30,10 +40,10 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     last_heartbeat_at TEXT NOT NULL,
     current_task_id TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (agent_id, recipe_id)
+    PRIMARY KEY (agent_id, cookbook_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_agent_presence_recipe ON agent_presence(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_agent_presence_cookbook ON agent_presence(cookbook_id);
 
 CREATE TABLE IF NOT EXISTS bundles (
     id TEXT PRIMARY KEY,
@@ -76,13 +86,14 @@ CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     recipe_id TEXT NOT NULL REFERENCES recipes(id),
-    bundle_id TEXT NOT NULL REFERENCES bundles(id),
+    bundle_id TEXT REFERENCES bundles(id),
     task_id TEXT,
     type TEXT NOT NULL
         CHECK(type IN (
             'prompt', 'plan', 'task_claimed', 'milestone',
             'fact_added', 'code_pushed', 'digest_submitted',
-            'digest_approved', 'digest_rejected'
+            'digest_approved', 'digest_rejected',
+            'session_start', 'session_end', 'tool_use', 'agent_reply'
         )),
     actor_id TEXT NOT NULL,
     actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system')),

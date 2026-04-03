@@ -4,10 +4,16 @@ import pytest
 
 
 async def _create_recipe(client) -> str:
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-bundles-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
     resp = await client.post("/api/v1/recipes", json={
         "name": "test/bundles",
         "repo_url": "git@github.com:test/bundles.git",
         "created_by": "human_1",
+        "cookbook_id": cookbook_id,
     })
     return resp.json()["recipe"]["id"]
 
