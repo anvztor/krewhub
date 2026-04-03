@@ -33,6 +33,16 @@ class CookbookRepo:
         rows = await cursor.fetchall()
         return [_row_to_cookbook(r) for r in rows]
 
+    async def find_by_name_and_owner(self, name: str, owner_id: str) -> Cookbook | None:
+        cursor = await self._db.execute(
+            "SELECT * FROM cookbooks WHERE name = ? AND owner_id = ?",
+            (name, owner_id),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return _row_to_cookbook(row)
+
     async def list_by_owner(self, owner_id: str) -> list[Cookbook]:
         cursor = await self._db.execute(
             "SELECT * FROM cookbooks WHERE owner_id = ? ORDER BY created_at",

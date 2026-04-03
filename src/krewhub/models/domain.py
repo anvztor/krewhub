@@ -90,7 +90,7 @@ class Recipe(BaseModel, frozen=True):
     default_branch: str
     created_by: str
     created_at: datetime
-    cookbook_id: str
+    cookbook_id: str | None = None
 
 
 class RecipeMember(BaseModel, frozen=True):

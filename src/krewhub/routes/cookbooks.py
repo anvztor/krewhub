@@ -24,6 +24,13 @@ async def create_cookbook(
     req: CreateCookbookRequest,
     db: aiosqlite.Connection = Depends(get_db),
 ):
+    repo = CookbookRepo(db)
+
+    # Return existing cookbook if one already exists for this name + owner
+    existing = await repo.find_by_name_and_owner(req.name, req.owner_id)
+    if existing is not None:
+        return {"cookbook": existing.model_dump(mode="json"), "existed": True}
+
     now = datetime.now(timezone.utc)
     cookbook = Cookbook(
         id=f"cb_{uuid.uuid4().hex[:8]}",
@@ -31,7 +38,6 @@ async def create_cookbook(
         owner_id=req.owner_id,
         created_at=now,
     )
-    repo = CookbookRepo(db)
     created = await repo.create(cookbook)
 
     watch = get_watch_service()
@@ -39,7 +45,7 @@ async def create_cookbook(
         "cookbook", created.id, WatchEventType.ADDED, created,
     )
 
-    return {"cookbook": created.model_dump(mode="json")}
+    return {"cookbook": created.model_dump(mode="json"), "existed": False}
 
 
 @router.get("/cookbooks")
