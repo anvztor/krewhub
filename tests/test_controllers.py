@@ -280,7 +280,7 @@ async def test_controller_manager_start_stop():
     assert all(running for running in health.values())
     assert "BundleController" in health
     assert "PresenceController" in health
-    assert "TaskSchedulerController" in health
+    assert "TaskDispatchController" in health
 
     await manager.stop_all()
 

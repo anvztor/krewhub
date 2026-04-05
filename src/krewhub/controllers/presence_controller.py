@@ -73,6 +73,7 @@ class PresenceController(BaseController):
             # Release tasks across all recipes in this cookbook
             recipes = await recipe_repo.list_by_cookbook(cookbook_id)
             for recipe in recipes:
+                # Release claimed/working tasks
                 active_tasks = await task_repo.list_active_by_agent(recipe.id, agent_id)
                 for task in active_tasks:
                     reopened = await task_repo.reopen_for_rerun(task.id)
@@ -83,6 +84,23 @@ class PresenceController(BaseController):
                         )
                         logger.info(
                             "PresenceController: released task %s from offline agent %s",
+                            task.id, agent_id,
+                        )
+
+                # Release assigned-but-never-claimed tasks (the limbo state)
+                orphaned = await task_repo.list_assigned_unclaimed_by_agent(
+                    recipe.id, agent_id,
+                )
+                for task in orphaned:
+                    reopened = await task_repo.reopen_for_rerun(task.id)
+                    if reopened is not None:
+                        await self._watch.record_resource(
+                            "task", task.id, WatchEventType.MODIFIED, reopened,
+                            recipe_id=recipe.id,
+                        )
+                        logger.info(
+                            "PresenceController: released orphaned assignment %s "
+                            "from offline agent %s",
                             task.id, agent_id,
                         )
 

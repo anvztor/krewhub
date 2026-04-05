@@ -62,10 +62,15 @@ class TaskSchedulerController(BaseController):
             return
 
         # Build agent capacity map: how many more tasks each can take
+        # Count both claimed tasks AND assigned-but-unclaimed tasks
+        # to avoid over-assigning when an agent is slow to claim
         capacity: dict[str, int] = {}
         for agent in online_agents:
             active = await task_repo.list_active_by_agent(recipe_id, agent.agent_id)
-            remaining = agent.max_concurrent_tasks - len(active)
+            pending = await task_repo.list_assigned_unclaimed_by_agent(
+                recipe_id, agent.agent_id,
+            )
+            remaining = agent.max_concurrent_tasks - len(active) - len(pending)
             if remaining > 0:
                 capacity[agent.agent_id] = remaining
 

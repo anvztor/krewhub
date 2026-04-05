@@ -76,6 +76,29 @@ class TaskRepo:
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
+    async def list_assigned_unclaimed_by_agent(
+        self, recipe_id: str, agent_id: str,
+    ) -> list[Task]:
+        """Find tasks assigned to an agent but never claimed.
+
+        These are tasks the scheduler assigned (assigned_agent_id set)
+        but the agent never picked up (status still 'open', no
+        claimed_by_agent_id). Used by PresenceController to release
+        orphaned assignments when an agent goes offline.
+        """
+        cursor = await self._db.execute(
+            """SELECT t.* FROM tasks t
+               JOIN bundles b ON t.bundle_id = b.id
+               WHERE b.recipe_id = ?
+                 AND t.assigned_agent_id = ?
+                 AND t.status = 'open'
+                 AND t.claimed_by_agent_id IS NULL
+               ORDER BY t.rowid""",
+            (recipe_id, agent_id),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_task(r) for r in rows]
+
     async def update(
         self,
         task_id: str,
