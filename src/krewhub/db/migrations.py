@@ -43,6 +43,10 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _create_index_if_missing(db, "idx_watch_log_recipe_seq", "watch_log", "(recipe_id, seq)")
     await _create_index_if_missing(db, "idx_tasks_assigned", "tasks", "(assigned_agent_id)")
 
+    # Phase 3: git-based storage columns
+    await _add_column_if_missing(db, "cookbooks", "repo_path", "TEXT")
+    await _add_column_if_missing(db, "recipes", "commit_sha", "TEXT")
+
     await db.commit()
 
 

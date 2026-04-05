@@ -11,10 +11,10 @@ class CookbookRepo:
     def __init__(self, db: aiosqlite.Connection) -> None:
         self._db = db
 
-    async def create(self, cookbook: Cookbook) -> Cookbook:
+    async def create(self, cookbook: Cookbook, repo_path: str | None = None) -> Cookbook:
         await self._db.execute(
-            "INSERT INTO cookbooks (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)",
-            (cookbook.id, cookbook.name, cookbook.owner_id, cookbook.created_at.isoformat()),
+            "INSERT INTO cookbooks (id, name, owner_id, created_at, repo_path) VALUES (?, ?, ?, ?, ?)",
+            (cookbook.id, cookbook.name, cookbook.owner_id, cookbook.created_at.isoformat(), repo_path),
         )
         await self._db.commit()
         return cookbook

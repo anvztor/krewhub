@@ -3,7 +3,8 @@ CREATE TABLE IF NOT EXISTS cookbooks (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     owner_id TEXT NOT NULL,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    repo_path TEXT
 );
 
 CREATE TABLE IF NOT EXISTS recipes (
@@ -13,7 +14,8 @@ CREATE TABLE IF NOT EXISTS recipes (
     default_branch TEXT NOT NULL DEFAULT 'main',
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id)
+    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+    commit_sha TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_recipes_cookbook ON recipes(cookbook_id);
