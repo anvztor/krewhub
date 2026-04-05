@@ -6,7 +6,7 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from krewhub.db.connection import close_db, init_db
-from krewhub.routes import agents, bundles, cookbooks, recipes, stream, tapes, tasks
+from krewhub.routes import agents, bundles, cookbooks, git_http, recipes, stream, tapes, tasks
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
 from krewhub.controllers.manager import ControllerManager
@@ -52,5 +52,8 @@ def create_app() -> FastAPI:
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(tapes.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
+
+    # Git smart HTTP — no prefix, served at /{owner}/{repo}/...
+    app.include_router(git_http.router)
 
     return app

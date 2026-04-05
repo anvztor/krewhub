@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.auth import verify_api_key
+from krewhub.config import get_settings
 from krewhub.db.connection import get_db
+from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
 from krewhub.models import Cookbook, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.cookbook_repo import CookbookRepo
@@ -29,7 +31,19 @@ async def create_cookbook(
     # Return existing cookbook if one already exists for this name + owner
     existing = await repo.find_by_name_and_owner(req.name, req.owner_id)
     if existing is not None:
-        return {"cookbook": existing.model_dump(mode="json"), "existed": True}
+        repo_path = resolve_repo_path(req.owner_id, req.name)
+        await ensure_bare_repo(repo_path)
+        settings = get_settings()
+        clone_url = f"http://{settings.host}:{settings.port}/{req.owner_id}/{req.name}.git"
+        return {
+            "cookbook": existing.model_dump(mode="json"),
+            "existed": True,
+            "clone_url": clone_url,
+        }
+
+    # Init bare repo on disk
+    repo_path = resolve_repo_path(req.owner_id, req.name)
+    await ensure_bare_repo(repo_path)
 
     now = datetime.now(timezone.utc)
     cookbook = Cookbook(
@@ -38,14 +52,20 @@ async def create_cookbook(
         owner_id=req.owner_id,
         created_at=now,
     )
-    created = await repo.create(cookbook)
+    created = await repo.create(cookbook, repo_path=str(repo_path))
 
     watch = get_watch_service()
     await watch.record_resource(
         "cookbook", created.id, WatchEventType.ADDED, created,
     )
 
-    return {"cookbook": created.model_dump(mode="json"), "existed": False}
+    settings = get_settings()
+    clone_url = f"http://{settings.host}:{settings.port}/{req.owner_id}/{req.name}.git"
+    return {
+        "cookbook": created.model_dump(mode="json"),
+        "existed": False,
+        "clone_url": clone_url,
+    }
 
 
 @router.get("/cookbooks")
