@@ -18,6 +18,24 @@ from krewhub.watch.globals import get_watch_service
 router = APIRouter(tags=["agents"], dependencies=[Depends(verify_api_key)])
 
 
+@router.get("/agents")
+async def list_agents(
+    cookbook_id: str | None = None,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """List online agents, optionally filtered by cookbook."""
+    repo = AgentRepo(db)
+    if cookbook_id:
+        agents = await repo.list_by_cookbook(cookbook_id)
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM agent_presence WHERE status != 'offline'"
+        )
+        rows = await cursor.fetchall()
+        agents = [AgentPresence(**dict(r)) for r in rows]
+    return {"agents": [a.model_dump(mode="json") for a in agents]}
+
+
 @router.post("/agents/register")
 async def register_agent(
     req: RegisterAgentRequest,

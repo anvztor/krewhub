@@ -52,6 +52,7 @@ class TaskCallbackRequest(BaseModel):
     agent_id: str
     success: bool
     summary: str = ""
+    full_output: str = ""
     blocked_reason: str | None = None
     files_modified: list[str] = []
     facts: list[TaskCallbackFact] = []
@@ -110,6 +111,13 @@ async def task_callback(
         for cr in req.code_refs
     ]
 
+    # Use full_output for the event body when available (e.g. codegen tasks),
+    # fall back to summary for display-oriented events.
+    event_body = req.full_output or req.summary or (
+        "Task completed successfully" if req.success
+        else f"Task blocked: {req.blocked_reason or 'unknown'}"
+    )
+
     event = Event(
         id=f"evt_{uuid.uuid4().hex[:8]}",
         recipe_id=task.bundle_id,  # Will be resolved below
@@ -118,10 +126,7 @@ async def task_callback(
         type=EventType.MILESTONE,
         actor_id=req.agent_id,
         actor_type=ActorType.AGENT,
-        body=req.summary or (
-            f"Task completed successfully" if req.success
-            else f"Task blocked: {req.blocked_reason or 'unknown'}"
-        ),
+        body=event_body,
         facts=facts,
         code_refs=code_refs,
         created_at=now,
@@ -141,6 +146,11 @@ async def task_callback(
             "task", req.task_id, WatchEventType.MODIFIED, updated,
             recipe_id=recipe_id,
         )
+
+    # Recompute bundle status (may transition to cooked/blocked)
+    if bundle is not None:
+        from krewhub.services.bundle_service import BundleService
+        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
 
     return {
         "task": updated.model_dump(mode="json") if updated else None,

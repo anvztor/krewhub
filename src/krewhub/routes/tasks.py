@@ -21,6 +21,18 @@ from krewhub.routes.schemas import (
 router = APIRouter(tags=["tasks"], dependencies=[Depends(verify_api_key)])
 
 
+@router.get("/tasks/{task_id}")
+async def get_task(
+    task_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Fetch a single task by ID."""
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"task": task.model_dump(mode="json")}
+
+
 @router.post("/tasks/{task_id}/claim")
 async def claim_task(
     task_id: str,
