@@ -42,11 +42,13 @@ class EventType(StrEnum):
     DIGEST_SUBMITTED = "digest_submitted"
     DIGEST_APPROVED = "digest_approved"
     DIGEST_REJECTED = "digest_rejected"
-    # Agent-level events (from hook listener)
+    # Agent-level events (streamed from local CLI agents)
     SESSION_START = "session_start"
     SESSION_END = "session_end"
     TOOL_USE = "tool_use"
+    TOOL_RESULT = "tool_result"
     AGENT_REPLY = "agent_reply"
+    THINKING = "thinking"
 
 
 class AgentStatus(StrEnum):
@@ -181,6 +183,8 @@ class Event(BaseModel, frozen=True):
     actor_id: str
     actor_type: ActorType
     body: str
+    payload: dict | None = None
+    sequence: int = 0
     facts: list[FactRef] = Field(default_factory=list)
     code_refs: list[CodeRef] = Field(default_factory=list)
     payload: dict = Field(default_factory=dict)

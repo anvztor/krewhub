@@ -15,6 +15,7 @@ from krewhub.routes.schemas import (
     ClaimTaskRequest,
     EditTaskRequest,
     PostEventRequest,
+    PostEventsBatchRequest,
     UpdateTaskStatusRequest,
 )
 
@@ -88,11 +89,42 @@ async def post_task_event(
         actor_id=req.actor_id,
         actor_type=ActorType(req.actor_type),
         body=req.body,
+        payload=req.payload,
         facts=facts,
         code_refs=code_refs,
         payload=req.payload,
     )
     return {"event": event.model_dump(mode="json")}
+
+
+@router.post("/tasks/{task_id}/events:batch")
+async def post_task_events_batch(
+    task_id: str,
+    req: PostEventsBatchRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Append multiple events for a single task in one call.
+
+    Used by krewcli's KrewhubEventSink to stream telemetry from local
+    CLI agents (tool calls, thinking blocks, assistant replies) with
+    minimal HTTP overhead. Sequence numbers are assigned server-side.
+    """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    from krewhub.repositories.bundle_repo import BundleRepo
+    bundle = await BundleRepo(db).get(task.bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+
+    svc = TaskService(db, get_watch_service())
+    created = await svc.post_events_batch(
+        task_id=task_id,
+        recipe_id=bundle.recipe_id,
+        events=[item.model_dump() for item in req.events],
+    )
+    return {"events": [e.model_dump(mode="json") for e in created]}
 
 
 @router.patch("/tasks/{task_id}/status")

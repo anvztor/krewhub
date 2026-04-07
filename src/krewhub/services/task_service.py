@@ -85,17 +85,15 @@ class TaskService:
         actor_id: str,
         actor_type: ActorType,
         body: str,
+        payload: dict | None = None,
         facts: list[FactRef] | None = None,
         code_refs: list[CodeRef] | None = None,
-        payload: dict | None = None,
     ) -> Event:
         task = await self._tasks.get(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        # Hook events are passive observations and should not flip the
-        # task into WORKING. Only first-class agent/system events do.
-        if task.status == TaskStatus.CLAIMED and actor_type != ActorType.HOOK:
+        if task.status == TaskStatus.CLAIMED:
             updated = await self._tasks.update(task_id, status=TaskStatus.WORKING)
             if updated is not None:
                 await self._watch.record_resource(
@@ -103,26 +101,7 @@ class TaskService:
                     recipe_id=recipe_id,
                 )
 
-        # Dedupe hook events that carry a stable call identifier
-        # (codex `_codex_call_id` / claude `tool_use_id`). Two
-        # rollout-watcher passes or a hook+rollout race can otherwise
-        # produce identical Pre/Post events that spam the feed.
-        if actor_type == ActorType.HOOK and isinstance(payload, dict):
-            hook_name = str(payload.get("hook_event_name") or "")
-            dedup_key = (
-                payload.get("_codex_call_id")
-                or payload.get("tool_use_id")
-                or ""
-            )
-            if hook_name and dedup_key:
-                duplicate = await self._events.find_recent_hook_duplicate(
-                    task_id=task_id,
-                    hook_event_name=hook_name,
-                    dedup_key=str(dedup_key),
-                )
-                if duplicate is not None:
-                    return duplicate
-
+        sequence = await self._events.next_sequence(task_id)
         now = datetime.now(timezone.utc)
         event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
@@ -133,25 +112,68 @@ class TaskService:
             actor_id=actor_id,
             actor_type=actor_type,
             body=body,
+            payload=payload,
+            sequence=sequence,
             facts=facts or [],
             code_refs=code_refs or [],
-            payload=payload or {},
             created_at=now,
         )
         await self._events.create(event)
 
-        # Broadcast every event so SSE consumers (cookrew) see hook
-        # events live in the bundle feed without an extra round-trip.
-        await self._watch.record(
-            resource_type="event",
-            resource_id=event.id,
-            event_type=WatchEventType.ADDED,
-            resource_version=1,
-            payload=event.model_dump(mode="json"),
-            recipe_id=recipe_id,
-        )
-
         return event
+
+    async def post_events_batch(
+        self,
+        task_id: str,
+        recipe_id: str,
+        events: list[dict],
+    ) -> list[Event]:
+        """Append a batch of events for a single task.
+
+        Each dict must contain: type, actor_id, actor_type, body (optional),
+        payload (optional), facts (optional), code_refs (optional).
+        Sequence numbers are assigned server-side, monotonically per task.
+        """
+        if not events:
+            return []
+
+        task = await self._tasks.get(task_id)
+        if task is None:
+            raise ValueError(f"Task {task_id} not found")
+
+        if task.status == TaskStatus.CLAIMED:
+            updated = await self._tasks.update(task_id, status=TaskStatus.WORKING)
+            if updated is not None:
+                await self._watch.record_resource(
+                    "task", task_id, WatchEventType.MODIFIED, updated,
+                    recipe_id=recipe_id,
+                )
+
+        created: list[Event] = []
+        for spec in events:
+            sequence = await self._events.next_sequence(task_id)
+            now = datetime.now(timezone.utc)
+            facts_raw = spec.get("facts") or []
+            code_refs_raw = spec.get("code_refs") or []
+            event = Event(
+                id=f"evt_{uuid.uuid4().hex[:8]}",
+                recipe_id=recipe_id,
+                bundle_id=task.bundle_id,
+                task_id=task_id,
+                type=EventType(spec["type"]),
+                actor_id=spec["actor_id"],
+                actor_type=ActorType(spec.get("actor_type", "agent")),
+                body=spec.get("body", ""),
+                payload=spec.get("payload"),
+                sequence=sequence,
+                facts=[FactRef(**f) for f in facts_raw],
+                code_refs=[CodeRef(**c) for c in code_refs_raw],
+                created_at=now,
+            )
+            await self._events.create(event)
+            created.append(event)
+
+        return created
 
     async def mark_done(self, task_id: str) -> Task | None:
         task = await self._tasks.get(task_id)

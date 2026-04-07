@@ -9,7 +9,7 @@ import aiosqlite
 from krewhub.auth import verify_api_key
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
-from krewhub.repositories.agent_repo import AgentRepo
+from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
 from krewhub.repositories.cookbook_repo import CookbookRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest, RegisterAgentRequest
@@ -32,7 +32,9 @@ async def list_agents(
             "SELECT * FROM agent_presence WHERE status != 'offline'"
         )
         rows = await cursor.fetchall()
-        agents = [AgentPresence(**dict(r)) for r in rows]
+        # Use the repo helper to decode JSON columns (capabilities, etc.);
+        # constructing AgentPresence(**dict(row)) skips that step and crashes.
+        agents = [_row_to_presence(r) for r in rows]
     return {"agents": [a.model_dump(mode="json") for a in agents]}
 
 

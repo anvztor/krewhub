@@ -40,9 +40,24 @@ class PostEventRequest(BaseModel):
     actor_id: str
     actor_type: str = "agent"
     body: str = ""
+    payload: dict | None = None
     facts: list[dict] = []
     code_refs: list[dict] = []
     payload: dict = Field(default_factory=dict)
+
+
+class BatchEventItem(BaseModel):
+    type: str
+    actor_id: str
+    actor_type: str = "agent"
+    body: str = ""
+    payload: dict | None = None
+    facts: list[dict] = []
+    code_refs: list[dict] = []
+
+
+class PostEventsBatchRequest(BaseModel):
+    events: list[BatchEventItem] = Field(default_factory=list)
 
 
 class UpdateTaskStatusRequest(BaseModel):

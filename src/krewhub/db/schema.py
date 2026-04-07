@@ -101,11 +101,14 @@ CREATE TABLE IF NOT EXISTS events (
             'prompt', 'plan', 'task_claimed', 'milestone',
             'fact_added', 'code_pushed', 'digest_submitted',
             'digest_approved', 'digest_rejected',
-            'session_start', 'session_end', 'tool_use', 'agent_reply'
+            'session_start', 'session_end', 'tool_use', 'tool_result',
+            'agent_reply', 'thinking'
         )),
     actor_id TEXT NOT NULL,
     actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
     body TEXT NOT NULL DEFAULT '',
+    payload TEXT,
+    sequence INTEGER NOT NULL DEFAULT 0,
     facts TEXT NOT NULL DEFAULT '[]',
     code_refs TEXT NOT NULL DEFAULT '[]',
     payload TEXT NOT NULL DEFAULT '{}',
@@ -116,6 +119,7 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
+CREATE INDEX IF NOT EXISTS idx_events_task_sequence ON events(task_id, sequence);
 
 CREATE TABLE IF NOT EXISTS digests (
     id TEXT PRIMARY KEY,
