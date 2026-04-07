@@ -47,7 +47,63 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _add_column_if_missing(db, "cookbooks", "repo_path", "TEXT")
     await _add_column_if_missing(db, "recipes", "commit_sha", "TEXT")
 
+    # Phase 5: extend events.actor_type CHECK to include 'hook'
+    await _migrate_events_actor_type_hook(db)
+
     await db.commit()
+
+
+async def _migrate_events_actor_type_hook(db: aiosqlite.Connection) -> None:
+    """Recreate events table if its actor_type CHECK doesn't allow 'hook'."""
+    if not await _table_exists(db, "events"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    ddl = row["sql"] or ""
+    if "'hook'" in ddl:
+        return
+
+    logger.info("Migration: rebuilding events table to allow actor_type='hook'")
+    await db.executescript(
+        """
+        ALTER TABLE events RENAME TO events_old_hook_migration;
+        CREATE TABLE events (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES recipes(id),
+            bundle_id TEXT REFERENCES bundles(id),
+            task_id TEXT,
+            type TEXT NOT NULL
+                CHECK(type IN (
+                    'prompt', 'plan', 'task_claimed', 'milestone',
+                    'fact_added', 'code_pushed', 'digest_submitted',
+                    'digest_approved', 'digest_rejected',
+                    'session_start', 'session_end', 'tool_use', 'agent_reply'
+                )),
+            actor_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+            body TEXT NOT NULL DEFAULT '',
+            facts TEXT NOT NULL DEFAULT '[]',
+            code_refs TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        INSERT INTO events
+            (id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
+             body, facts, code_refs, created_at, expires_at)
+        SELECT id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
+               body, facts, code_refs, created_at, expires_at
+        FROM events_old_hook_migration;
+        DROP TABLE events_old_hook_migration;
+        CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
+        """
+    )
 
 
 async def _add_column_if_missing(

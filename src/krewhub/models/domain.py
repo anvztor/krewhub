@@ -59,6 +59,7 @@ class ActorType(StrEnum):
     HUMAN = "human"
     AGENT = "agent"
     SYSTEM = "system"
+    HOOK = "hook"
 
 
 class DigestDecision(StrEnum):

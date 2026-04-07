@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS events (
             'session_start', 'session_end', 'tool_use', 'agent_reply'
         )),
     actor_id TEXT NOT NULL,
-    actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system')),
+    actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
     body TEXT NOT NULL DEFAULT '',
     facts TEXT NOT NULL DEFAULT '[]',
     code_refs TEXT NOT NULL DEFAULT '[]',

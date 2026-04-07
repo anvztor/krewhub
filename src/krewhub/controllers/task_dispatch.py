@@ -219,6 +219,7 @@ class TaskDispatchController(BaseController):
             "bundle_id": task.bundle_id,
         }
         if recipe is not None:
+            metadata["recipe_id"] = getattr(recipe, "id", "")
             metadata["recipe_name"] = getattr(recipe, "name", "")
             metadata["repo_url"] = getattr(recipe, "repo_url", "")
             metadata["branch"] = getattr(recipe, "default_branch", "main")
