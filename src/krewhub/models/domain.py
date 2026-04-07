@@ -174,6 +174,7 @@ class Event(BaseModel, frozen=True):
     body: str
     facts: list[FactRef] = Field(default_factory=list)
     code_refs: list[CodeRef] = Field(default_factory=list)
+    payload: dict = Field(default_factory=dict)
     created_at: datetime
     expires_at: datetime | None = None
 

@@ -50,6 +50,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Phase 5: extend events.actor_type CHECK to include 'hook'
     await _migrate_events_actor_type_hook(db)
 
+    # Phase 5b: structured payload column for hook events
+    await _add_column_if_missing(db, "events", "payload", "TEXT NOT NULL DEFAULT '{}'")
+
     await db.commit()
 
 
@@ -89,14 +92,15 @@ async def _migrate_events_actor_type_hook(db: aiosqlite.Connection) -> None:
             body TEXT NOT NULL DEFAULT '',
             facts TEXT NOT NULL DEFAULT '[]',
             code_refs TEXT NOT NULL DEFAULT '[]',
+            payload TEXT NOT NULL DEFAULT '{}',
             created_at TEXT NOT NULL,
             expires_at TEXT
         );
         INSERT INTO events
             (id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
-             body, facts, code_refs, created_at, expires_at)
+             body, facts, code_refs, payload, created_at, expires_at)
         SELECT id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
-               body, facts, code_refs, created_at, expires_at
+               body, facts, code_refs, '{}', created_at, expires_at
         FROM events_old_hook_migration;
         DROP TABLE events_old_hook_migration;
         CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);

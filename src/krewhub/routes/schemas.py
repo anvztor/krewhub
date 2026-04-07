@@ -42,6 +42,7 @@ class PostEventRequest(BaseModel):
     body: str = ""
     facts: list[dict] = []
     code_refs: list[dict] = []
+    payload: dict = Field(default_factory=dict)
 
 
 class UpdateTaskStatusRequest(BaseModel):

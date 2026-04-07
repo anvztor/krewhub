@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS events (
     body TEXT NOT NULL DEFAULT '',
     facts TEXT NOT NULL DEFAULT '[]',
     code_refs TEXT NOT NULL DEFAULT '[]',
+    payload TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     expires_at TEXT
 );

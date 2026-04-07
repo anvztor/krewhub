@@ -17,12 +17,13 @@ class EventRepo:
         await self._db.execute(
             """INSERT INTO events
                (id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
-                body, facts, code_refs, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                body, facts, code_refs, payload, created_at, expires_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (event.id, event.recipe_id, event.bundle_id, event.task_id,
              event.type, event.actor_id, event.actor_type, event.body,
              json.dumps([f.model_dump() for f in event.facts]),
              json.dumps([c.model_dump() for c in event.code_refs]),
+             json.dumps(event.payload or {}),
              event.created_at.isoformat(),
              event.expires_at.isoformat() if event.expires_at else None),
         )
@@ -73,6 +74,8 @@ class EventRepo:
 
 
 def _row_to_event(row: aiosqlite.Row) -> Event:
+    keys = row.keys() if hasattr(row, "keys") else []
+    payload_raw = row["payload"] if "payload" in keys else "{}"
     return Event(
         id=row["id"],
         recipe_id=row["recipe_id"],
@@ -84,6 +87,7 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
         body=row["body"],
         facts=[FactRef(**f) for f in json.loads(row["facts"])],
         code_refs=[CodeRef(**c) for c in json.loads(row["code_refs"])],
+        payload=json.loads(payload_raw) if payload_raw else {},
         created_at=datetime.fromisoformat(row["created_at"]),
         expires_at=datetime.fromisoformat(row["expires_at"]) if row["expires_at"] else None,
     )

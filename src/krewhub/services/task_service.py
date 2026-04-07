@@ -87,12 +87,15 @@ class TaskService:
         body: str,
         facts: list[FactRef] | None = None,
         code_refs: list[CodeRef] | None = None,
+        payload: dict | None = None,
     ) -> Event:
         task = await self._tasks.get(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
 
-        if task.status == TaskStatus.CLAIMED:
+        # Hook events are passive observations and should not flip the
+        # task into WORKING. Only first-class agent/system events do.
+        if task.status == TaskStatus.CLAIMED and actor_type != ActorType.HOOK:
             updated = await self._tasks.update(task_id, status=TaskStatus.WORKING)
             if updated is not None:
                 await self._watch.record_resource(
@@ -112,9 +115,21 @@ class TaskService:
             body=body,
             facts=facts or [],
             code_refs=code_refs or [],
+            payload=payload or {},
             created_at=now,
         )
         await self._events.create(event)
+
+        # Broadcast every event so SSE consumers (cookrew) see hook
+        # events live in the bundle feed without an extra round-trip.
+        await self._watch.record(
+            resource_type="event",
+            resource_id=event.id,
+            event_type=WatchEventType.ADDED,
+            resource_version=1,
+            payload=event.model_dump(mode="json"),
+            recipe_id=recipe_id,
+        )
 
         return event
 
