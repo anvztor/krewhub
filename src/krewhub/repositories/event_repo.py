@@ -47,6 +47,43 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
+    async def find_recent_hook_duplicate(
+        self,
+        *,
+        task_id: str,
+        hook_event_name: str,
+        dedup_key: str,
+        within_seconds: int = 600,
+    ) -> Event | None:
+        """Look for an existing hook event with the same call_id.
+
+        Codex sometimes ends up with two rollout-watcher passes
+        forwarding the same line, and claude tool_use_id can repeat
+        across at-Stop replays. Both produce duplicate events that
+        spam the bundle feed. We dedupe by `(task_id, hook_event_name,
+        dedup_key)` within a 10-minute window — long enough to catch
+        any double-read, short enough that resumed sessions with
+        legitimately-similar call IDs aren't conflated.
+        """
+        if not (task_id and dedup_key and hook_event_name):
+            return None
+        cursor = await self._db.execute(
+            """SELECT * FROM events
+               WHERE task_id = ?
+                 AND actor_type = 'hook'
+                 AND json_extract(payload, '$.hook_event_name') = ?
+                 AND (
+                   json_extract(payload, '$._codex_call_id') = ?
+                   OR json_extract(payload, '$.tool_use_id') = ?
+                 )
+                 AND datetime(created_at) > datetime('now', ?)
+               ORDER BY created_at DESC
+               LIMIT 1""",
+            (task_id, hook_event_name, dedup_key, dedup_key, f"-{within_seconds} seconds"),
+        )
+        row = await cursor.fetchone()
+        return _row_to_event(row) if row else None
+
     async def list_by_bundle(self, bundle_id: str) -> list[Event]:
         cursor = await self._db.execute(
             "SELECT * FROM events WHERE bundle_id = ? ORDER BY created_at",

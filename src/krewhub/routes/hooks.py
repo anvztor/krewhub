@@ -173,4 +173,14 @@ def _summarize(hook_event_name: str, payload: dict) -> str:
         prompt = payload.get("prompt", "")
         return prompt[:200] if isinstance(prompt, str) else hook_event_name
 
+    if hook_event_name == "Notification":
+        # Codex emits assistant prose and reasoning as Notification.
+        # Show the actual text instead of the literal "Notification".
+        msg = payload.get("last_assistant_message")
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
+        summary = payload.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            return summary.strip()
+
     return hook_event_name

@@ -103,6 +103,26 @@ class TaskService:
                     recipe_id=recipe_id,
                 )
 
+        # Dedupe hook events that carry a stable call identifier
+        # (codex `_codex_call_id` / claude `tool_use_id`). Two
+        # rollout-watcher passes or a hook+rollout race can otherwise
+        # produce identical Pre/Post events that spam the feed.
+        if actor_type == ActorType.HOOK and isinstance(payload, dict):
+            hook_name = str(payload.get("hook_event_name") or "")
+            dedup_key = (
+                payload.get("_codex_call_id")
+                or payload.get("tool_use_id")
+                or ""
+            )
+            if hook_name and dedup_key:
+                duplicate = await self._events.find_recent_hook_duplicate(
+                    task_id=task_id,
+                    hook_event_name=hook_name,
+                    dedup_key=str(dedup_key),
+                )
+                if duplicate is not None:
+                    return duplicate
+
         now = datetime.now(timezone.utc)
         event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
