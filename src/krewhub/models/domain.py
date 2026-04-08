@@ -127,6 +127,11 @@ class Bundle(BaseModel, frozen=True):
     cooked_at: datetime | None = None
     digested_at: datetime | None = None
     blocked_reason: str | None = None
+    # Graph runtime: validated pydantic-graph source + rendered mermaid.
+    # Set by the orchestrator/bundle service after the LLM-generated code
+    # passes the sandbox; consumed by GraphRunnerController.
+    graph_code: str | None = None
+    graph_mermaid: str | None = None
     resource_version: int = 1
     generation: int = 1
 
@@ -143,6 +148,10 @@ class Task(BaseModel, frozen=True):
     claimed_at: datetime | None = None
     completed_at: datetime | None = None
     blocked_reason: str | None = None
+    # Graph runtime: identifies which step of a generated pydantic-graph
+    # this task corresponds to. Used by dispatch_cycle to look up task_id
+    # by node name. None for tasks created outside the graph flow.
+    graph_node_id: str | None = None
     resource_version: int = 1
     generation: int = 1
 

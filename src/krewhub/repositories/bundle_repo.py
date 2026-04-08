@@ -27,14 +27,16 @@ class BundleRepo:
             """INSERT INTO bundles
                (id, recipe_id, prompt, status, created_by, created_at,
                 claimed_at, cooked_at, digested_at, blocked_reason,
+                graph_code, graph_mermaid,
                 resource_version, generation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (bundle.id, bundle.recipe_id, bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
              bundle.cooked_at.isoformat() if bundle.cooked_at else None,
              bundle.digested_at.isoformat() if bundle.digested_at else None,
              bundle.blocked_reason,
+             bundle.graph_code, bundle.graph_mermaid,
              bundle.resource_version, bundle.generation),
         )
         await self._db.commit()
@@ -117,6 +119,46 @@ class BundleRepo:
         await self._db.commit()
         return await self.get(bundle_id)
 
+    async def attach_graph(
+        self,
+        bundle_id: str,
+        *,
+        graph_code: str,
+        graph_mermaid: str,
+    ) -> Bundle | None:
+        """Persist validated graph code + rendered mermaid on a bundle.
+
+        Called by the bundle service after the orchestrator A2A response
+        passes the sandbox. The GraphRunnerController will then pick up the
+        bundle by virtue of its non-NULL graph_code.
+
+        Bumps resource_version so cookrew SSE picks up the change.
+        """
+        await self._db.execute(
+            """UPDATE bundles
+               SET graph_code = ?, graph_mermaid = ?,
+                   resource_version = resource_version + 1
+               WHERE id = ?""",
+            (graph_code, graph_mermaid, bundle_id),
+        )
+        await self._db.commit()
+        return await self.get(bundle_id)
+
+    async def list_runnable(self) -> list[Bundle]:
+        """Return bundles whose graph code is set and status is 'open'.
+
+        These are the candidates the GraphRunnerController will execute.
+        Ordered by created_at so older bundles run first (FIFO fairness).
+        """
+        cursor = await self._db.execute(
+            """SELECT * FROM bundles
+               WHERE graph_code IS NOT NULL
+                 AND status = 'open'
+               ORDER BY created_at"""
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_bundle(r) for r in rows]
+
 
 def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
     return Bundle(
@@ -130,6 +172,8 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         cooked_at=datetime.fromisoformat(row["cooked_at"]) if row["cooked_at"] else None,
         digested_at=datetime.fromisoformat(row["digested_at"]) if row["digested_at"] else None,
         blocked_reason=row["blocked_reason"],
+        graph_code=row["graph_code"] if "graph_code" in row.keys() else None,
+        graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in row.keys() else None,
         resource_version=row["resource_version"],
         generation=row["generation"],
     )

@@ -59,11 +59,15 @@ CREATE TABLE IF NOT EXISTS bundles (
     cooked_at TEXT,
     digested_at TEXT,
     blocked_reason TEXT,
+    graph_code TEXT,
+    graph_mermaid TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
     generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_bundles_runnable
+    ON bundles(status) WHERE graph_code IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS tasks (
     id TEXT PRIMARY KEY,
@@ -78,12 +82,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     claimed_at TEXT,
     completed_at TEXT,
     blocked_reason TEXT,
+    graph_node_id TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
     generation INTEGER NOT NULL DEFAULT 1
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(bundle_id, graph_node_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,

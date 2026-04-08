@@ -53,6 +53,15 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Phase 5b: structured payload column for hook events
     await _add_column_if_missing(db, "events", "payload", "TEXT NOT NULL DEFAULT '{}'")
 
+    # Phase 6: graph runtime — store validated graph code + mermaid on the
+    # bundle, and tag tasks with the graph node they correspond to.
+    await _add_column_if_missing(db, "bundles", "graph_code", "TEXT")
+    await _add_column_if_missing(db, "bundles", "graph_mermaid", "TEXT")
+    await _add_column_if_missing(db, "tasks", "graph_node_id", "TEXT")
+    await _create_index_if_missing(
+        db, "idx_tasks_node", "tasks", "(bundle_id, graph_node_id)",
+    )
+
     await db.commit()
 
 

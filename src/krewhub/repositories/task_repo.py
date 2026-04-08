@@ -18,8 +18,8 @@ class TaskRepo:
             """INSERT INTO tasks
                (id, bundle_id, title, description, status, depends_on_task_ids,
                 assigned_agent_id, claimed_by_agent_id, claimed_at, completed_at,
-                blocked_reason, resource_version, generation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                blocked_reason, graph_node_id, resource_version, generation)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task.id, task.bundle_id, task.title, task.description, task.status,
              json.dumps(task.depends_on_task_ids),
              task.assigned_agent_id,
@@ -27,6 +27,7 @@ class TaskRepo:
              task.claimed_at.isoformat() if task.claimed_at else None,
              task.completed_at.isoformat() if task.completed_at else None,
              task.blocked_reason,
+             task.graph_node_id,
              task.resource_version, task.generation),
         )
         await self._db.commit()
@@ -202,6 +203,22 @@ class TaskRepo:
         await self._db.commit()
         return await self.get(task_id)
 
+    async def build_node_id_map(self, bundle_id: str) -> dict[str, str]:
+        """Return {graph_node_id: task_id} for a bundle's graph-bound tasks.
+
+        Used by GraphRunnerController to construct OrchestratorDeps.task_id_map
+        before invoking dispatch_cycle. Tasks with NULL graph_node_id are
+        skipped — they were created outside the graph flow and shouldn't be
+        addressable from a graph step.
+        """
+        cursor = await self._db.execute(
+            """SELECT graph_node_id, id FROM tasks
+               WHERE bundle_id = ? AND graph_node_id IS NOT NULL""",
+            (bundle_id,),
+        )
+        rows = await cursor.fetchall()
+        return {row["graph_node_id"]: row["id"] for row in rows}
+
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
     return Task(
@@ -216,6 +233,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         claimed_at=datetime.fromisoformat(row["claimed_at"]) if row["claimed_at"] else None,
         completed_at=datetime.fromisoformat(row["completed_at"]) if row["completed_at"] else None,
         blocked_reason=row["blocked_reason"],
+        graph_node_id=row["graph_node_id"] if "graph_node_id" in row.keys() else None,
         resource_version=row["resource_version"],
         generation=row["generation"],
     )
