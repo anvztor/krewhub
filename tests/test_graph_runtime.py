@@ -39,7 +39,11 @@ from krewhub.services.graph_runtime import (
     pick_agent_for_kind,
 )
 from krewhub.services.graph_runtime.a2a import dispatch_to_gateway
-from krewhub.services.graph_runtime.polling import wait_for_task_terminal
+from krewhub.services.graph_runtime.polling import (
+    DependencyFailedError,
+    wait_for_dependencies,
+    wait_for_task_terminal,
+)
 from krewhub.watch.globals import get_watch_service
 
 
@@ -366,6 +370,80 @@ class TestPolling:
 
 
 # ---------------------------------------------------------------------------
+# polling.wait_for_dependencies
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForDependencies:
+    @pytest.mark.asyncio
+    async def test_empty_dep_list_returns_immediately(self):
+        db = await get_db()
+        repo = TaskRepo(db)
+        # Must return without raising and without sleeping.
+        await wait_for_dependencies(repo, [], poll_interval=10.0, timeout=0.01)
+
+    @pytest.mark.asyncio
+    async def test_all_deps_already_done_returns_immediately(self):
+        _b1, dep1 = await _create_seed_task(status=TaskStatus.DONE)
+        _b2, dep2 = await _create_seed_task(status=TaskStatus.DONE)
+        db = await get_db()
+        repo = TaskRepo(db)
+        await wait_for_dependencies(
+            repo, [dep1, dep2], poll_interval=0.01, timeout=0.5,
+        )
+
+    @pytest.mark.asyncio
+    async def test_waits_until_last_dep_done(self):
+        _b1, dep1 = await _create_seed_task(status=TaskStatus.DONE)
+        _b2, dep2 = await _create_seed_task(status=TaskStatus.WORKING)
+        db = await get_db()
+        repo = TaskRepo(db)
+
+        async def flip_dep2():
+            await asyncio.sleep(0.03)
+            await repo.update(dep2, status=TaskStatus.DONE)
+
+        flipper = asyncio.create_task(flip_dep2())
+        await wait_for_dependencies(
+            repo, [dep1, dep2], poll_interval=0.01, timeout=1.0,
+        )
+        await flipper
+
+    @pytest.mark.asyncio
+    async def test_raises_when_dep_ends_blocked(self):
+        _b1, dep1 = await _create_seed_task(status=TaskStatus.BLOCKED)
+        db = await get_db()
+        repo = TaskRepo(db)
+        # Seed a reason so the caller's summary is useful.
+        await repo.update(dep1, blocked_reason="upstream failure")
+        with pytest.raises(DependencyFailedError) as excinfo:
+            await wait_for_dependencies(
+                repo, [dep1], poll_interval=0.01, timeout=0.5,
+            )
+        assert excinfo.value.dep_task_id == dep1
+        assert excinfo.value.status == TaskStatus.BLOCKED
+
+    @pytest.mark.asyncio
+    async def test_raises_timeout_when_dep_never_finishes(self):
+        _b1, dep1 = await _create_seed_task(status=TaskStatus.WORKING)
+        db = await get_db()
+        repo = TaskRepo(db)
+        with pytest.raises(asyncio.TimeoutError):
+            await wait_for_dependencies(
+                repo, [dep1], poll_interval=0.01, timeout=0.05,
+            )
+
+    @pytest.mark.asyncio
+    async def test_raises_when_dep_missing(self):
+        db = await get_db()
+        repo = TaskRepo(db)
+        with pytest.raises(ValueError, match="not found"):
+            await wait_for_dependencies(
+                repo, ["nope"], poll_interval=0.01, timeout=0.5,
+            )
+
+
+# ---------------------------------------------------------------------------
 # dispatch_cycle
 # ---------------------------------------------------------------------------
 
@@ -639,6 +717,129 @@ class TestDispatchCycle:
         # 2 rejection attempts + 1 final "exhausted" record
         assert len(record.attempts) == 3
         assert record.attempts[-1].status == "exhausted"
+
+    @pytest.mark.asyncio
+    async def test_waits_for_all_dependencies_before_dispatching(self):
+        """Regression: fanin steps must wait for every predecessor.
+
+        The LLM-generated graphs omit explicit Join nodes, so pydantic-graph
+        fires a downstream step as soon as one predecessor finishes. The
+        runtime must consult task.depends_on_task_ids and hold dispatch
+        until all siblings reach DONE.
+        """
+        cookbook_id, task_id, recipe_id = await _seed_with_agent(
+            agent_capabilities=["coder"],
+        )
+        db = await get_db()
+        repo = TaskRepo(db)
+
+        # Seed two upstream deps in the same bundle — one already done,
+        # one still working.
+        seed_task = await repo.get(task_id)
+        assert seed_task is not None
+        bundle_id = seed_task.bundle_id
+        dep_done = await repo.create(
+            Task(id=f"{task_id}-d1", bundle_id=bundle_id, title="d1",
+                 status=TaskStatus.DONE)
+        )
+        dep_working = await repo.create(
+            Task(id=f"{task_id}-d2", bundle_id=bundle_id, title="d2",
+                 status=TaskStatus.WORKING)
+        )
+        await repo.update(
+            task_id, depends_on_task_ids=[dep_done.id, dep_working.id],
+        )
+
+        watch = get_watch_service()
+        http = AsyncMock(spec=httpx.AsyncClient)
+        http.post.return_value = _mock_post_response(
+            json_body={"result": {"id": task_id, "status": {"state": "submitted"}}},
+        )
+
+        # Flip dep2 to DONE after a short wait, then flip the target task
+        # to DONE once it has been dispatched.
+        flip_log: list[str] = []
+
+        async def orchestrate():
+            await asyncio.sleep(0.05)
+            await repo.update(dep_working.id, status=TaskStatus.DONE)
+            flip_log.append("dep_done_flipped")
+            # Wait for dispatch to happen, then flip target to DONE.
+            for _ in range(100):
+                if http.post.await_count >= 1:
+                    break
+                await asyncio.sleep(0.01)
+            await repo.update(task_id, status=TaskStatus.DONE)
+            flip_log.append("target_flipped")
+
+        flipper = asyncio.create_task(orchestrate())
+
+        state = OrchestratorState(
+            prompt="x", bundle_id=bundle_id, recipe_id=recipe_id,
+        )
+        deps = OrchestratorDeps(
+            db=db, http=http, watch=watch,
+            task_id_map={"fanin": task_id},
+            cookbook_id=cookbook_id,
+            recipe_meta={"recipe_id": recipe_id},
+            poll_interval=0.01, task_timeout=3.0,
+        )
+        result = await dispatch_cycle(
+            _make_ctx(state, deps),
+            node_id="fanin", task_kind="coder",
+            instruction="join", max_iterations=2,
+        )
+        await flipper
+
+        assert result.startswith("done:")
+        # http.post was called exactly once — dep guard held it until both
+        # upstream deps were DONE.
+        assert http.post.await_count == 1
+        assert "dep_done_flipped" in flip_log
+        assert "target_flipped" in flip_log
+
+    @pytest.mark.asyncio
+    async def test_fails_when_upstream_dependency_blocked(self):
+        """If a predecessor ends BLOCKED, the downstream step must not run."""
+        cookbook_id, task_id, recipe_id = await _seed_with_agent(
+            agent_capabilities=["coder"],
+        )
+        db = await get_db()
+        repo = TaskRepo(db)
+        seed_task = await repo.get(task_id)
+        assert seed_task is not None
+        bundle_id = seed_task.bundle_id
+        dep_blocked = await repo.create(
+            Task(id=f"{task_id}-db", bundle_id=bundle_id, title="db",
+                 status=TaskStatus.BLOCKED)
+        )
+        await repo.update(dep_blocked.id, blocked_reason="upstream failed")
+        await repo.update(task_id, depends_on_task_ids=[dep_blocked.id])
+
+        watch = get_watch_service()
+        http = AsyncMock(spec=httpx.AsyncClient)
+
+        state = OrchestratorState(
+            prompt="x", bundle_id=bundle_id, recipe_id=recipe_id,
+        )
+        deps = OrchestratorDeps(
+            db=db, http=http, watch=watch,
+            task_id_map={"downstream": task_id},
+            cookbook_id=cookbook_id,
+            recipe_meta={"recipe_id": recipe_id},
+            poll_interval=0.01, task_timeout=0.5,
+        )
+        result = await dispatch_cycle(
+            _make_ctx(state, deps),
+            node_id="downstream", task_kind="coder",
+            instruction="won't run", max_iterations=2,
+        )
+        assert result.startswith("error:")
+        assert "upstream failure" in result
+        http.post.assert_not_called()
+        record = state.task_results["downstream"]
+        assert record.success is False
+        assert "upstream failure" in record.summary
 
     @pytest.mark.asyncio
     async def test_already_done_task_short_circuits(self):

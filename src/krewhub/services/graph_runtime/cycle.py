@@ -25,7 +25,11 @@ from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime.a2a import dispatch_to_gateway
 from krewhub.services.graph_runtime.agent_picker import pick_agent_for_kind
-from krewhub.services.graph_runtime.polling import wait_for_task_terminal
+from krewhub.services.graph_runtime.polling import (
+    DependencyFailedError,
+    wait_for_dependencies,
+    wait_for_task_terminal,
+)
 from krewhub.services.graph_runtime.state import (
     AttemptRecord,
     OrchestratorDeps,
@@ -105,6 +109,57 @@ async def dispatch_cycle(
         _record_success(state, node_id, task_id, agent_id=task.claimed_by_agent_id or "",
                         iteration=0, summary="already complete")
         return f"done: {task.claimed_by_agent_id or 'cached'}"
+
+    # Fanin guard: pydantic-graph beta's GraphBuilder fires a downstream
+    # step as soon as *any one* predecessor completes (unless the LLM emits
+    # an explicit Join node, which it doesn't). Without this wait, a step
+    # with N upstream dependencies can race ahead while N-1 siblings are
+    # still running. depends_on_task_ids is the source of truth — bundle
+    # creation populates it from the graph edges, so it always matches the
+    # rendered topology even when the generated code omits joins.
+    if task.depends_on_task_ids:
+        try:
+            await wait_for_dependencies(
+                task_repo, task.depends_on_task_ids,
+                poll_interval=deps.poll_interval,
+                timeout=deps.task_timeout,
+                accept_when=accept_when,
+            )
+        except TimeoutError:
+            return _record_failure(
+                state, node_id, task_id=task_id,
+                agent_id="", iteration=0, status="dep_timeout",
+                summary=(
+                    f"timed out after {deps.task_timeout}s waiting for "
+                    f"{len(task.depends_on_task_ids)} upstream dependency(ies)"
+                ),
+            )
+        except DependencyFailedError as exc:
+            return _record_failure(
+                state, node_id, task_id=task_id,
+                agent_id="", iteration=0, status="dep_failed",
+                summary=f"upstream failure: {exc}",
+            )
+        except ValueError as exc:
+            return _record_failure(
+                state, node_id, task_id=task_id,
+                agent_id="", iteration=0, status="dep_missing",
+                summary=f"dependency lookup failed: {exc}",
+            )
+        # Re-fetch after the wait — another runner may have touched the row
+        # (e.g. a sibling fire of the same step via a parallel predecessor
+        # path) while we were waiting. If it's now DONE, adopt the result.
+        refreshed = await task_repo.get(task_id)
+        if refreshed is not None:
+            task = refreshed
+            if task.status == accept_when:
+                _record_success(
+                    state, node_id, task_id,
+                    agent_id=task.claimed_by_agent_id or "",
+                    iteration=0,
+                    summary="already complete (won race with sibling fire)",
+                )
+                return f"done: {task.claimed_by_agent_id or 'cached'}"
 
     tried: set[str] = set()
     last_summary = ""
