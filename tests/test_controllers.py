@@ -282,6 +282,7 @@ async def test_controller_manager_start_stop():
     assert "PresenceController" in health
     assert "TaskDispatchController" in health
     assert "GraphRunnerController" in health
+    assert "PlannerDispatchController" in health
 
     await manager.stop_all()
 
