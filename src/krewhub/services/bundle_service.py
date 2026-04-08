@@ -105,6 +105,18 @@ class BundleService:
         )
         await self._events.create(prompt_event)
 
+        # Wording reflects the two shapes of bundle creation:
+        #   * Empty bundle → PlannerDispatchController will dispatch a
+        #     planner agent on its next reconcile; the planner will POST
+        #     graph code to /bundles/{id}/graph, which produces its own
+        #     PLAN event once the graph is attached.
+        #   * Non-empty bundle → the caller (manual seeds, demo store)
+        #     baked in tasks up-front; no planner will run.
+        plan_body = (
+            f"Created bundle with {len(created_tasks)} tasks."
+            if created_tasks
+            else "Created empty bundle; awaiting planner dispatch."
+        )
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=recipe_id,
@@ -112,7 +124,7 @@ class BundleService:
             type=EventType.PLAN,
             actor_id="system",
             actor_type=ActorType.SYSTEM,
-            body=f"Created bundle with {len(created_tasks)} tasks.",
+            body=plan_body,
             created_at=now,
         )
         await self._events.create(plan_event)
