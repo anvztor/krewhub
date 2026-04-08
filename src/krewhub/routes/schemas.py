@@ -56,6 +56,12 @@ class AddTaskRequest(BaseModel):
     depends_on_task_ids: list[str] = []
 
 
+class AttachGraphRequest(BaseModel):
+    """Body of POST /bundles/{id}/graph — orchestrator-emitted graph code."""
+    code: str
+    created_by: str = "orchestrator"
+
+
 class EditTaskRequest(BaseModel):
     title: str | None = None
     description: str | None = None

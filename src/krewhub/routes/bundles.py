@@ -12,10 +12,11 @@ from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
-from krewhub.services.bundle_service import BundleService
+from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.services.digest_service import DigestService
 from krewhub.routes.schemas import (
     AddTaskRequest,
+    AttachGraphRequest,
     CreateBundleRequest,
     DecisionRequest,
     SubmitDigestRequest,
@@ -115,6 +116,33 @@ async def rerun_blocked_bundle(
             detail="No blocked tasks are available to rerun.",
         )
     return {"bundle": updated.model_dump(mode="json")}
+
+
+@router.post("/bundles/{bundle_id}/graph")
+async def attach_bundle_graph(
+    bundle_id: str,
+    req: AttachGraphRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Attach a validated pydantic-graph artifact to an existing bundle.
+
+    Called by the orchestrator (or by an A2A callback handler that
+    relays an orchestrator response). The bundle must exist, must not
+    already have graph_code attached, and the code must pass the sandbox.
+    On success, the bundle is left in status='open' with graph_code set
+    so GraphRunnerController picks it up on the next reconcile.
+    """
+    svc = BundleService(db, get_watch_service())
+    try:
+        bundle, tasks = await svc.attach_graph_artifact(
+            bundle_id, req.code, created_by=req.created_by,
+        )
+    except GraphArtifactError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return {
+        "bundle": bundle.model_dump(mode="json"),
+        "tasks": [t.model_dump(mode="json") for t in tasks],
+    }
 
 
 @router.post("/bundles/{bundle_id}/tasks")
