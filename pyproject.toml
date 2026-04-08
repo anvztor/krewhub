@@ -10,6 +10,7 @@ dependencies = [
     "httpx>=0.28.0",
     "pydantic>=2.10.0",
     "pydantic-settings>=2.7.0",
+    "pydantic-graph>=1.74.0",
     "sse-starlette>=2.2.0",
 ]
 
