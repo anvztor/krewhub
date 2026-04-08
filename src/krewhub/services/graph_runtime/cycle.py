@@ -110,6 +110,72 @@ async def dispatch_cycle(
     last_summary = ""
     refined_instruction = instruction
 
+    # In-flight guard: if another party (a stray legacy dispatcher, a prior
+    # run of this cycle after a crash, or a parallel runner) has already
+    # claimed the task, don't re-dispatch — that would execute the step
+    # twice. Wait for whoever owns it to finish, then treat the terminal
+    # state as the result of attempt 0. If the outcome is BLOCKED/CANCELLED
+    # the normal retry loop below will still get a chance with a fresh agent.
+    if task.status in (TaskStatus.CLAIMED, TaskStatus.WORKING):
+        started_at = datetime.now(timezone.utc)
+        owning_agent = task.claimed_by_agent_id or ""
+        try:
+            final = await wait_for_task_terminal(
+                task_repo, task_id,
+                poll_interval=deps.poll_interval,
+                timeout=deps.task_timeout,
+            )
+        except TimeoutError:
+            ended = datetime.now(timezone.utc)
+            _append_attempt(
+                state, node_id, task_id,
+                AttemptRecord(
+                    iteration=0, agent_id=owning_agent, status="timeout",
+                    summary=(
+                        f"already in-flight on entry; timed out after "
+                        f"{deps.task_timeout}s waiting for terminal"
+                    ),
+                    started_at=started_at, ended_at=ended,
+                ),
+            )
+            last_summary = f"timeout waiting for {owning_agent or 'existing run'}"
+            refined_instruction = _refine(instruction, last_summary)
+        else:
+            ended = datetime.now(timezone.utc)
+            if final.status == accept_when:
+                _append_attempt(
+                    state, node_id, task_id,
+                    AttemptRecord(
+                        iteration=0, agent_id=owning_agent, status="done",
+                        summary=(
+                            f"task was already in-flight on entry; "
+                            f"{owning_agent or 'existing run'} completed it"
+                        ),
+                        started_at=started_at, ended_at=ended,
+                    ),
+                )
+                _record_success(
+                    state, node_id, task_id,
+                    agent_id=owning_agent, iteration=0,
+                    summary=f"adopted existing run by {owning_agent or 'unknown'}",
+                )
+                return f"done: {owning_agent or 'adopted'}"
+
+            # Terminal but not DONE → record + fall through to retry loop.
+            reason = final.blocked_reason or f"status={final.status}"
+            _append_attempt(
+                state, node_id, task_id,
+                AttemptRecord(
+                    iteration=0, agent_id=owning_agent, status=str(final.status),
+                    summary=f"in-flight on entry, ended with {reason}",
+                    started_at=started_at, ended_at=ended,
+                ),
+            )
+            last_summary = reason
+            refined_instruction = _refine(instruction, last_summary)
+            # Reopen the task so the retry loop can re-dispatch it.
+            await task_repo.reopen_for_rerun(task_id)
+
     for attempt in range(1, max_iterations + 1):
         started_at = datetime.now(timezone.utc)
 

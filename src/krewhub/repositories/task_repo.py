@@ -54,10 +54,23 @@ class TaskRepo:
         return [_row_to_task(r) for r in rows]
 
     async def list_open_by_recipe(self, recipe_id: str) -> list[Task]:
+        """Return open tasks eligible for legacy direct dispatch.
+
+        Tasks with ``graph_node_id`` set are *excluded* because they are
+        owned by ``GraphRunnerController`` — the graph runner dispatches
+        each step via ``dispatch_cycle`` in its own order, honoring the
+        graph's edges. If the legacy ``TaskDispatchController`` also
+        dispatched them, the root node of a freshly-attached graph could
+        be claimed twice and executed outside the graph's ordering
+        (see the "Stop the legacy task dispatcher from claiming graph
+        tasks" issue).
+        """
         cursor = await self._db.execute(
             """SELECT t.* FROM tasks t
                JOIN bundles b ON t.bundle_id = b.id
-               WHERE b.recipe_id = ? AND t.status = 'open'
+               WHERE b.recipe_id = ?
+                 AND t.status = 'open'
+                 AND t.graph_node_id IS NULL
                ORDER BY t.rowid""",
             (recipe_id,),
         )
