@@ -377,6 +377,38 @@ class TestDispatch:
             await controller.stop()
 
     @pytest.mark.asyncio
+    async def test_read_timeout_keeps_slot_reserved(self):
+        """Regression: long-running gateway codegen (CLI-driven) causes
+        the A2A message/send POST to read-timeout on our side while the
+        gateway keeps running server-side. We must NOT free the
+        reservation in that case — otherwise the next reconcile dispatches
+        a second codegen that races the first and ends up with HTTP 409
+        'already has graph_code attached', trapping the planner in a loop.
+        """
+        bundle_id, _cookbook_id, _recipe_id = await _seed_empty_bundle()
+        db = await get_db()
+
+        http = AsyncMock(spec=httpx.AsyncClient)
+        http.post.side_effect = httpx.ReadTimeout("codegen still running")
+
+        controller = PlannerDispatchController(
+            db, get_watch_service(), interval=0.05, http=http,
+        )
+        try:
+            await controller.reconcile()
+            assert http.post.await_count == 1
+            # Reservation MUST stick — work is in flight server-side.
+            assert bundle_id in controller._dispatched
+
+            # A second reconcile while the bundle is still empty must
+            # NOT re-dispatch; the first codegen is still running.
+            await controller.reconcile()
+            assert http.post.await_count == 1
+            assert bundle_id in controller._dispatched
+        finally:
+            await controller.stop()
+
+    @pytest.mark.asyncio
     async def test_dispatched_set_purges_when_bundle_no_longer_empty(self):
         """When the bundle gains tasks (planner attached), the dispatched
         slot should free for future bundles."""

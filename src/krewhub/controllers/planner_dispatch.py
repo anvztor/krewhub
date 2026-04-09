@@ -62,7 +62,16 @@ logger = logging.getLogger(__name__)
 # Capability key planner agents must advertise to be picked.
 PLANNER_CAPABILITY = "generate-graph"
 
-_DEFAULT_HTTP_TIMEOUT = 15.0
+# A2A `message/send` to a gateway planner is a *synchronous* call that
+# blocks until the CLI subprocess finishes generating graph code. For
+# Claude/codex-driven codegen that routinely takes 60-300s. Setting the
+# timeout too tight causes the controller to think the dispatch failed,
+# re-dispatch on the next reconcile, and end up with multiple in-flight
+# codegens racing to attach to the same bundle — the second one loses
+# with HTTP 409 "already has graph_code attached" and the planner loops.
+# Give it a comfortable ceiling; the in-flight dedup below is the
+# primary guard, this is just defense in depth.
+_DEFAULT_HTTP_TIMEOUT = 600.0
 
 
 class PlannerDispatchController(BaseController):
@@ -136,9 +145,18 @@ class PlannerDispatchController(BaseController):
                 )
                 continue
 
+            # Reserve the slot BEFORE the POST. A2A `message/send` is a
+            # long synchronous call — we don't want a second reconcile
+            # cycle to re-dispatch the same bundle while the first POST
+            # is still in flight. `_dispatch` frees the slot below if
+            # the planner is unreachable (connect error); read timeouts
+            # are treated as "still running server-side" and keep the
+            # slot reserved until the bundle row flips out of the
+            # empty-bundle query (purged by `_dispatched &= empty_ids`
+            # on the next reconcile).
+            self._dispatched.add(bundle.id)
             ok = await self._dispatch(bundle, recipe, planner)
             if ok:
-                self._dispatched.add(bundle.id)
                 logger.info(
                     "PlannerDispatch: dispatched bundle %s to planner %s",
                     bundle.id, planner.agent_id,
@@ -204,11 +222,37 @@ class PlannerDispatchController(BaseController):
 
         try:
             resp = await self._http.post(planner.endpoint_url, json=payload)
-        except (httpx.RequestError, httpx.TimeoutException) as exc:
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # Planner is unreachable — the POST never landed, so it's
+            # safe (and correct) to free the reservation and retry on
+            # the next reconcile.
             logger.info(
                 "PlannerDispatch: planner %s unreachable for bundle %s: %s",
                 planner.agent_id, bundle.id, exc,
             )
+            self._dispatched.discard(bundle.id)
+            return False
+        except (httpx.ReadTimeout, httpx.WriteTimeout, httpx.PoolTimeout) as exc:
+            # The POST landed but the server is still processing
+            # (codegen can take minutes). Do NOT free the reservation:
+            # the gateway is almost certainly going to finish and POST
+            # attach_graph; a second dispatch here would race it and
+            # lose with HTTP 409.
+            logger.info(
+                "PlannerDispatch: planner %s timed out reading bundle %s "
+                "(codegen still running server-side): %s",
+                planner.agent_id, bundle.id, exc,
+            )
+            return False
+        except httpx.RequestError as exc:
+            # Unknown transport failure — treat as unreachable and free
+            # the slot. Worst case we retry; the server-side dedup
+            # (attach_graph 409 on double-attach) still protects us.
+            logger.info(
+                "PlannerDispatch: planner %s request failed for bundle %s: %s",
+                planner.agent_id, bundle.id, exc,
+            )
+            self._dispatched.discard(bundle.id)
             return False
 
         if resp.status_code != 200:
@@ -216,6 +260,11 @@ class PlannerDispatchController(BaseController):
                 "PlannerDispatch: planner %s returned %d for bundle %s: %s",
                 planner.agent_id, resp.status_code, bundle.id, resp.text[:300],
             )
+            # A non-200 means the planner saw the request and rejected
+            # it at the A2A layer — nothing is running server-side.
+            # Free the slot so we can try another cycle (or another
+            # planner) on the next reconcile.
+            self._dispatched.discard(bundle.id)
             return False
 
         # We don't parse the body — the planner will POST back to
