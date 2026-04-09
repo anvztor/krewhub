@@ -346,13 +346,38 @@ class BundleService:
         return updated
 
     async def rerun_blocked_tasks(self, bundle_id: str) -> Bundle | None:
+        """Reopen a bundle for another graph-runner pass.
+
+        Two shapes are supported:
+          * Per-task rerun — at least one task is in ``BLOCKED``. We
+            reopen every blocked task and clear the bundle's blocked
+            state so GraphRunnerController picks it up again.
+          * Whole-bundle rerun — the bundle itself is ``BLOCKED`` but
+            every task is still ``OPEN``. This happens when the graph
+            runner failed the bundle before a single dispatch touched
+            any task row (e.g. ``dispatch_cycle`` couldn't find an
+            eligible gateway for any step on the first pass). Without
+            this branch the caller has no way to unstick the bundle
+            short of deleting and recreating it: the old code returned
+            ``None`` because no task had ``status == BLOCKED`` yet.
+
+        Returns the reopened bundle, or ``None`` if the bundle is in a
+        non-recoverable terminal state (cancelled/digested), missing,
+        or already running cleanly.
+        """
         bundle = await self._bundles.get(bundle_id)
         if bundle is None or bundle.status in (BundleStatus.CANCELLED, BundleStatus.DIGESTED):
             return None
 
         tasks = await self._tasks.list_by_bundle(bundle_id)
         blocked_tasks = [task for task in tasks if task.status == TaskStatus.BLOCKED]
-        if not blocked_tasks:
+
+        # Whole-bundle recovery: if the bundle as a whole is BLOCKED
+        # but no individual task is, the runner failed before touching
+        # anything (typically "no eligible gateway"). Reopen the
+        # bundle so GraphRunnerController's next reconcile re-runs the
+        # graph from the top. Tasks are already OPEN — no reset needed.
+        if not blocked_tasks and bundle.status != BundleStatus.BLOCKED:
             return None
 
         for task in blocked_tasks:
@@ -368,6 +393,17 @@ class BundleService:
             return None
 
         now = datetime.now(timezone.utc)
+        if blocked_tasks:
+            body = (
+                f"Re-run requested for {len(blocked_tasks)} blocked task"
+                f"{'' if len(blocked_tasks) == 1 else 's'}. "
+                "Tasks reopened for reassignment."
+            )
+        else:
+            body = (
+                "Re-run requested for blocked bundle. "
+                "Bundle reopened; graph runner will retry from the top."
+            )
         rerun_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=bundle.recipe_id,
@@ -375,11 +411,7 @@ class BundleService:
             type=EventType.PLAN,
             actor_id="system",
             actor_type=ActorType.SYSTEM,
-            body=(
-                f"Re-run requested for {len(blocked_tasks)} blocked task"
-                f"{'' if len(blocked_tasks) == 1 else 's'}. "
-                "Tasks reopened for reassignment."
-            ),
+            body=body,
             created_at=now,
         )
         await self._events.create(rerun_event)

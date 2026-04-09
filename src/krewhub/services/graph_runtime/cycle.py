@@ -250,6 +250,12 @@ async def dispatch_cycle(
                     ),
                 )
                 last_summary = "no eligible gateway"
+                # Fail fast: we do NOT silently wait for the pool to
+                # fill. A missing gateway is a cluster-level problem
+                # the user needs to see. The graph runner will mark
+                # the bundle BLOCKED, cookrew surfaces the status over
+                # SSE, and the user re-onboards agents + clicks Re-Run
+                # to retry from the top.
                 break
 
         tried.add(chosen.agent_id)

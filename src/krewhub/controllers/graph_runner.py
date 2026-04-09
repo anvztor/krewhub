@@ -35,7 +35,7 @@ import aiosqlite
 import httpx
 
 from krewhub.controllers.base import BaseController
-from krewhub.models import BundleStatus
+from krewhub.models import BundleStatus, WatchEventType
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
@@ -231,7 +231,7 @@ class GraphRunnerController(BaseController):
             r.success for r in state.task_results.values()
         )
         if all_success:
-            await bundle_repo.update_status(
+            updated = await bundle_repo.update_status(
                 bundle_id,
                 BundleStatus.COOKED,
                 cooked_at=datetime.now(timezone.utc),
@@ -240,6 +240,11 @@ class GraphRunnerController(BaseController):
                 "graph runner: bundle %s COOKED (%d nodes)",
                 bundle_id, len(state.task_results),
             )
+            if updated is not None:
+                await self._watch.record_resource(
+                    "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+                    recipe_id=updated.recipe_id,
+                )
         else:
             failures = [
                 f"{r.node_id}: {r.summary}"
@@ -247,22 +252,23 @@ class GraphRunnerController(BaseController):
                 if not r.success
             ]
             reason = "; ".join(failures) or "no task results recorded"
-            await bundle_repo.update_status(
-                bundle_id,
-                BundleStatus.BLOCKED,
-                blocked_reason=reason[:500],
-            )
-            logger.info(
-                "graph runner: bundle %s BLOCKED — %s", bundle_id, reason,
-            )
+            await self._mark_blocked(bundle_id, reason)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
     async def _mark_blocked(self, bundle_id: str, reason: str) -> None:
+        """Mark a bundle BLOCKED and surface the change over the watch bus.
+
+        Emitting a MODIFIED watch event is the only way cookrew's SSE
+        feed learns the bundle flipped — without it the UI keeps
+        showing the last-loaded status (usually ``open``) and the user
+        has no visible signal that the graph run ended, nor access to
+        the Re-Run affordance that's gated on ``bundle.status``.
+        """
         try:
-            await BundleRepo(self._db).update_status(
+            updated = await BundleRepo(self._db).update_status(
                 bundle_id,
                 BundleStatus.BLOCKED,
                 blocked_reason=reason[:500],
@@ -271,3 +277,22 @@ class GraphRunnerController(BaseController):
             logger.exception(
                 "graph runner: failed to mark bundle %s blocked", bundle_id,
             )
+            return
+
+        logger.info(
+            "graph runner: bundle %s BLOCKED — %s", bundle_id, reason,
+        )
+
+        if updated is not None:
+            try:
+                await self._watch.record_resource(
+                    "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+                    recipe_id=updated.recipe_id,
+                )
+            except Exception:
+                # A watch-bus failure must not mask the DB update;
+                # the runner already owns the terminal state.
+                logger.exception(
+                    "graph runner: failed to emit watch event for blocked "
+                    "bundle %s", bundle_id,
+                )
