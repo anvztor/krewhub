@@ -21,7 +21,7 @@ import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import (
     ActorType,
@@ -37,7 +37,7 @@ from krewhub.watch.globals import get_watch_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["hooks"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["hooks"], dependencies=[Depends(resolve_caller)])
 
 
 # Map hook event names → EventType

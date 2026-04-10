@@ -22,6 +22,18 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     from krewhub.config import get_settings
     settings = get_settings()
 
+    # Init JWKS client for krewauth JWT verification
+    if settings.jwks_url:
+        from krewhub.auth import init_jwk_client
+        try:
+            init_jwk_client(settings.jwks_url)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).warning(
+                "Failed to init JWKS client at %s — ES256 verification disabled",
+                settings.jwks_url,
+            )
+
     manager = ControllerManager(
         db, watch,
         heartbeat_timeout=settings.heartbeat_timeout_seconds,
@@ -45,6 +57,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Auth routes now served by krewauth (port 8421)
+    # krewhub only verifies JWTs via JWKS — no auth endpoints here
     app.include_router(cookbooks.router, prefix="/api/v1")
     app.include_router(recipes.router, prefix="/api/v1")
     app.include_router(bundles.router, prefix="/api/v1")
@@ -55,7 +69,7 @@ def create_app() -> FastAPI:
     app.include_router(a2a_callback.router, prefix="/api/v1")
     app.include_router(hooks.router, prefix="/api/v1")
 
-    # Git smart HTTP — no prefix, served at /{owner}/{repo}/...
+    # Git smart HTTP
     app.include_router(git_http.router)
 
     return app

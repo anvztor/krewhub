@@ -165,4 +165,87 @@ CREATE TABLE IF NOT EXISTS watch_log (
 
 CREATE INDEX IF NOT EXISTS idx_watch_log_type_seq ON watch_log(resource_type, seq);
 CREATE INDEX IF NOT EXISTS idx_watch_log_recipe_seq ON watch_log(recipe_id, seq);
+
+CREATE TABLE IF NOT EXISTS identities (
+    wallet_address TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    oauth_provider TEXT,
+    oauth_sub TEXT,
+    mpc_provider TEXT,
+    mpc_key_id TEXT,
+    created_at TEXT NOT NULL,
+    UNIQUE(oauth_provider, oauth_sub)
+);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id TEXT PRIMARY KEY,
+    wallet_address TEXT NOT NULL REFERENCES identities(wallet_address),
+    auth_method TEXT NOT NULL CHECK(auth_method IN ('siwe', 'oauth_mpc', 'api_key')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_wallet ON sessions(wallet_address);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
+
+CREATE TABLE IF NOT EXISTS nonces (
+    nonce TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE INDEX IF NOT EXISTS idx_nonces_expires ON nonces(expires_at);
+
+CREATE TABLE IF NOT EXISTS device_codes (
+    device_code TEXT PRIMARY KEY,
+    user_code TEXT NOT NULL UNIQUE,
+    wallet_address TEXT,
+    approved INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_device_codes_user ON device_codes(user_code);
+
+-- Identity graph: stable account root
+CREATE TABLE IF NOT EXISTS accounts (
+    id TEXT PRIMARY KEY,
+    display_name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS wallet_links (
+    wallet_address TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    chain_id INTEGER NOT NULL DEFAULT 48816,
+    is_primary INTEGER NOT NULL DEFAULT 0,
+    linked_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_wallet_links_account ON wallet_links(account_id);
+
+-- WebAuthn passkeys
+CREATE TABLE IF NOT EXISTS passkeys (
+    credential_id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    public_key TEXT NOT NULL,
+    sign_count INTEGER NOT NULL DEFAULT 0,
+    transports TEXT NOT NULL DEFAULT '[]',
+    device_name TEXT,
+    created_at TEXT NOT NULL,
+    last_used_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_passkeys_account ON passkeys(account_id);
+
+CREATE TABLE IF NOT EXISTS passkey_challenges (
+    challenge TEXT PRIMARY KEY,
+    account_id TEXT,
+    purpose TEXT NOT NULL CHECK(purpose IN ('register', 'authenticate')),
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    used INTEGER NOT NULL DEFAULT 0
+);
 """

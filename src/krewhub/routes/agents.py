@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
@@ -15,7 +15,7 @@ from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest, RegisterAgentRequest
 from krewhub.watch.globals import get_watch_service
 
-router = APIRouter(tags=["agents"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["agents"], dependencies=[Depends(resolve_caller)])
 
 
 @router.get("/agents")

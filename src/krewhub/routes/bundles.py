@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
@@ -22,7 +22,7 @@ from krewhub.routes.schemas import (
     SubmitDigestRequest,
 )
 
-router = APIRouter(tags=["bundles"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller)])
 
 
 @router.post("/recipes/{recipe_id}/bundles")

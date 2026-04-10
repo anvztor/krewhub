@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.config import get_settings
 from krewhub.db.connection import get_db
 from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
@@ -18,7 +18,7 @@ from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import CreateCookbookRequest
 from krewhub.watch.globals import get_watch_service
 
-router = APIRouter(tags=["cookbooks"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["cookbooks"], dependencies=[Depends(resolve_caller)])
 
 
 @router.post("/cookbooks")

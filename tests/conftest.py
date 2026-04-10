@@ -4,6 +4,8 @@ import os
 
 os.environ["KREWHUB_DATABASE_PATH"] = ":memory:"
 os.environ["KREWHUB_API_KEY"] = "test-key"
+os.environ["KREWHUB_JWT_SECRET"] = "test-jwt-secret-at-least-32-bytes-long-for-hs256"
+os.environ["KREWHUB_JWKS_URL"] = ""  # disable JWKS in tests (no krewauth running)
 
 import pytest
 import pytest_asyncio
@@ -31,11 +33,24 @@ async def _setup_db():
 
 @pytest_asyncio.fixture
 async def client(_setup_db):
+    """Client authenticated with legacy API key (backward compat)."""
     app = create_app()
     transport = ASGITransport(app=app, raise_app_exceptions=False)
     async with AsyncClient(
         transport=transport,
         base_url="http://test",
         headers={"X-API-Key": "test-key"},
+    ) as ac:
+        yield ac
+
+
+@pytest_asyncio.fixture
+async def anon_client(_setup_db):
+    """Unauthenticated client for testing auth endpoints."""
+    app = create_app()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
     ) as ac:
         yield ac

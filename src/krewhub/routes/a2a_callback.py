@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 
 import aiosqlite
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import (
     ActorType,
@@ -30,7 +30,7 @@ from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.watch.globals import get_watch_service
 
-router = APIRouter(tags=["a2a"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["a2a"], dependencies=[Depends(resolve_caller)])
 
 
 class TaskCallbackCodeRef(BaseModel):

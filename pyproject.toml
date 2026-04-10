@@ -12,6 +12,9 @@ dependencies = [
     "pydantic-settings>=2.7.0",
     "pydantic-graph>=1.74.0",
     "sse-starlette>=2.2.0",
+    "siwe>=4.0.0",
+    "PyJWT>=2.8.0",
+    "webauthn>=2.0.0",
 ]
 
 [project.optional-dependencies]

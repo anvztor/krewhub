@@ -5,12 +5,12 @@ from pydantic import BaseModel
 
 import aiosqlite
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.tape.manager import TapeManager
 from krewhub.tape.store import TapeStore
 
-router = APIRouter(tags=["tapes"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["tapes"], dependencies=[Depends(resolve_caller)])
 
 
 class AppendEntryRequest(BaseModel):

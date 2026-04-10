@@ -6,11 +6,11 @@ import json
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from krewhub.auth import verify_api_key
+from krewhub.auth import resolve_caller
 from krewhub.watch.globals import get_watch_service
 from krewhub.watch.types import WatchEvent, WatchOptions
 
-router = APIRouter(tags=["stream"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(tags=["stream"], dependencies=[Depends(resolve_caller)])
 
 
 @router.get("/recipes/{recipe_id}/stream")

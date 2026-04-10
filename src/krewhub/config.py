@@ -11,8 +11,21 @@ class Settings(BaseSettings):
     port: int = 8420
     database_path: str = str(Path.home() / ".krewhub" / "krewhub.db")
     api_key: str = "dev-api-key"
+
+    # krewauth JWKS for JWT verification (ES256)
+    jwks_url: str = "http://127.0.0.1:8421/.well-known/jwks.json"
+
+    # Legacy HS256 secret (transitional — remove after migration)
+    jwt_secret: str = ""
+
     retention_days: int = 7
     heartbeat_timeout_seconds: int = 30
+
+    # ERC-8004 on GOAT Testnet3
+    erc8004_chain_id: int = 48816
+    erc8004_rpc_url: str = "https://rpc.testnet3.goat.network"
+    erc8004_identity_registry: str = "0x556089008Fc0a60cD09390Eca93477ca254A5522"
+    erc8004_reputation_registry: str = "0xd9140951d8aE6E5F625a02F5908535e16e3af964"
 
     model_config = {"env_prefix": "KREWHUB_"}
 
