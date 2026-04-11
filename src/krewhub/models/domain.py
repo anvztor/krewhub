@@ -116,6 +116,7 @@ class AgentPresence(BaseModel, frozen=True):
     last_heartbeat_at: datetime
     current_task_id: str | None = None
     resource_version: int = 1
+    owner_username: str | None = None
 
 
 class Bundle(BaseModel, frozen=True):

@@ -79,6 +79,12 @@ class AgentRepo:
 
 
 def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
+    # owner_username may not exist in old DBs
+    try:
+        owner = row["owner_username"]
+    except (IndexError, KeyError):
+        owner = None
+
     return AgentPresence(
         agent_id=row["agent_id"],
         cookbook_id=row["cookbook_id"],
@@ -90,4 +96,5 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
         last_heartbeat_at=datetime.fromisoformat(row["last_heartbeat_at"]),
         current_task_id=row["current_task_id"],
         resource_version=row["resource_version"],
+        owner_username=owner,
     )

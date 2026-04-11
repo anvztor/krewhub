@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import CallerContext, resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
@@ -42,11 +42,13 @@ async def list_agents(
 async def register_agent(
     req: RegisterAgentRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller),
 ):
     """Register an agent node with krewhub.
 
     The agent declares its capabilities and capacity at the cookbook level,
     making it available for all recipes in that cookbook.
+    Owner is set from the caller's JWT username.
     """
     cookbook = await CookbookRepo(db).get(req.cookbook_id)
     if cookbook is None:
@@ -67,6 +69,14 @@ async def register_agent(
     repo = AgentRepo(db)
     updated = await repo.upsert_presence(presence)
 
+    # Store owner_username from JWT
+    owner_username = caller.username or caller.account_id
+    await db.execute(
+        "UPDATE agent_presence SET owner_username = ? WHERE agent_id = ? AND cookbook_id = ?",
+        (owner_username, req.agent_id, req.cookbook_id),
+    )
+    await db.commit()
+
     watch = get_watch_service()
     recipes = await RecipeRepo(db).list_by_cookbook(req.cookbook_id)
     for recipe in recipes:
@@ -79,12 +89,11 @@ async def register_agent(
             "agent", req.agent_id, WatchEventType.ADDED, updated,
         )
 
-    # Upsert A2A agent card for hub gateway
+    # Upsert A2A agent card — uses agent owner's username, not cookbook owner
     from krewhub.routes.a2a_gateway import upsert_agent_card
     agent_short_name = req.agent_id.split("@")[0] if "@" in req.agent_id else req.agent_id
-    owner = cookbook.owner_id
     await upsert_agent_card(
-        db, owner=owner, agent_name=agent_short_name,
+        db, owner=owner_username, agent_name=agent_short_name,
         display_name=req.display_name, capabilities=req.capabilities,
     )
 

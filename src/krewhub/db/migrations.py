@@ -66,6 +66,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         db, "idx_tasks_node", "tasks", "(bundle_id, graph_node_id)",
     )
 
+    # Phase 6a: agent owner tracking
+    await _add_column_if_missing(db, "agent_presence", "owner_username", "TEXT")
+
     # Phase 6b: event streaming — sequence + new event types
     await _add_column_if_missing(db, "events", "sequence", "INTEGER NOT NULL DEFAULT 0")
     await _create_index_if_missing(db, "idx_events_task_sequence", "events", "(task_id, sequence)")

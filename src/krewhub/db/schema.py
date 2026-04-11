@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS agent_presence (
     last_heartbeat_at TEXT NOT NULL,
     current_task_id TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
+    owner_username TEXT,
     PRIMARY KEY (agent_id, cookbook_id)
 );
 
