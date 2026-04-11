@@ -28,6 +28,7 @@ class CallerContext(BaseModel, frozen=True):
     """Per-request identity resolved by middleware."""
 
     account_id: str
+    username: str | None = None
     principal_type: Literal["human", "agent"] = "human"
 
     wallet_address: str | None = None
@@ -148,6 +149,7 @@ async def resolve_caller(
 
         return CallerContext(
             account_id=account_id,
+            username=payload.get("username"),
             principal_type="agent" if acting_as == "agent" else "human",
             wallet_address=wallet,
             session_id=payload.get("sid"),
