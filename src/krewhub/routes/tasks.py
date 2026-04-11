@@ -92,7 +92,6 @@ async def post_task_event(
         payload=req.payload,
         facts=facts,
         code_refs=code_refs,
-        payload=req.payload,
     )
     return {"event": event.model_dump(mode="json")}
 

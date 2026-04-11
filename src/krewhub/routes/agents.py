@@ -79,6 +79,15 @@ async def register_agent(
             "agent", req.agent_id, WatchEventType.ADDED, updated,
         )
 
+    # Upsert A2A agent card for hub gateway
+    from krewhub.routes.a2a_gateway import upsert_agent_card
+    agent_short_name = req.agent_id.split("@")[0] if "@" in req.agent_id else req.agent_id
+    owner = cookbook.owner_id
+    await upsert_agent_card(
+        db, owner=owner, agent_name=agent_short_name,
+        display_name=req.display_name, capabilities=req.capabilities,
+    )
+
     return {"presence": updated.model_dump(mode="json")}
 
 

@@ -107,11 +107,10 @@ CREATE TABLE IF NOT EXISTS events (
     actor_id TEXT NOT NULL,
     actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
     body TEXT NOT NULL DEFAULT '',
-    payload TEXT,
+    payload TEXT NOT NULL DEFAULT '{}',
     sequence INTEGER NOT NULL DEFAULT 0,
     facts TEXT NOT NULL DEFAULT '[]',
     code_refs TEXT NOT NULL DEFAULT '[]',
-    payload TEXT NOT NULL DEFAULT '{}',
     created_at TEXT NOT NULL,
     expires_at TEXT
 );
@@ -248,4 +247,32 @@ CREATE TABLE IF NOT EXISTS passkey_challenges (
     expires_at TEXT NOT NULL,
     used INTEGER NOT NULL DEFAULT 0
 );
+
+-- A2A hub gateway: agent cards + invocation mailbox
+CREATE TABLE IF NOT EXISTS a2a_agent_cards (
+    owner TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    card_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY (owner, agent_name)
+);
+
+CREATE TABLE IF NOT EXISTS a2a_invocations (
+    id TEXT PRIMARY KEY,
+    owner TEXT NOT NULL,
+    agent_name TEXT NOT NULL,
+    method TEXT NOT NULL,
+    params TEXT NOT NULL DEFAULT '{}',
+    caller_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending', 'processing', 'completed', 'failed', 'timeout')),
+    result TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    completed_at TEXT,
+    expires_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_a2a_invocations_agent ON a2a_invocations(owner, agent_name, status);
+CREATE INDEX IF NOT EXISTS idx_a2a_invocations_expires ON a2a_invocations(expires_at);
 """

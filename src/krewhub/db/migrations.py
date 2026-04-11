@@ -66,6 +66,11 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         db, "idx_tasks_node", "tasks", "(bundle_id, graph_node_id)",
     )
 
+    # Phase 6b: event streaming — sequence + new event types
+    await _add_column_if_missing(db, "events", "sequence", "INTEGER NOT NULL DEFAULT 0")
+    await _create_index_if_missing(db, "idx_events_task_sequence", "events", "(task_id, sequence)")
+    await _migrate_events_add_types(db)
+
     # Phase 7: wallet-based identity + SIWE auth
     await _create_table_if_missing(db, "identities", """
         CREATE TABLE IF NOT EXISTS identities (
@@ -165,6 +170,36 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Backfill: migrate existing identities → accounts + wallet_links
     await _backfill_accounts_from_identities(db)
 
+    # Phase 9: A2A hub gateway
+    await _create_table_if_missing(db, "a2a_agent_cards", """
+        CREATE TABLE IF NOT EXISTS a2a_agent_cards (
+            owner TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            card_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY (owner, agent_name)
+        )
+    """)
+    await _create_table_if_missing(db, "a2a_invocations", """
+        CREATE TABLE IF NOT EXISTS a2a_invocations (
+            id TEXT PRIMARY KEY,
+            owner TEXT NOT NULL,
+            agent_name TEXT NOT NULL,
+            method TEXT NOT NULL,
+            params TEXT NOT NULL DEFAULT '{}',
+            caller_id TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'processing', 'completed', 'failed', 'timeout')),
+            result TEXT,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            completed_at TEXT,
+            expires_at TEXT NOT NULL
+        )
+    """)
+    await _create_index_if_missing(db, "idx_a2a_invocations_agent", "a2a_invocations", "(owner, agent_name, status)")
+    await _create_index_if_missing(db, "idx_a2a_invocations_expires", "a2a_invocations", "(expires_at)")
+
     await db.commit()
 
 
@@ -220,6 +255,56 @@ async def _migrate_events_actor_type_hook(db: aiosqlite.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
         """
     )
+
+
+async def _migrate_events_add_types(db: aiosqlite.Connection) -> None:
+    """Rebuild events table if CHECK doesn't include tool_result/thinking."""
+    if not await _table_exists(db, "events"):
+        return
+    cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'")
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    ddl = row["sql"] or ""
+    if "'thinking'" in ddl:
+        return
+    logger.info("Migration: rebuilding events table for new event types")
+    await db.executescript("""
+        ALTER TABLE events RENAME TO events_old_types;
+        CREATE TABLE events (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT NOT NULL REFERENCES recipes(id),
+            bundle_id TEXT REFERENCES bundles(id),
+            task_id TEXT,
+            type TEXT NOT NULL CHECK(type IN (
+                'prompt', 'plan', 'task_claimed', 'milestone',
+                'fact_added', 'code_pushed', 'digest_submitted',
+                'digest_approved', 'digest_rejected',
+                'session_start', 'session_end', 'tool_use', 'tool_result',
+                'agent_reply', 'thinking'
+            )),
+            actor_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+            body TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{}',
+            sequence INTEGER NOT NULL DEFAULT 0,
+            facts TEXT NOT NULL DEFAULT '[]',
+            code_refs TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        INSERT INTO events
+            (id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
+             body, payload, sequence, facts, code_refs, created_at, expires_at)
+        SELECT id, recipe_id, bundle_id, task_id, type, actor_id, actor_type,
+               body, COALESCE(payload, '{}'), 0, facts, code_refs, created_at, expires_at
+        FROM events_old_types;
+        DROP TABLE events_old_types;
+        CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_events_task_sequence ON events(task_id, sequence);
+    """)
 
 
 async def _backfill_accounts_from_identities(db: aiosqlite.Connection) -> None:
