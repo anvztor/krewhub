@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+
+# Ensure krewhub loggers are visible (uvicorn only shows its own by default)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 from krewhub.db.connection import close_db, init_db
 from krewhub.routes import a2a_callback, a2a_gateway, agents, bundles, cookbooks, git_http, hooks, recipes, stream, tapes, tasks

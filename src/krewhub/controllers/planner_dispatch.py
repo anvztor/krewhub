@@ -130,6 +130,11 @@ class PlannerDispatchController(BaseController):
                 continue
 
             agents = await agent_repo.list_by_cookbook(recipe.cookbook_id)
+            logger.info(
+                "PlannerDispatch: bundle %s cookbook %s — %d agents: %s",
+                bundle.id, recipe.cookbook_id, len(agents),
+                [(a.agent_id, a.status, bool(a.endpoint_url), a.capabilities) for a in agents],
+            )
             planner = pick_agent_for_kind(
                 agents, PLANNER_CAPABILITY, exclude=set(),
             )
@@ -140,8 +145,10 @@ class PlannerDispatchController(BaseController):
                 cap.lower() for cap in planner.capabilities
             }:
                 logger.info(
-                    "PlannerDispatch: bundle %s has no online planner agent in cookbook %s",
+                    "PlannerDispatch: bundle %s has no online planner agent in cookbook %s (picked=%s caps=%s)",
                     bundle.id, recipe.cookbook_id,
+                    planner.agent_id if planner else None,
+                    planner.capabilities if planner else None,
                 )
                 continue
 
@@ -195,9 +202,15 @@ class PlannerDispatchController(BaseController):
         recipe: "Recipe",
         planner: "AgentPresence",
     ) -> bool:
-        """POST an A2A message/send to the planner. Returns True on accept."""
-        if not planner.endpoint_url:
-            return False
+        """POST an A2A message/send to the planner via the A2A hub gateway.
+
+        Instead of hitting the agent's local endpoint_url (which is behind NAT),
+        route through the hub gateway at /a2a/{owner}/{agent_short_name}.
+        """
+        owner = planner.owner_username or planner.agent_id.split("@")[-1]
+        agent_short = planner.agent_id.split("@")[0]
+        # Route through the local hub gateway (same krewhub process)
+        hub_url = f"http://127.0.0.1:8420/a2a/{owner}/{agent_short}"
 
         payload = {
             "jsonrpc": "2.0",
@@ -217,11 +230,12 @@ class PlannerDispatchController(BaseController):
                         "branch": recipe.default_branch,
                     },
                 },
+                "configuration": {"returnImmediately": True},
             },
         }
 
         try:
-            resp = await self._http.post(planner.endpoint_url, json=payload)
+            resp = await self._http.post(hub_url, json=payload)
         except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
             # Planner is unreachable — the POST never landed, so it's
             # safe (and correct) to free the reservation and retry on

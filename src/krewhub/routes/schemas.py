@@ -40,10 +40,9 @@ class PostEventRequest(BaseModel):
     actor_id: str
     actor_type: str = "agent"
     body: str = ""
-    payload: dict | None = None
+    payload: dict = Field(default_factory=dict)
     facts: list[dict] = []
     code_refs: list[dict] = []
-    payload: dict = Field(default_factory=dict)
 
 
 class BatchEventItem(BaseModel):
@@ -128,6 +127,12 @@ class PostRecipeEventRequest(BaseModel):
     body: str = ""
     facts: list[dict] = []
     code_refs: list[dict] = []
+
+
+class MintAgentRequest(BaseModel):
+    cookbook_id: str
+    tx_hash: str
+    token_id: int | None = None
 
 
 class PlanRequest(BaseModel):

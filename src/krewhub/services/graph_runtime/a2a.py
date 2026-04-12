@@ -51,10 +51,11 @@ async def dispatch_to_gateway(
         completed, or response carries a result.id). False on rejection,
         4xx/5xx, or network failure. Never raises.
     """
-    url = agent.endpoint_url
-    if not url:
-        logger.warning("dispatch_to_gateway: agent %s has no endpoint_url", agent.agent_id)
-        return False
+    # Route through the A2A hub gateway (same krewhub process) instead of
+    # hitting the agent's local endpoint_url which is behind NAT.
+    owner = agent.owner_username or agent.agent_id.split("@")[-1]
+    agent_short = agent.agent_id.split("@")[0]
+    url = f"http://127.0.0.1:8420/a2a/{owner}/{agent_short}"
 
     metadata: dict[str, object] = {
         "task_id": task.id,
@@ -76,6 +77,7 @@ async def dispatch_to_gateway(
                 "parts": [{"kind": "text", "text": prompt}],
                 "metadata": metadata,
             },
+            "configuration": {"returnImmediately": True},
         },
     }
 

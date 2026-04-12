@@ -119,6 +119,10 @@ class TaskService:
             created_at=now,
         )
         await self._events.create(event)
+        await self._watch.record_resource(
+            "event", event.id, WatchEventType.ADDED, event,
+            recipe_id=recipe_id,
+        )
 
         return event
 
@@ -171,6 +175,10 @@ class TaskService:
                 created_at=now,
             )
             await self._events.create(event)
+            await self._watch.record_resource(
+                "event", event.id, WatchEventType.ADDED, event,
+                recipe_id=recipe_id,
+            )
             created.append(event)
 
         return created

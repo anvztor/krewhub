@@ -12,7 +12,7 @@ from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
 from krewhub.repositories.cookbook_repo import CookbookRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
-from krewhub.routes.schemas import HeartbeatRequest, RegisterAgentRequest
+from krewhub.routes.schemas import HeartbeatRequest, MintAgentRequest, RegisterAgentRequest
 from krewhub.watch.globals import get_watch_service
 
 router = APIRouter(tags=["agents"], dependencies=[Depends(resolve_caller)])
@@ -97,6 +97,34 @@ async def register_agent(
         display_name=req.display_name, capabilities=req.capabilities,
     )
 
+    return {"presence": updated.model_dump(mode="json")}
+
+
+@router.patch("/agents/{agent_id}/mint")
+async def mint_agent(
+    agent_id: str,
+    req: MintAgentRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller),
+):
+    """Record on-chain ERC-8004 mint for an agent presence row."""
+    repo = AgentRepo(db)
+    presence = await repo.get(agent_id, req.cookbook_id)
+    if presence is None:
+        raise HTTPException(status_code=404, detail="Agent presence not found")
+
+    await db.execute(
+        """UPDATE agent_presence
+           SET mint_tx_hash = ?, mint_token_id = ?,
+               resource_version = resource_version + 1
+           WHERE agent_id = ? AND cookbook_id = ?""",
+        (req.tx_hash, req.token_id, agent_id, req.cookbook_id),
+    )
+    await db.commit()
+
+    updated = await repo.get(agent_id, req.cookbook_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Agent not found after update")
     return {"presence": updated.model_dump(mode="json")}
 
 

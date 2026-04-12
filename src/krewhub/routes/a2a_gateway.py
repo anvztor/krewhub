@@ -74,6 +74,15 @@ async def get_agent_card_legacy(
 # ---------------------------------------------------------------------------
 
 
+@router.get("/a2a/{owner}/{agent}")
+async def get_agent_card_root(
+    owner: str, agent: str,
+    db: aiosqlite.Connection = Depends(get_db),
+) -> JSONResponse:
+    """GET on the agent endpoint returns the agent card (A2A standard)."""
+    return await get_agent_card(owner, agent, db)
+
+
 @router.post("/a2a/{owner}/{agent}")
 async def a2a_jsonrpc(
     owner: str, agent: str,

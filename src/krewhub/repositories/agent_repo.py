@@ -85,6 +85,17 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
     except (IndexError, KeyError):
         owner = None
 
+    # mint fields may not exist in old DBs
+    try:
+        mint_tx_hash = row["mint_tx_hash"]
+    except (IndexError, KeyError):
+        mint_tx_hash = None
+
+    try:
+        mint_token_id = row["mint_token_id"]
+    except (IndexError, KeyError):
+        mint_token_id = None
+
     return AgentPresence(
         agent_id=row["agent_id"],
         cookbook_id=row["cookbook_id"],
@@ -97,4 +108,6 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
         current_task_id=row["current_task_id"],
         resource_version=row["resource_version"],
         owner_username=owner,
+        mint_tx_hash=mint_tx_hash,
+        mint_token_id=mint_token_id,
     )

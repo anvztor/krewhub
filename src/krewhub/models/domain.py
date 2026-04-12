@@ -117,6 +117,8 @@ class AgentPresence(BaseModel, frozen=True):
     current_task_id: str | None = None
     resource_version: int = 1
     owner_username: str | None = None
+    mint_tx_hash: str | None = None
+    mint_token_id: int | None = None
 
 
 class Bundle(BaseModel, frozen=True):

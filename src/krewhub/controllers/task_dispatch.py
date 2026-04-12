@@ -209,10 +209,10 @@ class TaskDispatchController(BaseController):
         return None
 
     async def _send_to_gateway(self, agent, task, recipe=None) -> bool:
-        """Send task to a gateway's A2A endpoint via JSON-RPC message/send."""
-        url = agent.endpoint_url
-        if not url:
-            return False
+        """Send task to a gateway via the A2A hub (not direct endpoint_url)."""
+        owner = agent.owner_username or agent.agent_id.split("@")[-1]
+        agent_short = agent.agent_id.split("@")[0]
+        url = f"http://127.0.0.1:8420/a2a/{owner}/{agent_short}"
 
         metadata = {
             "task_id": task.id,
@@ -240,6 +240,7 @@ class TaskDispatchController(BaseController):
                     ],
                     "metadata": metadata,
                 },
+                "configuration": {"returnImmediately": True},
             },
         }
 

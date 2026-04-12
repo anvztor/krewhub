@@ -88,6 +88,8 @@ class GraphRunnerController(BaseController):
         )
         self._in_flight: set[str] = set()
         self._runner_tasks: set[asyncio.Task] = set()
+        # Skip first 10 reconcile cycles (20s) to let agents heartbeat
+        self._startup_grace = 10
 
     async def stop(self) -> None:
         await super().stop()
@@ -101,6 +103,14 @@ class GraphRunnerController(BaseController):
     # ------------------------------------------------------------------
 
     async def reconcile(self) -> None:
+        # Wait for agents to come online after startup before dispatching.
+        # Without this, the runner fires within 2s of startup but agents
+        # need ~15s to send their first heartbeat, exhausting all attempts
+        # against an empty agent pool.
+        if self._startup_grace > 0:
+            self._startup_grace -= 1
+            return  # Wait for agents to heartbeat after restart
+
         if len(self._in_flight) >= self._max_concurrent:
             return
 
