@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -18,12 +19,16 @@ from krewhub.models import (
     TaskStatus,
     WatchEventType,
 )
+from krewhub.git.merge import merge_code_refs
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.digest_repo import DigestRepo
 from krewhub.repositories.event_repo import EventRepo
+from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.tape.manager import TapeManager
 from krewhub.watch.service import WatchService
+
+logger = logging.getLogger(__name__)
 
 
 class DigestService:
@@ -123,6 +128,34 @@ class DigestService:
             # Create durable tape anchor for approved digest
             tape = TapeManager(self._db, updated.recipe_id)
             await tape.create_digest_anchor(updated)
+            # Merge code refs into recipe's git repo
+            if updated.code_refs:
+                recipe = await RecipeRepo(self._db).get(updated.recipe_id)
+                if recipe is not None:
+                    try:
+                        results = await merge_code_refs(
+                            recipe_repo_url=recipe.repo_url,
+                            default_branch=recipe.default_branch,
+                            code_refs=updated.code_refs,
+                        )
+                        merged = [r for r in results if r.success]
+                        failed = [r for r in results if not r.success]
+                        if merged:
+                            logger.info(
+                                "digest approved: merged %d branch(es) for bundle %s",
+                                len(merged), bundle_id,
+                            )
+                        if failed:
+                            logger.warning(
+                                "digest approved: %d branch merge(s) failed for bundle %s: %s",
+                                len(failed), bundle_id,
+                                "; ".join(f"{r.branch}: {r.message}" for r in failed),
+                            )
+                    except Exception:
+                        logger.exception(
+                            "digest approved: git merge failed for bundle %s",
+                            bundle_id,
+                        )
         else:
             bundle = await self._bundles.update_status(bundle_id, BundleStatus.REJECTED)
             expires_at = now + timedelta(days=self._retention_days)

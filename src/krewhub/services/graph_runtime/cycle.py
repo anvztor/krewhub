@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 
 from krewhub.models import TaskStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
+from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime.a2a import dispatch_to_gateway
 from krewhub.services.graph_runtime.agent_picker import pick_agent_for_kind
@@ -108,6 +109,7 @@ async def dispatch_cycle(
     if task.status == accept_when:
         _record_success(state, node_id, task_id, agent_id=task.claimed_by_agent_id or "",
                         iteration=0, summary="already complete")
+        await _collect_facts_and_code_refs(state, deps, node_id, task_id)
         return f"done: {task.claimed_by_agent_id or 'cached'}"
 
     # Fanin guard: pydantic-graph beta's GraphBuilder fires a downstream
@@ -159,6 +161,7 @@ async def dispatch_cycle(
                     iteration=0,
                     summary="already complete (won race with sibling fire)",
                 )
+                await _collect_facts_and_code_refs(state, deps, node_id, task_id)
                 return f"done: {task.claimed_by_agent_id or 'cached'}"
 
     tried: set[str] = set()
@@ -214,6 +217,7 @@ async def dispatch_cycle(
                     agent_id=owning_agent, iteration=0,
                     summary=f"adopted existing run by {owning_agent or 'unknown'}",
                 )
+                await _collect_facts_and_code_refs(state, deps, node_id, task_id)
                 return f"done: {owning_agent or 'adopted'}"
 
             # Terminal but not DONE → record + fall through to retry loop.
@@ -318,6 +322,7 @@ async def dispatch_cycle(
                 agent_id=chosen.agent_id, iteration=attempt,
                 summary=f"completed by {chosen.agent_id} in {attempt} attempt(s)",
             )
+            await _collect_facts_and_code_refs(state, deps, node_id, task_id)
             return f"done: {chosen.agent_id}"
 
         # Terminal but not the accepted state (blocked / cancelled).
@@ -437,6 +442,22 @@ def _record_failure(
         node_id, task_id, status, summary,
     )
     return f"error: {summary}"
+
+
+async def _collect_facts_and_code_refs(
+    state: OrchestratorState,
+    deps: OrchestratorDeps,
+    node_id: str,
+    task_id: str,
+) -> None:
+    """Read task events and accumulate facts/code_refs on the result record."""
+    record = state.task_results.get(node_id)
+    if record is None:
+        return
+    events = await EventRepo(deps.db).list_by_task(task_id)
+    for evt in events:
+        record.facts.extend(f.model_dump() for f in evt.facts)
+        record.code_refs.extend(c.model_dump() for c in evt.code_refs)
 
 
 async def _mark_claimed(

@@ -58,6 +58,11 @@ class TaskNodeResult:
     `attempts` grows monotonically as the cycle iterates. `success` and
     `summary` reflect the *last* attempt — older outcomes are preserved in
     `attempts` so the UI and post-mortems can replay the history.
+
+    `facts` and `code_refs` are populated after task completion by
+    dispatch_cycle reading back the task's events. They use plain dicts
+    (not domain models) because these are transient runtime records that
+    live only for the duration of one graph.iter() invocation.
     """
 
     node_id: str
@@ -65,6 +70,8 @@ class TaskNodeResult:
     success: bool
     summary: str
     attempts: list[AttemptRecord] = field(default_factory=list)
+    facts: list[dict] = field(default_factory=list)
+    code_refs: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

@@ -67,6 +67,14 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
+    async def list_by_task(self, task_id: str) -> list[Event]:
+        cursor = await self._db.execute(
+            "SELECT * FROM events WHERE task_id = ? ORDER BY sequence, created_at",
+            (task_id,),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_event(r) for r in rows]
+
     async def delete_expired(self, now: datetime) -> int:
         cursor = await self._db.execute(
             "DELETE FROM events WHERE expires_at IS NOT NULL AND expires_at <= ?",
