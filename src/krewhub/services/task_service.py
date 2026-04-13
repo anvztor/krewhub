@@ -100,6 +100,22 @@ class TaskService:
                     "task", task_id, WatchEventType.MODIFIED, updated,
                     recipe_id=recipe_id,
                 )
+                working_event = Event(
+                    id=f"evt_{uuid.uuid4().hex[:8]}",
+                    recipe_id=recipe_id,
+                    bundle_id=task.bundle_id,
+                    task_id=task_id,
+                    type=EventType.TASK_WORKING,
+                    actor_id=actor_id,
+                    actor_type=actor_type,
+                    body=f"Task '{task.title}' is now working.",
+                    created_at=datetime.now(timezone.utc),
+                )
+                await self._events.create(working_event)
+                await self._watch.record_resource(
+                    "event", working_event.id, WatchEventType.ADDED, working_event,
+                    recipe_id=recipe_id,
+                )
 
         sequence = await self._events.next_sequence(task_id)
         now = datetime.now(timezone.utc)
@@ -150,6 +166,23 @@ class TaskService:
             if updated is not None:
                 await self._watch.record_resource(
                     "task", task_id, WatchEventType.MODIFIED, updated,
+                    recipe_id=recipe_id,
+                )
+                first = events[0]
+                working_event = Event(
+                    id=f"evt_{uuid.uuid4().hex[:8]}",
+                    recipe_id=recipe_id,
+                    bundle_id=task.bundle_id,
+                    task_id=task_id,
+                    type=EventType.TASK_WORKING,
+                    actor_id=first["actor_id"],
+                    actor_type=ActorType(first.get("actor_type", "agent")),
+                    body=f"Task '{task.title}' is now working.",
+                    created_at=datetime.now(timezone.utc),
+                )
+                await self._events.create(working_event)
+                await self._watch.record_resource(
+                    "event", working_event.id, WatchEventType.ADDED, working_event,
                     recipe_id=recipe_id,
                 )
 

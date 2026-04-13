@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import resolve_caller
+from krewhub.auth import CallerContext, resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
@@ -30,16 +30,20 @@ async def create_bundle(
     recipe_id: str,
     req: CreateBundleRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller),
 ):
     recipe = await RecipeRepo(db).get(recipe_id)
     if recipe is None:
         raise HTTPException(status_code=404, detail="Recipe not found")
 
+    # Use caller identity from JWT, not client-supplied value
+    created_by = caller.username or caller.account_id
+
     svc = BundleService(db, get_watch_service())
     bundle, tasks = await svc.create_bundle(
         recipe_id=recipe_id,
         prompt=req.prompt,
-        created_by=req.requested_by,
+        created_by=created_by,
         tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
     )
     return {

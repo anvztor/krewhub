@@ -29,6 +29,7 @@ class CreateBundleRequest(BaseModel):
     prompt: str
     requested_by: str
     tasks: list[CreateTaskInput] = []
+    template: str | None = None  # built-in graph template name
 
 
 class ClaimTaskRequest(BaseModel):

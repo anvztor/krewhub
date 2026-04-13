@@ -36,6 +36,7 @@ class EventType(StrEnum):
     PROMPT = "prompt"
     PLAN = "plan"
     TASK_CLAIMED = "task_claimed"
+    TASK_WORKING = "task_working"
     MILESTONE = "milestone"
     FACT_ADDED = "fact_added"
     CODE_PUSHED = "code_pushed"
