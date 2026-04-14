@@ -169,6 +169,124 @@ async def resolve_caller(
     raise HTTPException(status_code=401, detail="Missing or invalid credentials")
 
 
+# ---------------------------------------------------------------------------
+# Cookie-based auth (BFF elimination)
+# ---------------------------------------------------------------------------
+
+
+def _decode_jwt_token(token: str, settings: Settings) -> dict[str, Any] | None:
+    """Try ES256 then HS256 to decode a JWT. Return payload or None."""
+    payload: dict[str, Any] | None = None
+
+    if _jwk_client is not None:
+        try:
+            payload = _decode_es256(token)
+        except Exception:
+            pass
+
+    if payload is None and settings.jwt_secret:
+        try:
+            payload = _decode_hs256(token, settings.jwt_secret)
+        except jwt.ExpiredSignatureError:
+            raise HTTPException(status_code=401, detail="Session expired")
+        except jwt.InvalidTokenError:
+            pass
+
+    return payload
+
+
+def _caller_from_payload(payload: dict[str, Any], request: Request) -> CallerContext:
+    """Build a CallerContext from a decoded JWT payload."""
+    sub = payload["sub"]
+    method = payload.get("method", "siwe")
+    wallet = payload.get("wallet")
+
+    if sub.startswith("0x"):
+        wallet = sub
+        account_id = sub
+    else:
+        account_id = sub
+
+    acting_as: Literal["human", "agent"] = "human"
+    acting_agent_id: int | None = None
+
+    act = payload.get("act")
+    if act and isinstance(act, dict):
+        acting_as = "agent"
+        acting_agent_id = act.get("erc8004_id")
+    else:
+        acting_header = request.headers.get("X-Acting-As")
+        if acting_header and acting_header.startswith("agent:"):
+            try:
+                acting_agent_id = int(acting_header.split(":", 1)[1])
+                acting_as = "agent"
+            except ValueError:
+                raise HTTPException(
+                    status_code=400,
+                    detail="X-Acting-As must be 'agent:<erc8004_agent_id>'",
+                )
+
+    return CallerContext(
+        account_id=account_id,
+        username=payload.get("username"),
+        principal_type="agent" if acting_as == "agent" else "human",
+        wallet_address=wallet,
+        session_id=payload.get("sid"),
+        acting_as=acting_as,
+        acting_agent_id=acting_agent_id,
+        auth_method=method,
+        machine_key_thumbprint=(payload.get("cnf") or {}).get("jkt"),
+    )
+
+
+async def resolve_caller_or_cookie(
+    request: Request,
+    bearer: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    api_key: str | None = Depends(_api_key_header),
+    settings: Settings = Depends(get_settings),
+) -> CallerContext:
+    """Resolve caller from Bearer JWT, API key, or krew_session cookie.
+
+    Priority: Bearer JWT > X-API-Key > Cookie.
+    """
+    # Try Bearer JWT
+    if bearer is not None:
+        payload = _decode_jwt_token(bearer.credentials, settings)
+        if payload is None:
+            raise HTTPException(status_code=401, detail="Invalid session token")
+        return _caller_from_payload(payload, request)
+
+    # Try API key
+    if api_key and api_key == settings.api_key:
+        return CallerContext(
+            account_id=_LEGACY_ACCOUNT_ID,
+            auth_method="api_key",
+        )
+
+    # Try cookie
+    cookie_token = request.cookies.get("krew_session")
+    if cookie_token:
+        payload = _decode_jwt_token(cookie_token, settings)
+        if payload is None:
+            raise HTTPException(status_code=401, detail="Invalid session cookie")
+        return _caller_from_payload(payload, request)
+
+    raise HTTPException(status_code=401, detail="Missing or invalid credentials")
+
+
+async def optional_cookie_caller(
+    request: Request,
+    bearer: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
+    api_key: str | None = Depends(_api_key_header),
+    settings: Settings = Depends(get_settings),
+) -> CallerContext | None:
+    """Like resolve_caller_or_cookie but returns None instead of 401."""
+    try:
+        return await resolve_caller_or_cookie(request, bearer, api_key, settings)
+    except HTTPException:
+        return None
+
+
 # Backward-compat alias
 async def verify_api_key(
     api_key: str | None = Depends(_api_key_header),

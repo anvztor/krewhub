@@ -5,12 +5,16 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 # Ensure krewhub loggers are visible (uvicorn only shows its own by default)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 from krewhub.db.connection import close_db, init_db
-from krewhub.routes import a2a_callback, a2a_gateway, agents, bundles, cookbooks, git_http, hooks, recipes, stream, tapes, tasks
+from krewhub.routes import (
+    a2a_callback, a2a_gateway, agents, aggregate, auth_web, bundles,
+    cookbooks, git_http, hooks, proxy_krewauth, recipes, stream, tapes, tasks,
+)
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
 from krewhub.controllers.manager import ControllerManager
@@ -61,8 +65,27 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Auth routes now served by krewauth (port 8421)
-    # krewhub only verifies JWTs via JWKS — no auth endpoints here
+    # CORS — allow the frontend origin with credentials (cookies)
+    from krewhub.config import get_settings
+    settings = get_settings()
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[settings.app_origin],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    # Browser-facing auth (cookie-based, no prefix)
+    app.include_router(auth_web.router)
+
+    # Proxied krewauth routes
+    app.include_router(proxy_krewauth.router, prefix="/api/v1")
+
+    # Aggregate endpoints (BFF elimination)
+    app.include_router(aggregate.router, prefix="/api/v1")
+
+    # Existing API routes
     app.include_router(cookbooks.router, prefix="/api/v1")
     app.include_router(recipes.router, prefix="/api/v1")
     app.include_router(bundles.router, prefix="/api/v1")

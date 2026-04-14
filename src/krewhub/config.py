@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     erc8004_identity_registry: str = "0x556089008Fc0a60cD09390Eca93477ca254A5522"
     erc8004_reputation_registry: str = "0xd9140951d8aE6E5F625a02F5908535e16e3af964"
 
+    # BFF elimination: cookie auth + proxy
+    krew_auth_url: str = "http://127.0.0.1:8421"
+    app_origin: str = "http://localhost:3000"
+    auth_redirect_uri: str = "http://localhost:3000/auth/callback"
+    cookie_secure: bool = False
+    cookie_domain: str = ""
+
     model_config = {"env_prefix": "KREWHUB_"}
 
 
