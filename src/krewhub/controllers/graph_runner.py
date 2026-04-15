@@ -301,7 +301,7 @@ class GraphRunnerController(BaseController):
     async def _auto_submit_digest(
         self, bundle_id: str, state: OrchestratorState,
     ) -> None:
-        """Aggregate facts/code_refs from graph state and submit a digest."""
+        """Aggregate facts/code_refs from graph state + events and submit a digest."""
         all_facts: list[dict] = []
         all_code_refs: list[dict] = []
         task_results: list[dict] = []
@@ -313,6 +313,19 @@ class GraphRunnerController(BaseController):
             })
             all_facts.extend(result.facts)
             all_code_refs.extend(result.code_refs)
+
+        # Fallback: also collect from events table (covers facts posted
+        # via POST /tasks/{id}/events that dispatch_cycle didn't capture)
+        try:
+            from krewhub.repositories.event_repo import EventRepo
+            event_repo = EventRepo(self._db)
+            for result in state.task_results.values():
+                events = await event_repo.list_by_task(result.task_id)
+                for evt in events:
+                    all_facts.extend(f.model_dump() for f in evt.facts)
+                    all_code_refs.extend(c.model_dump() for c in evt.code_refs)
+        except Exception:
+            logger.debug("graph runner: event-based fact collection skipped", exc_info=True)
 
         all_facts = _dedupe_facts(all_facts)
         all_code_refs = _dedupe_code_refs(all_code_refs)
