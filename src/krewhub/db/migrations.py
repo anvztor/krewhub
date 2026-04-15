@@ -203,6 +203,11 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _create_index_if_missing(db, "idx_a2a_invocations_agent", "a2a_invocations", "(owner, agent_name, status)")
     await _create_index_if_missing(db, "idx_a2a_invocations_expires", "a2a_invocations", "(expires_at)")
 
+    # Phase 10: on-chain agent metadata
+    await _add_column_if_missing(db, "agent_presence", "mint_tx_hash", "TEXT")
+    await _add_column_if_missing(db, "agent_presence", "mint_token_id", "INTEGER")
+    await _add_column_if_missing(db, "agent_presence", "aa_wallet_address", "TEXT")
+
     await db.commit()
 
 

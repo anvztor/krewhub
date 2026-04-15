@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 import aiosqlite
 
 from krewhub.auth import CallerContext, resolve_caller
+from krewhub.config import Settings, get_settings
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
@@ -14,6 +16,8 @@ from krewhub.repositories.cookbook_repo import CookbookRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest, MintAgentRequest, RegisterAgentRequest
 from krewhub.watch.globals import get_watch_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["agents"], dependencies=[Depends(resolve_caller)])
 
@@ -41,8 +45,10 @@ async def list_agents(
 @router.post("/agents/register")
 async def register_agent(
     req: RegisterAgentRequest,
+    request: Request,
     db: aiosqlite.Connection = Depends(get_db),
     caller: CallerContext = Depends(resolve_caller),
+    settings: Settings = Depends(get_settings),
 ):
     """Register an agent node with krewhub.
 
@@ -96,6 +102,40 @@ async def register_agent(
         db, owner=owner_username, agent_name=agent_short_name,
         display_name=req.display_name, capabilities=req.capabilities,
     )
+
+    # Provision AA wallet (best-effort — registration succeeds regardless)
+    if caller.wallet_address and settings.krewhub_session_pubkey:
+        auth_header = request.headers.get("authorization", "")
+        bearer_token = (
+            auth_header.removeprefix("Bearer ")
+            if auth_header.startswith("Bearer ")
+            else ""
+        )
+        if bearer_token:
+            try:
+                from krewhub.clients.krewauth_client import KrewauthClient
+                from krewhub.services.agent_wallet_service import provision_agent_wallet
+
+                client = KrewauthClient(settings.krewauth_base_url)
+                try:
+                    result = await provision_agent_wallet(
+                        client=client,
+                        settings=settings,
+                        caller_token=bearer_token,
+                        agent_id=req.agent_id,
+                        cookbook_id=req.cookbook_id,
+                    )
+                    await repo.set_wallet_address(
+                        req.agent_id, req.cookbook_id, result.aa_wallet_address,
+                    )
+                    updated = await repo.get(req.agent_id, req.cookbook_id) or updated
+                finally:
+                    await client.close()
+            except Exception as exc:
+                logger.warning(
+                    "AA wallet provisioning failed for agent %s: %s",
+                    req.agent_id, exc,
+                )
 
     return {"presence": updated.model_dump(mode="json")}
 

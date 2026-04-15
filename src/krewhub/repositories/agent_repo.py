@@ -65,6 +65,15 @@ class AgentRepo:
             return None
         return _row_to_presence(row)
 
+    async def set_wallet_address(
+        self, agent_id: str, cookbook_id: str, aa_wallet_address: str,
+    ) -> None:
+        await self._db.execute(
+            "UPDATE agent_presence SET aa_wallet_address = ? WHERE agent_id = ? AND cookbook_id = ?",
+            (aa_wallet_address, agent_id, cookbook_id),
+        )
+        await self._db.commit()
+
     async def mark_offline_stale(self, cutoff: datetime) -> int:
         cursor = await self._db.execute(
             """UPDATE agent_presence
@@ -96,6 +105,11 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
     except (IndexError, KeyError):
         mint_token_id = None
 
+    try:
+        aa_wallet_address = row["aa_wallet_address"]
+    except (IndexError, KeyError):
+        aa_wallet_address = None
+
     return AgentPresence(
         agent_id=row["agent_id"],
         cookbook_id=row["cookbook_id"],
@@ -110,4 +124,5 @@ def _row_to_presence(row: aiosqlite.Row) -> AgentPresence:
         owner_username=owner,
         mint_tx_hash=mint_tx_hash,
         mint_token_id=mint_token_id,
+        aa_wallet_address=aa_wallet_address,
     )

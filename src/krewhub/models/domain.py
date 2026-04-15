@@ -120,6 +120,7 @@ class AgentPresence(BaseModel, frozen=True):
     owner_username: str | None = None
     mint_tx_hash: str | None = None
     mint_token_id: int | None = None
+    aa_wallet_address: str | None = None
 
 
 class Bundle(BaseModel, frozen=True):
