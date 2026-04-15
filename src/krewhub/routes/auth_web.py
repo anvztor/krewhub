@@ -37,7 +37,7 @@ def _cookie_kwargs(settings: Settings) -> dict:
 
 
 @router.get("/auth/callback")
-async def auth_callback(code: str, state: str = "") -> Response:
+async def auth_callback(code: str, state: str = "") -> Response:  # noqa: ARG001
     """Exchange authorization code for token, set session cookie, redirect."""
     settings = get_settings()
 
@@ -65,7 +65,7 @@ async def auth_callback(code: str, state: str = "") -> Response:
     if not access_token:
         raise HTTPException(status_code=502, detail="No access_token in response")
 
-    redirect_url = state if state else settings.app_origin
+    redirect_url = settings.app_origin
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.set_cookie(key="krew_session", value=access_token, **_cookie_kwargs(settings))
     return response
