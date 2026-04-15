@@ -45,10 +45,11 @@ async def auth_callback(code: str, state: str = "") -> Response:
         try:
             resp = await client.post(
                 f"{settings.krew_auth_url}/auth/token",
-                data={
+                json={
                     "grant_type": "authorization_code",
                     "code": code,
                     "redirect_uri": settings.auth_redirect_uri,
+                    "client_id": "cookrew",
                 },
             )
             resp.raise_for_status()
