@@ -134,8 +134,7 @@ async def set_username(body: SetUsernameRequest, request: Request) -> JSONRespon
         try:
             resp = await client.post(
                 f"{settings.krew_auth_url}/auth/username/set",
-                headers={"Authorization": f"Bearer {token}"},
-                json={"username": body.username},
+                json={"username": body.username, "token": token},
             )
             resp.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -147,4 +146,9 @@ async def set_username(body: SetUsernameRequest, request: Request) -> JSONRespon
             logger.error("Username set request error: %s", exc)
             raise HTTPException(status_code=502, detail="Auth service unreachable")
 
-    return JSONResponse(content=resp.json())
+    data = resp.json()
+    response = JSONResponse(content=data)
+    new_token = data.get("token")
+    if new_token:
+        response.set_cookie(key="krew_session", value=new_token, **_cookie_kwargs(settings))
+    return response
