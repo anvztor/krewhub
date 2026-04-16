@@ -217,3 +217,36 @@ async def test_agent_can_only_hold_one_active_task(client):
 
     assert first_claim.status_code == 200
     assert second_claim.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_cancel_task_via_cookie_auth(client, cookie_client):
+    """Regression: browser cancel-task POST must accept the krew_session
+    cookie. Same BFF-elimination gap that affected /bundles routes —
+    tasks router was on resolve_caller until Phase 3.
+    """
+    # Seed via API key (still works), then cancel via cookie.
+    resp = await client.post("/api/v1/cookbooks", json={
+        "name": "test-task-cookie-cookbook",
+        "owner_id": "human_1",
+    })
+    cookbook_id = resp.json()["cookbook"]["id"]
+    resp = await client.post("/api/v1/recipes", json={
+        "name": "test/task-cookie",
+        "repo_url": "git@github.com:test/task-cookie.git",
+        "created_by": "human_1",
+        "cookbook_id": cookbook_id,
+    })
+    recipe_id = resp.json()["recipe"]["id"]
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Cancel-via-cookie smoke",
+        "requested_by": "human_1",
+        "tasks": [{"title": "Will be cancelled"}],
+    })
+    task_id = resp.json()["tasks"][0]["id"]
+
+    resp = await cookie_client.post(f"/api/v1/tasks/{task_id}/cancel")
+    assert resp.status_code == 200, (
+        f"expected 200, got {resp.status_code}: {resp.text}"
+    )
+    assert resp.json()["task"]["status"] == "cancelled"
