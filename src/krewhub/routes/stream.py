@@ -6,11 +6,13 @@ import json
 from fastapi import APIRouter, Depends, Query, Request
 from sse_starlette.sse import EventSourceResponse
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import resolve_caller_or_cookie
 from krewhub.watch.globals import get_watch_service
 from krewhub.watch.types import WatchEvent, WatchOptions
 
-router = APIRouter(tags=["stream"], dependencies=[Depends(resolve_caller)])
+# Watch streams accept Bearer JWT, X-API-Key, OR krew_session cookie
+# so cookrew (browser via cookie) and krewcli (Bearer) both work.
+router = APIRouter(tags=["stream"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
 @router.get("/recipes/{recipe_id}/stream")
