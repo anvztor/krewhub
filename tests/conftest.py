@@ -54,3 +54,24 @@ async def anon_client(_setup_db):
         base_url="http://test",
     ) as ac:
         yield ac
+
+
+@pytest_asyncio.fixture
+async def cookie_client(_setup_db):
+    """Client authenticated via krew_session cookie (simulates browser after BFF elimination)."""
+    import jwt
+
+    settings = get_settings()
+    token = jwt.encode(
+        {"sub": "acc_test_cookie", "username": "cookie_tester", "method": "passkey"},
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"krew_session": token},
+    ) as ac:
+        yield ac

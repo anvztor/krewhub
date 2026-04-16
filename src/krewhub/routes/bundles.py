@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import CallerContext, resolve_caller
+from krewhub.auth import CallerContext, resolve_caller_or_cookie
 from krewhub.db.connection import get_db
 from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
@@ -22,7 +22,7 @@ from krewhub.routes.schemas import (
     SubmitDigestRequest,
 )
 
-router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller)])
+router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
 @router.post("/recipes/{recipe_id}/bundles")
@@ -30,7 +30,7 @@ async def create_bundle(
     recipe_id: str,
     req: CreateBundleRequest,
     db: aiosqlite.Connection = Depends(get_db),
-    caller: CallerContext = Depends(resolve_caller),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     recipe = await RecipeRepo(db).get(recipe_id)
     if recipe is None:

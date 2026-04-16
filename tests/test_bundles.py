@@ -130,3 +130,27 @@ async def test_add_task_requires_existing_bundle(client):
 
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Bundle not found"
+
+
+@pytest.mark.asyncio
+async def test_create_bundle_via_cookie_auth(client, cookie_client):
+    """Regression: browser clients (post-BFF-elimination) authenticate via the
+    krew_session cookie only. The bundles router must accept cookie auth,
+    not just Bearer JWT / X-API-Key.
+    """
+    # Seed the recipe with API-key client (existing path still works).
+    recipe_id = await _create_recipe(client)
+
+    # Submit a bundle as the browser would — cookie-only.
+    resp = await cookie_client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "Cookie-auth submit from Prompt Composer",
+        "requested_by": "cookie_tester",
+        "tasks": [{"title": "Smoke task"}],
+    })
+    assert resp.status_code == 200, (
+        f"expected 200, got {resp.status_code}: {resp.text}"
+    )
+    data = resp.json()
+    assert data["bundle"]["status"] == "open"
+    # Server uses caller identity from cookie JWT, not client-supplied value.
+    assert data["bundle"]["created_by"] == "cookie_tester"
