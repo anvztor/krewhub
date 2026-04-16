@@ -15,6 +15,7 @@ class WatchEvent:
     object: dict[str, Any]
     recipe_id: str | None = None
     seq: int = 0
+    channel: str = ""  # Typed channel: task:completed, digest:submitted, etc.
 
 
 @dataclass(frozen=True)
@@ -25,3 +26,7 @@ class WatchOptions:
     recipe_id: str | None = None
     since: int = 0  # replay from this seq (exclusive)
     resource_types: list[str] = field(default_factory=list)
+    # Channel filter: if non-empty, only events whose channel starts with
+    # any prefix in this list are delivered. Wildcard-style: "task:*" matches
+    # any task channel, "task:completed" matches exactly.
+    channel_prefixes: list[str] = field(default_factory=list)

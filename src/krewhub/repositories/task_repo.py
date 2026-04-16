@@ -234,6 +234,28 @@ class TaskRepo:
 
 
 def _row_to_task(row: aiosqlite.Row) -> Task:
+    # progress_json column may not exist on older DBs
+    try:
+        progress_raw = row["progress_json"]
+        progress = json.loads(progress_raw) if progress_raw else None
+    except (IndexError, KeyError):
+        progress = None
+
+    # Phase 4 M3 columns may not exist on older DBs
+    try:
+        session_id = row["session_id"]
+    except (IndexError, KeyError):
+        session_id = None
+    try:
+        work_dir = row["work_dir"]
+    except (IndexError, KeyError):
+        work_dir = None
+    try:
+        artifacts_raw = row["artifacts_json"]
+        artifacts = json.loads(artifacts_raw) if artifacts_raw else {}
+    except (IndexError, KeyError):
+        artifacts = {}
+
     return Task(
         id=row["id"],
         bundle_id=row["bundle_id"],
@@ -249,4 +271,8 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         graph_node_id=row["graph_node_id"] if "graph_node_id" in row.keys() else None,
         resource_version=row["resource_version"],
         generation=row["generation"],
+        progress=progress,
+        session_id=session_id,
+        work_dir=work_dir,
+        artifacts=artifacts,
     )

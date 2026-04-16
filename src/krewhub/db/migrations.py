@@ -208,6 +208,17 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _add_column_if_missing(db, "agent_presence", "mint_token_id", "INTEGER")
     await _add_column_if_missing(db, "agent_presence", "aa_wallet_address", "TEXT")
 
+    # Phase 11: task progress (latest-only, JSON blob)
+    await _add_column_if_missing(db, "tasks", "progress_json", "TEXT")
+
+    # Phase 4 M3: completion metadata for resumability
+    await _add_column_if_missing(db, "tasks", "session_id", "TEXT")
+    await _add_column_if_missing(db, "tasks", "work_dir", "TEXT")
+    await _add_column_if_missing(db, "tasks", "artifacts_json", "TEXT")
+
+    # Phase 4 M5: event visibility split
+    await _add_column_if_missing(db, "events", "visibility", "TEXT NOT NULL DEFAULT 'system'")
+
     await db.commit()
 
 
@@ -266,7 +277,7 @@ async def _migrate_events_actor_type_hook(db: aiosqlite.Connection) -> None:
 
 
 async def _migrate_events_add_types(db: aiosqlite.Connection) -> None:
-    """Rebuild events table if CHECK doesn't include tool_result/thinking."""
+    """Rebuild events table if CHECK doesn't include tool_result/thinking/task_working."""
     if not await _table_exists(db, "events"):
         return
     cursor = await db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='events'")
@@ -274,7 +285,8 @@ async def _migrate_events_add_types(db: aiosqlite.Connection) -> None:
     if row is None:
         return
     ddl = row["sql"] or ""
-    if "'thinking'" in ddl:
+    # If thinking is already there AND task_working is there, nothing to do
+    if "'thinking'" in ddl and "'task_working'" in ddl:
         return
     logger.info("Migration: rebuilding events table for new event types")
     await db.executescript("""
@@ -285,7 +297,7 @@ async def _migrate_events_add_types(db: aiosqlite.Connection) -> None:
             bundle_id TEXT REFERENCES bundles(id),
             task_id TEXT,
             type TEXT NOT NULL CHECK(type IN (
-                'prompt', 'plan', 'task_claimed', 'milestone',
+                'prompt', 'plan', 'task_claimed', 'task_working', 'milestone',
                 'fact_added', 'code_pushed', 'digest_submitted',
                 'digest_approved', 'digest_rejected',
                 'session_start', 'session_end', 'tool_use', 'tool_result',

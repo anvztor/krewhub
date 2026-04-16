@@ -85,12 +85,49 @@ CREATE TABLE IF NOT EXISTS tasks (
     blocked_reason TEXT,
     graph_node_id TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
-    generation INTEGER NOT NULL DEFAULT 1
+    generation INTEGER NOT NULL DEFAULT 1,
+    progress_json TEXT,
+    -- Phase 4 M3: completion metadata for resumability
+    session_id TEXT,
+    work_dir TEXT,
+    artifacts_json TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(bundle_id, graph_node_id);
+
+-- Phase 3 M1: daemon runtime instances (krewcli processes)
+CREATE TABLE IF NOT EXISTS agent_runtimes (
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    account_id TEXT NOT NULL,
+    daemon_version TEXT,
+    provider TEXT,
+    host_info TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'online'
+        CHECK(status IN ('online', 'offline', 'degraded')),
+    last_seen_at TEXT NOT NULL,
+    started_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_agent_runtimes_account ON agent_runtimes(account_id);
+CREATE INDEX IF NOT EXISTS idx_agent_runtimes_last_seen ON agent_runtimes(last_seen_at);
+
+-- Phase 4 M2: per-task LLM token usage (one row per reported run;
+-- multiple rows accumulate for multi-turn tasks).
+CREATE TABLE IF NOT EXISTS task_usage (
+    id TEXT PRIMARY KEY,
+    task_id TEXT NOT NULL REFERENCES tasks(id),
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    model TEXT,
+    cost_usd REAL,
+    duration_ms INTEGER,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_usage_task ON task_usage(task_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
@@ -99,7 +136,7 @@ CREATE TABLE IF NOT EXISTS events (
     task_id TEXT,
     type TEXT NOT NULL
         CHECK(type IN (
-            'prompt', 'plan', 'task_claimed', 'milestone',
+            'prompt', 'plan', 'task_claimed', 'task_working', 'milestone',
             'fact_added', 'code_pushed', 'digest_submitted',
             'digest_approved', 'digest_rejected',
             'session_start', 'session_end', 'tool_use', 'tool_result',
@@ -112,6 +149,7 @@ CREATE TABLE IF NOT EXISTS events (
     sequence INTEGER NOT NULL DEFAULT 0,
     facts TEXT NOT NULL DEFAULT '[]',
     code_refs TEXT NOT NULL DEFAULT '[]',
+    visibility TEXT NOT NULL DEFAULT 'system',
     created_at TEXT NOT NULL,
     expires_at TEXT
 );

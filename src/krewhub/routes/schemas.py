@@ -44,6 +44,9 @@ class PostEventRequest(BaseModel):
     payload: dict = Field(default_factory=dict)
     facts: list[dict] = []
     code_refs: list[dict] = []
+    # Explicit visibility override ('user' or 'system'); when None,
+    # classifier uses the type to decide.
+    visibility: str | None = None
 
 
 class BatchEventItem(BaseModel):
@@ -54,6 +57,7 @@ class BatchEventItem(BaseModel):
     payload: dict | None = None
     facts: list[dict] = []
     code_refs: list[dict] = []
+    visibility: str | None = None
 
 
 class PostEventsBatchRequest(BaseModel):
@@ -63,6 +67,52 @@ class PostEventsBatchRequest(BaseModel):
 class UpdateTaskStatusRequest(BaseModel):
     status: str
     blocked_reason: str | None = None
+
+
+class PostTaskProgressRequest(BaseModel):
+    """Progress update for a running task.
+
+    Either step/total or percent can be provided. The summary is a
+    short human-readable label (e.g. "Running tests", "Compiling").
+    """
+    summary: str = Field("", max_length=200)
+    step: int | None = Field(None, ge=0)
+    total: int | None = Field(None, ge=1)
+    percent: float | None = Field(None, ge=0.0, le=1.0)
+
+
+class RegisterRuntimeRequest(BaseModel):
+    """Daemon registration — identifies a krewcli process instance."""
+    agent_id: str
+    account_id: str
+    daemon_version: str | None = None
+    provider: str | None = None
+    host_info: dict = Field(default_factory=dict)
+
+
+class PostTaskUsageRequest(BaseModel):
+    """LLM token usage report for a task run (or sub-run).
+
+    Multiple posts are allowed per task — they accumulate. Typically
+    called at session_end with the totals from Claude's `usage` field.
+    """
+    input_tokens: int = Field(ge=0)
+    output_tokens: int = Field(ge=0)
+    model: str | None = None
+    cost_usd: float | None = Field(None, ge=0.0)
+    duration_ms: int | None = Field(None, ge=0)
+
+
+class PostTaskCompletionRequest(BaseModel):
+    """Completion metadata for a task — session_id, work_dir, artifacts.
+
+    All fields optional. session_id enables Claude resume; work_dir
+    identifies where the task ran; artifacts captures files written,
+    commits, PR URL, etc. for later inspection.
+    """
+    session_id: str | None = None
+    work_dir: str | None = None
+    artifacts: dict = Field(default_factory=dict)
 
 
 class AddTaskRequest(BaseModel):

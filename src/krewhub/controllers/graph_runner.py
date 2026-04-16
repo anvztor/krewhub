@@ -315,7 +315,9 @@ class GraphRunnerController(BaseController):
             all_code_refs.extend(result.code_refs)
 
         # Fallback: also collect from events table (covers facts posted
-        # via POST /tasks/{id}/events that dispatch_cycle didn't capture)
+        # via POST /tasks/{id}/events that dispatch_cycle didn't capture).
+        # Also collect event-sink telemetry so we can warn on data loss.
+        total_dropped = 0
         try:
             from krewhub.repositories.event_repo import EventRepo
             event_repo = EventRepo(self._db)
@@ -324,6 +326,10 @@ class GraphRunnerController(BaseController):
                 for evt in events:
                     all_facts.extend(f.model_dump() for f in evt.facts)
                     all_code_refs.extend(c.model_dump() for c in evt.code_refs)
+                    # Check for event-sink drop telemetry
+                    payload = evt.payload or {}
+                    if payload.get("_telemetry") == "event_sink":
+                        total_dropped += int(payload.get("dropped_count") or 0)
         except Exception:
             logger.debug("graph runner: event-based fact collection skipped", exc_info=True)
 
@@ -338,6 +344,8 @@ class GraphRunnerController(BaseController):
             f" — {fact_count} fact{'s' if fact_count != 1 else ''},"
             f" {code_ref_count} code ref{'s' if code_ref_count != 1 else ''}"
         )
+        if total_dropped > 0:
+            summary += f" ⚠ {total_dropped} event(s) dropped under back-pressure"
 
         try:
             digest_svc = DigestService(self._db, self._watch)

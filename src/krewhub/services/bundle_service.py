@@ -297,10 +297,17 @@ class BundleService:
 
         updated = await self._bundles.update_status(bundle_id, BundleStatus.CANCELLED)
 
+        # Cascade cancel to tasks and emit watch events so the agent
+        # can pick up the cancellation via SSE.
         tasks = await self._tasks.list_by_bundle(bundle_id)
         for task in tasks:
             if task.status not in (TaskStatus.DONE, TaskStatus.CANCELLED):
-                await self._tasks.update(task.id, status=TaskStatus.CANCELLED)
+                cancelled_task = await self._tasks.update(task.id, status=TaskStatus.CANCELLED)
+                if cancelled_task is not None:
+                    await self._watch.record_resource(
+                        "task", task.id, WatchEventType.MODIFIED, cancelled_task,
+                        recipe_id=bundle.recipe_id,
+                    )
 
         if updated is not None:
             await self._watch.record_resource(

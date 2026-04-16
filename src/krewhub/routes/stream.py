@@ -46,18 +46,24 @@ async def watch_stream(
     resource_type: str | None = Query(None),
     recipe_id: str | None = Query(None),
     since: int = Query(0),
+    channel: str | None = Query(None, description="Comma-separated channel filters. Supports trailing *, e.g. 'task:*,digest:submitted'"),
 ):
     """Watch API endpoint. Returns an SSE stream of WatchEvents.
 
     Supports replay: pass ?since=<seq> to receive events after that
     sequence number. On reconnect, the client passes the last seen
     seq to guarantee no missed events.
+
+    Channel filtering: pass ?channel=task:message,digest:* to only receive
+    events matching those typed channels.
     """
     watch = get_watch_service()
+    channel_prefixes = [c.strip() for c in (channel or "").split(",") if c.strip()]
     options = WatchOptions(
         resource_type=resource_type,
         recipe_id=recipe_id,
         since=since,
+        channel_prefixes=channel_prefixes,
     )
 
     # First replay any missed events since the given seq
@@ -89,7 +95,7 @@ async def watch_stream(
 
 def _format_watch_event(event: WatchEvent) -> dict:
     return {
-        "event": event.event_type,
+        "event": event.channel or event.event_type,
         "data": json.dumps({
             "type": event.event_type,
             "resource_type": event.resource_type,
@@ -97,6 +103,7 @@ def _format_watch_event(event: WatchEvent) -> dict:
             "resource_version": event.resource_version,
             "object": event.object,
             "seq": event.seq,
+            "channel": event.channel,
         }),
     }
 

@@ -88,7 +88,10 @@ class TaskService:
         payload: dict | None = None,
         facts: list[FactRef] | None = None,
         code_refs: list[CodeRef] | None = None,
+        visibility: str | None = None,
     ) -> Event:
+        from krewhub.services.event_visibility import classify_visibility
+
         task = await self._tasks.get(task_id)
         if task is None:
             raise ValueError(f"Task {task_id} not found")
@@ -109,6 +112,7 @@ class TaskService:
                     actor_id=actor_id,
                     actor_type=actor_type,
                     body=f"Task '{task.title}' is now working.",
+                    visibility=classify_visibility("task_working"),
                     created_at=datetime.now(timezone.utc),
                 )
                 await self._events.create(working_event)
@@ -119,6 +123,7 @@ class TaskService:
 
         sequence = await self._events.next_sequence(task_id)
         now = datetime.now(timezone.utc)
+        resolved_visibility = visibility or classify_visibility(str(event_type))
         event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=recipe_id,
@@ -132,6 +137,7 @@ class TaskService:
             sequence=sequence,
             facts=facts or [],
             code_refs=code_refs or [],
+            visibility=resolved_visibility,
             created_at=now,
         )
         await self._events.create(event)
@@ -186,18 +192,22 @@ class TaskService:
                     recipe_id=recipe_id,
                 )
 
+        from krewhub.services.event_visibility import classify_visibility
+
         created: list[Event] = []
         for spec in events:
             sequence = await self._events.next_sequence(task_id)
             now = datetime.now(timezone.utc)
             facts_raw = spec.get("facts") or []
             code_refs_raw = spec.get("code_refs") or []
+            evt_type = spec["type"]
+            vis = spec.get("visibility") or classify_visibility(evt_type)
             event = Event(
                 id=f"evt_{uuid.uuid4().hex[:8]}",
                 recipe_id=recipe_id,
                 bundle_id=task.bundle_id,
                 task_id=task_id,
-                type=EventType(spec["type"]),
+                type=EventType(evt_type),
                 actor_id=spec["actor_id"],
                 actor_type=ActorType(spec.get("actor_type", "agent")),
                 body=spec.get("body", ""),
@@ -205,6 +215,7 @@ class TaskService:
                 sequence=sequence,
                 facts=[FactRef(**f) for f in facts_raw],
                 code_refs=[CodeRef(**c) for c in code_refs_raw],
+                visibility=vis,
                 created_at=now,
             )
             await self._events.create(event)
@@ -237,6 +248,25 @@ class TaskService:
         updated = await self._tasks.update(
             task_id, status=TaskStatus.BLOCKED, blocked_reason=reason
         )
+        if updated is not None:
+            await self._publish_task_update(updated)
+        return updated
+
+    async def cancel_task(self, task_id: str) -> Task | None:
+        """Cancel a task if it's in a cancellable state.
+
+        Returns the updated task, or None if the task doesn't exist
+        or is already in a terminal state.
+        """
+        task = await self._tasks.get(task_id)
+        if task is None:
+            return None
+
+        # Only open/claimed/working tasks can be cancelled
+        if task.status not in (TaskStatus.OPEN, TaskStatus.CLAIMED, TaskStatus.WORKING):
+            return None
+
+        updated = await self._tasks.update(task_id, status=TaskStatus.CANCELLED)
         if updated is not None:
             await self._publish_task_update(updated)
         return updated

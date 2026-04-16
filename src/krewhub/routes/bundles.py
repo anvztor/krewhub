@@ -95,6 +95,33 @@ async def get_bundle_digest(
     return {"digest": digest.model_dump(mode="json")}
 
 
+@router.get("/bundles/{bundle_id}/usage")
+async def get_bundle_usage(
+    bundle_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Aggregate LLM token usage across all tasks in a bundle."""
+    cursor = await db.execute(
+        """SELECT u.*
+           FROM task_usage u
+           JOIN tasks t ON t.id = u.task_id
+           WHERE t.bundle_id = ?
+           ORDER BY u.created_at ASC""",
+        (bundle_id,),
+    )
+    rows = await cursor.fetchall()
+    usage_list = [dict(r) for r in rows]
+
+    totals = {
+        "input_tokens": sum(r["input_tokens"] or 0 for r in usage_list),
+        "output_tokens": sum(r["output_tokens"] or 0 for r in usage_list),
+        "cost_usd": sum(r["cost_usd"] or 0 for r in usage_list) if any(r.get("cost_usd") for r in usage_list) else None,
+        "duration_ms": sum(r["duration_ms"] or 0 for r in usage_list) if any(r.get("duration_ms") for r in usage_list) else None,
+        "task_count": len({r["task_id"] for r in usage_list}),
+    }
+    return {"usage": usage_list, "totals": totals}
+
+
 @router.patch("/bundles/{bundle_id}")
 async def cancel_bundle(
     bundle_id: str,

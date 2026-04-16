@@ -161,6 +161,13 @@ class Task(BaseModel, frozen=True):
     graph_node_id: str | None = None
     resource_version: int = 1
     generation: int = 1
+    # Latest progress reported by the agent (ephemeral).
+    # Shape: {summary, step, total, percent, updated_at}
+    progress: dict | None = None
+    # Phase 4 M3: completion metadata (for resumability / audit)
+    session_id: str | None = None
+    work_dir: str | None = None
+    artifacts: dict = Field(default_factory=dict)
 
 
 class FactRef(BaseModel, frozen=True):
@@ -193,6 +200,9 @@ class Event(BaseModel, frozen=True):
     facts: list[FactRef] = Field(default_factory=list)
     code_refs: list[CodeRef] = Field(default_factory=list)
     payload: dict = Field(default_factory=dict)
+    # Phase 4 M5: 'user' for human-visible milestones, 'system' for
+    # agent telemetry (tool_use, thinking, etc.)
+    visibility: str = "system"
     created_at: datetime
     expires_at: datetime | None = None
 

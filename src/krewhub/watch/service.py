@@ -156,7 +156,19 @@ def _matches(opts: WatchOptions, event: WatchEvent) -> bool:
         return False
     if opts.recipe_id and event.recipe_id != opts.recipe_id:
         return False
+    if opts.channel_prefixes:
+        if not any(_channel_matches(p, event.channel) for p in opts.channel_prefixes):
+            return False
     return True
+
+
+def _channel_matches(pattern: str, channel: str) -> bool:
+    """Match a channel against a pattern. Supports trailing * wildcard."""
+    if not channel:
+        return False
+    if pattern.endswith("*"):
+        return channel.startswith(pattern[:-1])
+    return channel == pattern
 
 
 def _parse_legacy_event(

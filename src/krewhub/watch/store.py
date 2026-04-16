@@ -116,6 +116,12 @@ def _row_to_entry(row: aiosqlite.Row) -> WatchEntry:
 
 
 def entry_to_watch_event(entry: WatchEntry) -> WatchEvent:
+    from krewhub.services.watch_channels import derive_channel
+    channel = derive_channel(
+        resource_type=entry.resource_type,
+        event_type=entry.event_type,
+        obj=entry.payload if isinstance(entry.payload, dict) else {},
+    )
     return WatchEvent(
         event_type=entry.event_type,
         resource_type=entry.resource_type,
@@ -124,4 +130,5 @@ def entry_to_watch_event(entry: WatchEntry) -> WatchEvent:
         object=entry.payload,
         recipe_id=entry.recipe_id,
         seq=entry.seq,
+        channel=channel,
     )

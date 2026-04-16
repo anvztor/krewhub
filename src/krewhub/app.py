@@ -12,8 +12,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 
 from krewhub.db.connection import close_db, init_db
 from krewhub.routes import (
-    a2a_callback, a2a_gateway, agents, aggregate, auth_web, bundles,
-    cookbooks, git_http, hooks, proxy_krewauth, recipes, stream, tapes, tasks,
+    a2a_callback, a2a_gateway, agent_runtimes, agents, aggregate, auth_web,
+    bundles, cookbooks, git_http, hooks, proxy_krewauth, recipes, stream,
+    tapes, tasks,
 )
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
@@ -91,6 +92,7 @@ def create_app() -> FastAPI:
     app.include_router(bundles.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
     app.include_router(agents.router, prefix="/api/v1")
+    app.include_router(agent_runtimes.router, prefix="/api/v1")
     app.include_router(tapes.router, prefix="/api/v1")
     app.include_router(stream.router, prefix="/api/v1")
     app.include_router(a2a_callback.router, prefix="/api/v1")
