@@ -216,6 +216,14 @@ class TaskRepo:
         await self._db.commit()
         return await self.get(task_id)
 
+    async def set_session_token(self, task_id: str, token: str) -> None:
+        """Stamp session_token on a task (first-writer-wins)."""
+        await self._db.execute(
+            "UPDATE tasks SET session_token = ? WHERE id = ? AND session_token IS NULL",
+            (token, task_id),
+        )
+        await self._db.commit()
+
     async def build_node_id_map(self, bundle_id: str) -> dict[str, str]:
         """Return {graph_node_id: task_id} for a bundle's graph-bound tasks.
 
@@ -256,6 +264,11 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
     except (IndexError, KeyError):
         artifacts = {}
 
+    try:
+        session_token = row["session_token"]
+    except (IndexError, KeyError):
+        session_token = None
+
     return Task(
         id=row["id"],
         bundle_id=row["bundle_id"],
@@ -275,4 +288,5 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         session_id=session_id,
         work_dir=work_dir,
         artifacts=artifacts,
+        session_token=session_token,
     )

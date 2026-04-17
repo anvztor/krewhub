@@ -168,6 +168,8 @@ class Task(BaseModel, frozen=True):
     session_id: str | None = None
     work_dir: str | None = None
     artifacts: dict = Field(default_factory=dict)
+    # Layer 4: session token isolation — first event stamps, mismatches rejected
+    session_token: str | None = None
 
 
 class FactRef(BaseModel, frozen=True):

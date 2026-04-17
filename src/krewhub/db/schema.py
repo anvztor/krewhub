@@ -90,7 +90,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Phase 4 M3: completion metadata for resumability
     session_id TEXT,
     work_dir TEXT,
-    artifacts_json TEXT
+    artifacts_json TEXT,
+    -- Layer 4: session token isolation for event ingestion
+    session_token TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);

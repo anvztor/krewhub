@@ -10,7 +10,7 @@ from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
-from krewhub.services.task_service import TaskService
+from krewhub.services.task_service import SessionTokenMismatch, TaskService
 from krewhub.routes.schemas import (
     ClaimTaskRequest,
     EditTaskRequest,
@@ -87,18 +87,22 @@ async def post_task_event(
     code_refs = [CodeRef(**redact_json(c)) for c in req.code_refs] if req.code_refs else []
 
     svc = TaskService(db, get_watch_service())
-    event = await svc.post_event(
-        task_id=task_id,
-        recipe_id=bundle.recipe_id,
-        event_type=EventType(req.type),
-        actor_id=req.actor_id,
-        actor_type=ActorType(req.actor_type),
-        body=redact_text(req.body or ""),
-        payload=redact_json(req.payload or {}),
-        facts=facts,
-        code_refs=code_refs,
-        visibility=req.visibility,
-    )
+    try:
+        event = await svc.post_event(
+            task_id=task_id,
+            recipe_id=bundle.recipe_id,
+            event_type=EventType(req.type),
+            actor_id=req.actor_id,
+            actor_type=ActorType(req.actor_type),
+            body=redact_text(req.body or ""),
+            payload=redact_json(req.payload or {}),
+            facts=facts,
+            code_refs=code_refs,
+            visibility=req.visibility,
+            session_token=req.session_token,
+        )
+    except SessionTokenMismatch:
+        raise HTTPException(status_code=409, detail="Session token mismatch")
     return {"event": event.model_dump(mode="json")}
 
 
@@ -135,11 +139,15 @@ async def post_task_events_batch(
         redacted_events.append(d)
 
     svc = TaskService(db, get_watch_service())
-    created = await svc.post_events_batch(
-        task_id=task_id,
-        recipe_id=bundle.recipe_id,
-        events=redacted_events,
-    )
+    try:
+        created = await svc.post_events_batch(
+            task_id=task_id,
+            recipe_id=bundle.recipe_id,
+            events=redacted_events,
+            session_token=req.session_token,
+        )
+    except SessionTokenMismatch:
+        raise HTTPException(status_code=409, detail="Session token mismatch")
     return {"events": [e.model_dump(mode="json") for e in created]}
 
 

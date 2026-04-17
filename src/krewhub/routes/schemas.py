@@ -47,6 +47,8 @@ class PostEventRequest(BaseModel):
     # Explicit visibility override ('user' or 'system'); when None,
     # classifier uses the type to decide.
     visibility: str | None = None
+    # Layer 4: session token isolation — first event stamps, mismatches rejected
+    session_token: str | None = None
 
 
 class BatchEventItem(BaseModel):
@@ -62,6 +64,8 @@ class BatchEventItem(BaseModel):
 
 class PostEventsBatchRequest(BaseModel):
     events: list[BatchEventItem] = Field(default_factory=list)
+    # Layer 4: session token isolation — first event stamps, mismatches rejected
+    session_token: str | None = None
 
 
 class UpdateTaskStatusRequest(BaseModel):

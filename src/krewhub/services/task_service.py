@@ -22,6 +22,14 @@ from krewhub.repositories.task_repo import TaskRepo
 from krewhub.watch.service import WatchService
 
 
+class SessionTokenMismatch(Exception):
+    """Raised when an event's session_token differs from the task's stamped token."""
+
+    def __init__(self, task_id: str, expected: str, got: str) -> None:
+        self.task_id = task_id
+        super().__init__(f"Session token mismatch for task {task_id}")
+
+
 class TaskService:
     def __init__(self, db: aiosqlite.Connection, watch: WatchService) -> None:
         self._tasks = TaskRepo(db)
@@ -29,6 +37,28 @@ class TaskService:
         self._agents = AgentRepo(db)
         self._bundles = BundleRepo(db)
         self._watch = watch
+
+    async def _check_and_stamp_session_token(
+        self, task_id: str, session_token: str | None,
+    ) -> None:
+        """Enforce session-token isolation (Layer 4).
+
+        - No token in request -> accept (backward compat)
+        - Task has no token yet -> stamp it (first event wins)
+        - Tokens match -> accept
+        - Tokens differ -> raise SessionTokenMismatch
+        """
+        if not session_token:
+            return
+        task = await self._tasks.get(task_id)
+        if task is None:
+            return
+        if task.session_token is None:
+            await self._tasks.set_session_token(task_id, session_token)
+            return
+        if task.session_token == session_token:
+            return
+        raise SessionTokenMismatch(task_id, task.session_token, session_token)
 
     async def claim_task(
         self, task_id: str, agent_id: str, recipe_id: str
@@ -89,8 +119,11 @@ class TaskService:
         facts: list[FactRef] | None = None,
         code_refs: list[CodeRef] | None = None,
         visibility: str | None = None,
+        session_token: str | None = None,
     ) -> Event:
         from krewhub.services.event_visibility import classify_visibility
+
+        await self._check_and_stamp_session_token(task_id, session_token)
 
         task = await self._tasks.get(task_id)
         if task is None:
@@ -153,6 +186,7 @@ class TaskService:
         task_id: str,
         recipe_id: str,
         events: list[dict],
+        session_token: str | None = None,
     ) -> list[Event]:
         """Append a batch of events for a single task.
 
@@ -162,6 +196,8 @@ class TaskService:
         """
         if not events:
             return []
+
+        await self._check_and_stamp_session_token(task_id, session_token)
 
         task = await self._tasks.get(task_id)
         if task is None:

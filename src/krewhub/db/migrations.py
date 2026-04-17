@@ -219,6 +219,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Phase 4 M5: event visibility split
     await _add_column_if_missing(db, "events", "visibility", "TEXT NOT NULL DEFAULT 'system'")
 
+    # Layer 4: session token isolation for event ingestion
+    await _add_column_if_missing(db, "tasks", "session_token", "TEXT")
+
     await db.commit()
 
 
