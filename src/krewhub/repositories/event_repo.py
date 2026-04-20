@@ -41,16 +41,7 @@ class EventRepo:
              event.created_at.isoformat(),
              event.expires_at.isoformat() if event.expires_at else None),
         )
-        # Only write fact-level events to the tape — raw telemetry
-        # (tool_use, tool_result, thinking, agent_reply, session_*)
-        # stays in the events table but doesn't pollute the tape.
-        # tape.systems: "the tape should contain facts, not telemetry."
-        _TAPE_KINDS = frozenset({
-            "prompt", "plan", "milestone", "fact_added", "code_pushed",
-            "task_claimed", "digest_submitted", "digest_approved", "digest_rejected",
-        })
-        if event.type in _TAPE_KINDS or event.facts or event.code_refs:
-            await TapeManager(self._db, event.recipe_id).record_event(event)
+        await TapeManager(self._db, event.recipe_id).record_event(event)
         await self._db.commit()
         return event
 
@@ -70,31 +61,13 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
-    async def list_by_bundle(
-        self, bundle_id: str, *, limit: int | None = None,
-    ) -> list[Event]:
-        query = "SELECT * FROM events WHERE bundle_id = ? ORDER BY sequence, created_at"
-        params: list = [bundle_id]
-        if limit is not None:
-            # Return the most recent `limit` events (sub-select to keep ASC order)
-            query = (
-                "SELECT * FROM ("
-                "  SELECT * FROM events WHERE bundle_id = ?"
-                "  ORDER BY sequence DESC, created_at DESC LIMIT ?"
-                ") sub ORDER BY sequence ASC, created_at ASC"
-            )
-            params.append(limit)
-        cursor = await self._db.execute(query, params)
-        rows = await cursor.fetchall()
-        return [_row_to_event(r) for r in rows]
-
-    async def count_by_bundle(self, bundle_id: str) -> int:
+    async def list_by_bundle(self, bundle_id: str) -> list[Event]:
         cursor = await self._db.execute(
-            "SELECT COUNT(*) AS cnt FROM events WHERE bundle_id = ?",
+            "SELECT * FROM events WHERE bundle_id = ? ORDER BY sequence, created_at",
             (bundle_id,),
         )
-        row = await cursor.fetchone()
-        return int(row["cnt"]) if row else 0
+        rows = await cursor.fetchall()
+        return [_row_to_event(r) for r in rows]
 
     async def list_by_task(self, task_id: str) -> list[Event]:
         cursor = await self._db.execute(
