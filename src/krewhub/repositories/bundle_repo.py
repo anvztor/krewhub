@@ -149,11 +149,13 @@ class BundleRepo:
 
         These are the candidates the GraphRunnerController will execute.
         Ordered by created_at so older bundles run first (FIFO fairness).
+        Excludes already-digested bundles to prevent re-run after crash.
         """
         cursor = await self._db.execute(
             """SELECT * FROM bundles
                WHERE graph_code IS NOT NULL
                  AND status = 'open'
+                 AND digested_at IS NULL
                ORDER BY created_at"""
         )
         rows = await cursor.fetchall()
