@@ -1,14 +1,15 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from republic import TapeEntry
 
 import aiosqlite
 
 from krewhub.auth import resolve_caller
 from krewhub.db.connection import get_db
 from krewhub.tape.manager import TapeManager
-from krewhub.tape.store import TapeStore
+from krewhub.tape.store import SqliteTapeStore, entry_to_dict
 
 router = APIRouter(tags=["tapes"], dependencies=[Depends(resolve_caller)])
 
@@ -37,8 +38,8 @@ async def get_tape_context(
     manager = TapeManager(db, _strip_prefix(tape_name))
 
     if since_anchor is not None:
-        store = TapeStore(db)
-        entries = await store.entries_after_anchor(
+        store = SqliteTapeStore(db)
+        entries = await store.entries_after_id(
             f"recipe:{_strip_prefix(tape_name)}", since_anchor
         )
     else:
@@ -46,7 +47,7 @@ async def get_tape_context(
 
     return {
         "tape_name": tape_name,
-        "entries": [e.to_dict() for e in entries[:limit]],
+        "entries": [entry_to_dict(e) for e in entries[:limit]],
         "count": len(entries),
     }
 
@@ -61,7 +62,7 @@ async def list_tape_anchors(
     anchors = await manager.get_anchors()
     return {
         "tape_name": tape_name,
-        "anchors": [a.to_dict() for a in anchors],
+        "anchors": [entry_to_dict(a) for a in anchors],
     }
 
 
@@ -76,7 +77,7 @@ async def get_tape_history(
     entries = await manager.get_history()
     return {
         "tape_name": tape_name,
-        "entries": [e.to_dict() for e in entries[:limit]],
+        "entries": [entry_to_dict(e) for e in entries[:limit]],
         "count": len(entries),
     }
 
@@ -92,14 +93,12 @@ async def append_tape_entry(
     CSI equivalent: agents write context back to the tape after
     completing work, so future agents can build on it.
     """
-    store = TapeStore(db)
+    store = SqliteTapeStore(db)
     entry = await store.append(
-        tape_name=f"recipe:{_strip_prefix(tape_name)}",
-        kind=req.kind,
-        payload=req.payload,
-        meta=req.meta,
+        tape=f"recipe:{_strip_prefix(tape_name)}",
+        entry=TapeEntry(id=0, kind=req.kind, payload=req.payload, meta=req.meta),
     )
-    return {"entry": entry.to_dict()}
+    return {"entry": entry_to_dict(entry)}
 
 
 @router.get("/tapes")
@@ -107,7 +106,7 @@ async def list_tapes(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all known tape names."""
-    store = TapeStore(db)
+    store = SqliteTapeStore(db)
     tapes = await store.list_tapes()
     return {"tapes": tapes}
 
