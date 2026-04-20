@@ -35,7 +35,7 @@ import aiosqlite
 import httpx
 
 from krewhub.controllers.base import BaseController
-from krewhub.models import BundleStatus, WatchEventType
+from krewhub.models import BundleStatus, DigestDecision, WatchEventType
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
@@ -362,6 +362,21 @@ class GraphRunnerController(BaseController):
                     "graph runner: auto-submitted digest %s for bundle %s",
                     digest.id, bundle_id,
                 )
+                # Auto-approve: the graph ran autonomously, so the digest
+                # is ready for merge. This triggers:
+                #   1. merge_fork_to_parent (tape entries)
+                #   2. create_digest_anchor (final checkpoint)
+                #   3. merge_code_refs (git branches)
+                approved = await digest_svc.decide(
+                    bundle_id=bundle_id,
+                    decision=DigestDecision.APPROVED,
+                    decided_by="graph-runner",
+                    note="Auto-approved: all graph steps completed successfully",
+                )
+                if approved:
+                    logger.info(
+                        "graph runner: auto-approved digest for bundle %s", bundle_id,
+                    )
             else:
                 logger.warning(
                     "graph runner: digest submission returned None for bundle %s "
@@ -370,7 +385,7 @@ class GraphRunnerController(BaseController):
                 )
         except Exception:
             logger.exception(
-                "graph runner: failed to auto-submit digest for bundle %s",
+                "graph runner: failed to auto-submit/approve digest for bundle %s",
                 bundle_id,
             )
 
