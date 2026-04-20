@@ -149,6 +149,45 @@ async def get_fork_entries(
     }
 
 
+@router.get("/tapes/{tape_name}/entries/{entry_id}")
+async def get_tape_entry(
+    tape_name: str,
+    entry_id: int,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get a single tape entry by ID."""
+    store = SqliteTapeStore(db)
+    entry = await store.get_entry(entry_id)
+    if entry is None:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=404, detail="Entry not found")
+    return {"entry": entry_to_dict(entry)}
+
+
+@router.get("/tapes/{tape_name}/range")
+async def get_tape_range(
+    tape_name: str,
+    from_id: int = Query(..., alias="from"),
+    to_id: int = Query(..., alias="to"),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Get entries between two IDs (from < id <= to).
+
+    Use for viewing entries between two anchors:
+      GET /tapes/{recipe}/range?from=4342&to=4344
+    """
+    store = SqliteTapeStore(db)
+    entries = await store.entries_between_ids(
+        f"recipe:{_strip_prefix(tape_name)}", from_id, to_id,
+    )
+    return {
+        "entries": [entry_to_dict(e) for e in entries],
+        "count": len(entries),
+        "from_id": from_id,
+        "to_id": to_id,
+    }
+
+
 @router.get("/tapes")
 async def list_tapes(
     db: aiosqlite.Connection = Depends(get_db),

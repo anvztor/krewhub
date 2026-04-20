@@ -111,6 +111,25 @@ class SqliteTapeStore(InMemoryQueryMixin):
         rows = await cursor.fetchall()
         return [_row_to_entry(r) for r in rows]
 
+    async def get_entry(self, entry_id: int) -> TapeEntry | None:
+        """Return a single entry by ID."""
+        cursor = await self._db.execute(
+            "SELECT * FROM tape_entries WHERE id = ?", (entry_id,),
+        )
+        row = await cursor.fetchone()
+        return _row_to_entry(row) if row else None
+
+    async def entries_between_ids(
+        self, tape: str, from_id: int, to_id: int,
+    ) -> list[TapeEntry]:
+        """Return entries with from_id < id <= to_id."""
+        cursor = await self._db.execute(
+            "SELECT * FROM tape_entries WHERE tape_name = ? AND id > ? AND id <= ? ORDER BY id ASC",
+            (tape, from_id, to_id),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_entry(r) for r in rows]
+
     async def entries_by_tape_prefix(self, prefix: str) -> list[TapeEntry]:
         """Return all entries whose tape_name starts with *prefix*."""
         cursor = await self._db.execute(
