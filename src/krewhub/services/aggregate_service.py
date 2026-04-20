@@ -192,15 +192,11 @@ async def get_workspace_data(
     selected_bundle_id = _select_bundle_id(bundles_dicts, bundle_id)
 
     selected_bundle_detail: dict | None = None
-    _EVENT_LIMIT = 100
     if selected_bundle_id:
         sel_bundle = await bundle_repo.get(selected_bundle_id)
         if sel_bundle is not None:
             tasks = await task_repo.list_by_bundle(selected_bundle_id)
-            events = await event_repo.list_by_bundle(
-                selected_bundle_id, limit=_EVENT_LIMIT,
-            )
-            total_events = await event_repo.count_by_bundle(selected_bundle_id)
+            events = await event_repo.list_by_bundle(selected_bundle_id)
             digest = await digest_repo.get_by_bundle(selected_bundle_id)
             # Include fork anchors for the anchor timeline on workspace
             tape_mgr = TapeManager(db, recipe_id)
@@ -213,7 +209,6 @@ async def get_workspace_data(
                 "bundle": _model_to_dict(sel_bundle),
                 "tasks": [_model_to_dict(t) for t in tasks],
                 "events": [_model_to_dict(e) for e in events],
-                "total_events": total_events,
                 "digest": _model_to_dict(digest) if digest else None,
                 "fork_anchors": fork_anchors,
             }
