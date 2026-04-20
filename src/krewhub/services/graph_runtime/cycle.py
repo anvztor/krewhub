@@ -16,6 +16,7 @@ Trust model:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
@@ -250,6 +251,24 @@ async def dispatch_cycle(
             # No fresh agent — fall back to *any* eligible agent (ignore exclude).
             chosen = pick_agent_for_kind(agents, task_kind, exclude=set())
             if chosen is None:
+                # Wait for an agent to come back online (e.g. finishing
+                # another step and heartbeating back).  Poll up to 60 s
+                # before consuming this attempt — enough for two full
+                # heartbeat cycles (30 s timeout).
+                _GATEWAY_WAIT = 60.0
+                _GATEWAY_POLL = deps.poll_interval
+                waited = 0.0
+                while waited < _GATEWAY_WAIT:
+                    await asyncio.sleep(_GATEWAY_POLL)
+                    waited += _GATEWAY_POLL
+                    agents = await agent_repo.list_by_cookbook(deps.cookbook_id)
+                    chosen = pick_agent_for_kind(agents, task_kind, exclude=tried)
+                    if chosen is None:
+                        chosen = pick_agent_for_kind(agents, task_kind, exclude=set())
+                    if chosen is not None:
+                        break
+
+            if chosen is None:
                 ended = datetime.now(timezone.utc)
                 _append_attempt(
                     state, node_id, task_id,
@@ -260,12 +279,6 @@ async def dispatch_cycle(
                     ),
                 )
                 last_summary = "no eligible gateway"
-                # Fail fast: we do NOT silently wait for the pool to
-                # fill. A missing gateway is a cluster-level problem
-                # the user needs to see. The graph runner will mark
-                # the bundle BLOCKED, cookrew surfaces the status over
-                # SSE, and the user re-onboards agents + clicks Re-Run
-                # to retry from the top.
                 break
 
         tried.add(chosen.agent_id)
