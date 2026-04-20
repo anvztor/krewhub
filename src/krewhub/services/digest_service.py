@@ -125,10 +125,11 @@ class DigestService:
             )
             event_type = EventType.DIGEST_APPROVED
             event_expires_at = None
-            # Create durable tape anchor for approved digest
             tape = TapeManager(self._db, updated.recipe_id)
-            await tape.create_digest_anchor(updated)
-            # Merge fork tape entries into parent recipe tape
+            # Merge fork tape entries FIRST so they appear before the
+            # digest anchor in the parent tape. The digest anchor must
+            # be the final entry — it marks the checkpoint for future
+            # TapeQuery.last_anchor() calls.
             try:
                 tasks = await self._tasks.list_by_bundle(bundle_id)
                 task_ids = [t.id for t in tasks]
@@ -145,6 +146,8 @@ class DigestService:
                     "digest approved: fork tape merge failed for bundle %s",
                     bundle_id,
                 )
+            # Create durable tape anchor AFTER merge — always the last entry
+            await tape.create_digest_anchor(updated)
             # Merge code refs into recipe's git repo
             if updated.code_refs:
                 recipe = await RecipeRepo(self._db).get(updated.recipe_id)

@@ -288,17 +288,23 @@ async def test_fork_entries_merged_on_digest_approval(client):
         "decided_by": "human_1",
     })
 
-    # Verify fork entries appear in parent tape after anchor
+    # Verify fork entries merged into parent tape BEFORE the digest anchor.
+    # Order: events → merged fork entries → digest anchor (always last).
     resp = await client.get(f"/api/v1/tapes/{recipe_id}/history")
     entries = resp.json()["entries"]
     kinds = [e["kind"] for e in entries]
 
-    # The merged fork entry should appear after the anchor
     assert "anchor" in kinds
-    anchor_idx = kinds.index("anchor")
-    post_anchor = entries[anchor_idx + 1:]
-    merged = [e for e in post_anchor if e.get("meta", {}).get("fork_source")]
+    merged = [e for e in entries if e.get("meta", {}).get("fork_source")]
     assert len(merged) >= 1
     assert merged[0]["kind"] == "milestone"
     assert merged[0]["payload"]["body"] == "forked work"
     assert f"fork:{bundle_id}/{task_id}" in merged[0]["meta"]["fork_source"]
+
+    # Digest anchor comes after merged fork entries (events may follow)
+    anchor_entries = [e for e in entries if e["kind"] == "anchor"]
+    assert len(anchor_entries) >= 1
+    digest_anchor = anchor_entries[-1]
+    assert digest_anchor["payload"].get("phase") == "digested"
+    # Merged fork entry ID < digest anchor ID (fork merged before anchor)
+    assert merged[0]["id"] < digest_anchor["id"]
