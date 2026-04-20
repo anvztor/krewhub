@@ -412,3 +412,23 @@ class GraphRunnerController(BaseController):
                     "graph runner: failed to emit watch event for blocked "
                     "bundle %s", bundle_id,
                 )
+            # Write error to tape so the blocked reason is part of the
+            # tape history — without this, graph failures leave no trace.
+            try:
+                from krewhub.tape.manager import TapeManager
+                from republic import TapeEntry
+                tape = TapeManager(self._db, updated.recipe_id)
+                await tape._store.append(
+                    tape._tape_name,
+                    TapeEntry(
+                        id=0, kind="event",
+                        payload={
+                            "bundle_id": bundle_id,
+                            "body": f"Graph blocked: {reason[:400]}",
+                            "phase": "blocked",
+                        },
+                        meta={"actor_type": "system", "event_type": "graph_blocked"},
+                    ),
+                )
+            except Exception:
+                logger.debug("graph runner: failed to write tape entry for %s", bundle_id)
