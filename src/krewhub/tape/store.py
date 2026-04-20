@@ -111,6 +111,15 @@ class SqliteTapeStore(InMemoryQueryMixin):
         rows = await cursor.fetchall()
         return [_row_to_entry(r) for r in rows]
 
+    async def entries_by_tape_prefix(self, prefix: str) -> list[TapeEntry]:
+        """Return all entries whose tape_name starts with *prefix*."""
+        cursor = await self._db.execute(
+            "SELECT * FROM tape_entries WHERE tape_name LIKE ? ORDER BY id ASC",
+            (prefix + "%",),
+        )
+        rows = await cursor.fetchall()
+        return [_row_to_entry(r) for r in rows]
+
     async def list_tapes(self) -> list[str]:
         cursor = await self._db.execute(
             "SELECT DISTINCT tape_name FROM tape_entries ORDER BY tape_name",

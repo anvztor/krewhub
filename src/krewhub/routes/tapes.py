@@ -101,6 +101,54 @@ async def append_tape_entry(
     return {"entry": entry_to_dict(entry)}
 
 
+class ForkEntriesRequest(BaseModel):
+    bundle_id: str
+    task_id: str
+    entries: list[AppendEntryRequest]
+
+
+@router.post("/tapes/{recipe_id}/fork-entries")
+async def push_fork_entries(
+    recipe_id: str,
+    req: ForkEntriesRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Push fork tape entries from a task execution.
+
+    Agents accumulate entries locally during task execution,
+    then push them here as a batch on task completion.
+    """
+    manager = TapeManager(db, _strip_prefix(recipe_id))
+    stored = await manager.append_fork_entries(
+        req.bundle_id,
+        req.task_id,
+        [e.model_dump() for e in req.entries],
+    )
+    return {
+        "entries": [entry_to_dict(e) for e in stored],
+        "count": len(stored),
+    }
+
+
+@router.get("/tapes/{recipe_id}/fork-entries/{bundle_id}")
+async def get_fork_entries(
+    recipe_id: str,
+    bundle_id: str,
+    task_id: str | None = Query(None),
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Read fork tape entries for a bundle (optionally filtered by task)."""
+    manager = TapeManager(db, _strip_prefix(recipe_id))
+    if task_id is not None:
+        entries = await manager.get_fork_entries(bundle_id, task_id)
+    else:
+        entries = await manager.get_bundle_fork_entries(bundle_id)
+    return {
+        "entries": [entry_to_dict(e) for e in entries],
+        "count": len(entries),
+    }
+
+
 @router.get("/tapes")
 async def list_tapes(
     db: aiosqlite.Connection = Depends(get_db),
