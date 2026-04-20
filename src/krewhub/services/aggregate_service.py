@@ -19,6 +19,8 @@ from krewhub.repositories.digest_repo import DigestRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
+from krewhub.tape.manager import TapeManager
+from krewhub.tape.store import entry_to_dict
 
 _NON_TERMINAL_STATUSES = frozenset({"open", "claimed", "cooked", "blocked"})
 
@@ -289,6 +291,13 @@ async def get_digest_review_data(
     events = await event_repo.list_by_bundle(bundle_id)
     digest = await digest_repo.get_by_bundle(bundle_id)
 
+    # Assemble fork tape anchors for anchor-to-anchor review navigation.
+    tape_mgr = TapeManager(db, recipe_id)
+    fork_entries = await tape_mgr.get_bundle_fork_entries(bundle_id)
+    fork_anchors = [
+        entry_to_dict(e) for e in fork_entries if e.kind == "anchor"
+    ]
+
     return {
         "recipe": _model_to_dict(recipe),
         "selected_bundle": {
@@ -296,6 +305,7 @@ async def get_digest_review_data(
             "tasks": [_model_to_dict(t) for t in tasks],
             "events": [_model_to_dict(e) for e in events],
             "digest": _model_to_dict(digest) if digest else None,
+            "fork_anchors": fork_anchors,
         },
     }
 
