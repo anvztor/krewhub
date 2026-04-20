@@ -37,6 +37,7 @@ from krewhub.services.graph_runtime.state import (
     OrchestratorState,
     TaskNodeResult,
 )
+from krewhub.tape.manager import TapeManager
 
 if TYPE_CHECKING:
     from krewhub.models import AgentPresence
@@ -235,6 +236,11 @@ async def dispatch_cycle(
             # Reopen the task so the retry loop can re-dispatch it.
             await task_repo.reopen_for_rerun(task_id)
 
+    # Assemble upstream handoff context (once, reused across retries).
+    upstream_context = await _assemble_upstream_context(
+        deps, state, task.depends_on_task_ids,
+    )
+
     for attempt in range(1, max_iterations + 1):
         started_at = datetime.now(timezone.utc)
 
@@ -263,7 +269,10 @@ async def dispatch_cycle(
                 break
 
         tried.add(chosen.agent_id)
-        prompt = _build_prompt(state.prompt, refined_instruction, last_summary, attempt)
+        prompt = _build_prompt(
+            state.prompt, refined_instruction, last_summary, attempt,
+            upstream_context=upstream_context,
+        )
 
         accepted = await dispatch_to_gateway(
             deps.http, agent=chosen, task=task,
@@ -353,14 +362,96 @@ async def dispatch_cycle(
 # ---------------------------------------------------------------------------
 
 
-def _build_prompt(base: str, instruction: str, last_summary: str, attempt: int) -> str:
-    parts = [
-        f"[Attempt {attempt}] {instruction}",
-        f"Context: {base}",
-    ]
+def _build_prompt(
+    base: str,
+    instruction: str,
+    last_summary: str,
+    attempt: int,
+    *,
+    upstream_context: str = "",
+) -> str:
+    parts = [f"[Attempt {attempt}] {instruction}"]
+    if upstream_context:
+        parts.append(upstream_context)
+    parts.append(f"Context: {base}")
     if last_summary:
         parts.append(f"Prior failure: {last_summary}")
     return "\n\n".join(parts)
+
+
+async def _assemble_upstream_context(
+    deps: OrchestratorDeps,
+    state: OrchestratorState,
+    upstream_task_ids: list[str],
+) -> str:
+    """Read handoff anchors from upstream fork tapes and format as context.
+
+    Returns a Markdown section that tells the downstream agent what
+    upstream tasks discovered, decided, and built — so it doesn't
+    start from scratch.
+    """
+    if not upstream_task_ids:
+        return ""
+
+    # Reverse map: task_id → node_id
+    tid_to_nid = {v: k for k, v in deps.task_id_map.items()}
+
+    sections: list[str] = []
+    tape = TapeManager(deps.db, state.recipe_id)
+
+    for task_id in upstream_task_ids:
+        node_id = tid_to_nid.get(task_id, task_id)
+
+        # First, try fork tape handoff anchors (richest context).
+        try:
+            fork_entries = await tape.get_fork_entries(state.bundle_id, task_id)
+            anchors = [e for e in fork_entries if e.kind == "anchor"]
+            if anchors:
+                anchor = anchors[-1]
+                p = anchor.payload
+                section = f"### {node_id} ({task_id}): {p.get('summary', 'completed')}\n"
+                if p.get("facts"):
+                    section += "**Facts:**\n"
+                    for f in p["facts"]:
+                        claim = f.get("claim", f) if isinstance(f, dict) else str(f)
+                        section += f"- {claim}\n"
+                if p.get("decisions"):
+                    section += "**Decisions:**\n"
+                    for d in p["decisions"]:
+                        section += f"- {d}\n"
+                if p.get("code_ref"):
+                    cr = p["code_ref"]
+                    paths = ", ".join(cr.get("paths", [])) if cr.get("paths") else ""
+                    section += f"**Code:** branch `{cr.get('branch', '?')}` {paths}\n"
+                if p.get("next_steps"):
+                    section += "**Next steps:**\n"
+                    for ns in p["next_steps"]:
+                        section += f"- {ns}\n"
+                sections.append(section)
+                continue
+        except Exception:
+            pass
+
+        # Fallback: use in-memory task_results (facts/code_refs from events).
+        result = state.task_results.get(node_id)
+        if result is not None:
+            section = f"### {node_id} ({task_id}): {result.summary}\n"
+            if result.facts:
+                section += "**Facts:**\n"
+                for f in result.facts[:10]:
+                    claim = f.get("claim", "") if isinstance(f, dict) else str(f)
+                    if claim:
+                        section += f"- {claim}\n"
+            if result.code_refs:
+                section += "**Code changes:**\n"
+                for cr in result.code_refs[:5]:
+                    paths = ", ".join(cr.get("paths", [])) if isinstance(cr, dict) else ""
+                    section += f"- {paths}\n"
+            sections.append(section)
+
+    if not sections:
+        return ""
+    return "## Prior work from upstream tasks\n\n" + "\n".join(sections)
 
 
 def _refine(original: str, failure_summary: str) -> str:
