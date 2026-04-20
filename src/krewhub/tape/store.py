@@ -111,38 +111,6 @@ class SqliteTapeStore(InMemoryQueryMixin):
         rows = await cursor.fetchall()
         return [_row_to_entry(r) for r in rows]
 
-    async def entries_by_kind(self, tape: str, kind: str) -> list[TapeEntry]:
-        """Return entries of a specific kind via direct SQL (no cache)."""
-        cursor = await self._db.execute(
-            "SELECT * FROM tape_entries WHERE tape_name = ? AND kind = ? ORDER BY id ASC",
-            (tape, kind),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_entry(r) for r in rows]
-
-    async def last_anchor_sql(self, tape: str) -> TapeEntry | None:
-        """Return the most recent anchor entry via direct SQL (no cache)."""
-        cursor = await self._db.execute(
-            "SELECT * FROM tape_entries WHERE tape_name = ? AND kind = 'anchor' "
-            "ORDER BY id DESC LIMIT 1",
-            (tape,),
-        )
-        row = await cursor.fetchone()
-        return _row_to_entry(row) if row else None
-
-    async def entries_after_id_by_tape(
-        self, tape: str, after_id: int, limit: int | None = None,
-    ) -> list[TapeEntry]:
-        """Return entries after an ID via direct SQL (no cache)."""
-        query = "SELECT * FROM tape_entries WHERE tape_name = ? AND id > ? ORDER BY id ASC"
-        params: list = [tape, after_id]
-        if limit is not None:
-            query += " LIMIT ?"
-            params.append(limit)
-        cursor = await self._db.execute(query, params)
-        rows = await cursor.fetchall()
-        return [_row_to_entry(r) for r in rows]
-
     async def entries_by_tape_prefix(self, prefix: str) -> list[TapeEntry]:
         """Return all entries whose tape_name starts with *prefix*."""
         cursor = await self._db.execute(
