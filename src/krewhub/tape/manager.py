@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any
 
 import aiosqlite
-from republic import TapeEntry, TapeQuery
+from republic import TapeEntry
 
 from krewhub.models import Digest, Event
 from krewhub.tape.store import SqliteTapeStore
@@ -59,25 +59,22 @@ class TapeManager:
         entry = TapeEntry(id=0, kind="anchor", payload=payload, meta=meta)
         return await self._store.append(self._tape_name, entry)
 
-    async def get_history(self) -> list[TapeEntry]:
-        await self._store.ensure_loaded(self._tape_name)
-        query = TapeQuery(tape=self._tape_name, store=self._store)
-        return list(self._store.fetch_all(query))
+    async def get_history(self, limit: int | None = None) -> list[TapeEntry]:
+        """Full tape history via direct SQL (no cache — safe for large tapes)."""
+        return await self._store.entries_after_id_by_tape(
+            self._tape_name, after_id=0, limit=limit,
+        )
 
     async def get_history_since_last_anchor(self) -> list[TapeEntry]:
-        await self._store.ensure_loaded(self._tape_name)
-        try:
-            query = TapeQuery(tape=self._tape_name, store=self._store).last_anchor()
-            return list(self._store.fetch_all(query))
-        except Exception:
-            # No anchors found — return full history
-            query = TapeQuery(tape=self._tape_name, store=self._store)
-            return list(self._store.fetch_all(query))
+        """Entries since the last anchor via direct SQL (no cache)."""
+        anchor = await self._store.last_anchor_sql(self._tape_name)
+        if anchor is None:
+            return await self.get_history()
+        return await self._store.entries_after_id(self._tape_name, anchor.id)
 
     async def get_anchors(self) -> list[TapeEntry]:
-        await self._store.ensure_loaded(self._tape_name)
-        query = TapeQuery(tape=self._tape_name, store=self._store).kinds("anchor")
-        return list(self._store.fetch_all(query))
+        """All anchors via direct SQL (no cache — safe for large tapes)."""
+        return await self._store.entries_by_kind(self._tape_name, "anchor")
 
     # ── fork tape operations ──────────────────────────────────────
 
@@ -103,11 +100,9 @@ class TapeManager:
     async def get_fork_entries(
         self, bundle_id: str, task_id: str
     ) -> list[TapeEntry]:
-        """Read all entries from a task's fork tape."""
+        """Read all entries from a task's fork tape (direct SQL)."""
         fork_tape = f"fork:{bundle_id}/{task_id}"
-        await self._store.ensure_loaded(fork_tape)
-        query = TapeQuery(tape=fork_tape, store=self._store)
-        return list(self._store.fetch_all(query))
+        return await self._store.entries_after_id_by_tape(fork_tape, after_id=0)
 
     async def get_bundle_fork_entries(self, bundle_id: str) -> list[TapeEntry]:
         """Read all fork entries across every task in a bundle."""
