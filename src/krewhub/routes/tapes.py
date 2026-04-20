@@ -6,12 +6,12 @@ from republic import TapeEntry
 
 import aiosqlite
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import resolve_caller_or_cookie
 from krewhub.db.connection import get_db
 from krewhub.tape.manager import TapeManager
 from krewhub.tape.store import SqliteTapeStore, entry_to_dict
 
-router = APIRouter(tags=["tapes"], dependencies=[Depends(resolve_caller)])
+router = APIRouter(tags=["tapes"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
 class AppendEntryRequest(BaseModel):

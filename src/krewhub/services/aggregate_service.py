@@ -198,11 +198,19 @@ async def get_workspace_data(
             tasks = await task_repo.list_by_bundle(selected_bundle_id)
             events = await event_repo.list_by_bundle(selected_bundle_id)
             digest = await digest_repo.get_by_bundle(selected_bundle_id)
+            # Include fork anchors for the anchor timeline on workspace
+            tape_mgr = TapeManager(db, recipe_id)
+            fork_entries = await tape_mgr.get_bundle_fork_entries(selected_bundle_id)
+            fork_anchors = [
+                entry_to_dict(e) for e in fork_entries if e.kind == "anchor"
+            ]
+
             selected_bundle_detail = {
                 "bundle": _model_to_dict(sel_bundle),
                 "tasks": [_model_to_dict(t) for t in tasks],
                 "events": [_model_to_dict(e) for e in events],
                 "digest": _model_to_dict(digest) if digest else None,
+                "fork_anchors": fork_anchors,
             }
 
     return {

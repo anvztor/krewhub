@@ -308,3 +308,68 @@ async def test_fork_entries_merged_on_digest_approval(client):
     assert digest_anchor["payload"].get("phase") == "digested"
     # Merged fork entry ID < digest anchor ID (fork merged before anchor)
     assert merged[0]["id"] < digest_anchor["id"]
+
+
+@pytest.mark.asyncio
+async def test_fork_anchors_in_workspace_data(client):
+    """Workspace endpoint includes fork_anchors in selected_bundle."""
+    recipe_id = await _create_recipe(client)
+    bundle_id = "bun_ws_test"
+    task_id = "task_ws_test"
+
+    # Push fork entries with a handoff anchor
+    await client.post(f"/api/v1/tapes/{recipe_id}/fork-entries", json={
+        "bundle_id": bundle_id,
+        "task_id": task_id,
+        "entries": [
+            {"kind": "anchor", "payload": {
+                "name": f"handoff:{bundle_id}/{task_id}",
+                "phase": "task_complete",
+                "summary": "Built the thing",
+                "facts": [{"claim": "it works"}],
+                "code_ref": {"branch": "main", "commit_sha": "abc123", "paths": ["src/x.py"]},
+            }},
+        ],
+    })
+
+    # Create a real bundle so workspace can select it
+    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+        "prompt": "workspace fork anchor test",
+        "requested_by": "human_1",
+        "tasks": [{"title": "task ws"}],
+    })
+    real_bundle_id = resp.json()["bundle"]["id"]
+    real_task_id = resp.json()["tasks"][0]["id"]
+
+    # Push fork entries under the real bundle_id
+    await client.post(f"/api/v1/tapes/{recipe_id}/fork-entries", json={
+        "bundle_id": real_bundle_id,
+        "task_id": real_task_id,
+        "entries": [
+            {"kind": "anchor", "payload": {
+                "name": f"handoff:{real_bundle_id}/{real_task_id}",
+                "phase": "task_complete",
+                "summary": "Real task completed",
+                "facts": [{"claim": "workspace shows anchors"}],
+            }},
+        ],
+    })
+
+    # Workspace endpoint should include fork_anchors
+    resp = await client.get(
+        f"/api/v1/recipes/{recipe_id}/workspace",
+        params={"bundle_id": real_bundle_id},
+    )
+    assert resp.status_code == 200
+    sb = resp.json().get("selected_bundle", {})
+    fork_anchors = sb.get("fork_anchors", [])
+    assert len(fork_anchors) >= 1, f"expected fork_anchors, got {fork_anchors}"
+    assert fork_anchors[0]["payload"]["summary"] == "Real task completed"
+
+
+@pytest.mark.asyncio
+async def test_tapes_route_accepts_cookie_auth(cookie_client):
+    """Tapes route accepts krew_session cookie (not just Bearer/API key)."""
+    resp = await cookie_client.get("/api/v1/tapes")
+    assert resp.status_code == 200
+    assert "tapes" in resp.json()
