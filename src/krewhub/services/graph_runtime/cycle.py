@@ -246,27 +246,35 @@ async def dispatch_cycle(
         started_at = datetime.now(timezone.utc)
 
         agents = await agent_repo.list_by_cookbook(deps.cookbook_id)
-        chosen = pick_agent_for_kind(agents, task_kind, exclude=tried)
+        # Three-tier pick:
+        #   1. fresh for this cycle AND not yet used by this bundle
+        #      (best: maximizes diversity across sibling tasks)
+        #   2. fresh for this cycle (any agent this cycle hasn't tried)
+        #   3. any eligible agent (reuse, last resort)
+        chosen = _pick_with_diversity(
+            agents, task_kind,
+            cycle_tried=tried,
+            bundle_used=state.bundle_dispatched_agents,
+        )
         if chosen is None:
-            # No fresh agent — fall back to *any* eligible agent (ignore exclude).
-            chosen = pick_agent_for_kind(agents, task_kind, exclude=set())
-            if chosen is None:
-                # Wait for an agent to come back online (e.g. finishing
-                # another step and heartbeating back).  Poll up to 60 s
-                # before consuming this attempt — enough for two full
-                # heartbeat cycles (30 s timeout).
-                _GATEWAY_WAIT = 60.0
-                _GATEWAY_POLL = deps.poll_interval
-                waited = 0.0
-                while waited < _GATEWAY_WAIT:
-                    await asyncio.sleep(_GATEWAY_POLL)
-                    waited += _GATEWAY_POLL
-                    agents = await agent_repo.list_by_cookbook(deps.cookbook_id)
-                    chosen = pick_agent_for_kind(agents, task_kind, exclude=tried)
-                    if chosen is None:
-                        chosen = pick_agent_for_kind(agents, task_kind, exclude=set())
-                    if chosen is not None:
-                        break
+            # Wait for an agent to come back online (e.g. finishing
+            # another step and heartbeating back).  Poll up to 60 s
+            # before consuming this attempt — enough for two full
+            # heartbeat cycles (30 s timeout).
+            _GATEWAY_WAIT = 60.0
+            _GATEWAY_POLL = deps.poll_interval
+            waited = 0.0
+            while waited < _GATEWAY_WAIT:
+                await asyncio.sleep(_GATEWAY_POLL)
+                waited += _GATEWAY_POLL
+                agents = await agent_repo.list_by_cookbook(deps.cookbook_id)
+                chosen = _pick_with_diversity(
+                    agents, task_kind,
+                    cycle_tried=tried,
+                    bundle_used=state.bundle_dispatched_agents,
+                )
+                if chosen is not None:
+                    break
 
             if chosen is None:
                 ended = datetime.now(timezone.utc)
@@ -282,6 +290,7 @@ async def dispatch_cycle(
                 break
 
         tried.add(chosen.agent_id)
+        state.bundle_dispatched_agents.add(chosen.agent_id)
         prompt = _build_prompt(
             state.prompt, refined_instruction, last_summary, attempt,
             upstream_context=upstream_context,
@@ -373,6 +382,32 @@ async def dispatch_cycle(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _pick_with_diversity(
+    agents: list["AgentPresence"],
+    task_kind: str,
+    *,
+    cycle_tried: set[str],
+    bundle_used: set[str],
+) -> "AgentPresence | None":
+    """Pick an agent preferring per-bundle diversity.
+
+    Tier 1: fresh for this cycle AND not yet used by this bundle —
+            maximizes multi-agent participation across sibling tasks.
+    Tier 2: fresh for this cycle (any agent this cycle hasn't tried) —
+            necessary when the bundle has exhausted the pool.
+    Tier 3: any eligible agent — unavoidable reuse; better than blocking.
+    """
+    chosen = pick_agent_for_kind(
+        agents, task_kind, exclude=cycle_tried | bundle_used,
+    )
+    if chosen is not None:
+        return chosen
+    chosen = pick_agent_for_kind(agents, task_kind, exclude=cycle_tried)
+    if chosen is not None:
+        return chosen
+    return pick_agent_for_kind(agents, task_kind, exclude=set())
 
 
 def _build_prompt(

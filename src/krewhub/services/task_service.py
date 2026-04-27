@@ -269,8 +269,15 @@ class TaskService:
             return None
 
         now = datetime.now(timezone.utc)
+        # clear_blocked_reason: a retry path may set blocked_reason on an
+        # earlier attempt; when the task finally completes we must not
+        # leave the stale reason on the row or the UI renders "done" with
+        # a ⚠ blocked warning attached (see cookrew TaskLiveCard).
         updated = await self._tasks.update(
-            task_id, status=TaskStatus.DONE, completed_at=now
+            task_id,
+            status=TaskStatus.DONE,
+            completed_at=now,
+            clear_blocked_reason=True,
         )
         if updated is not None:
             await self._publish_task_update(updated)
@@ -302,7 +309,11 @@ class TaskService:
         if task.status not in (TaskStatus.OPEN, TaskStatus.CLAIMED, TaskStatus.WORKING):
             return None
 
-        updated = await self._tasks.update(task_id, status=TaskStatus.CANCELLED)
+        updated = await self._tasks.update(
+            task_id,
+            status=TaskStatus.CANCELLED,
+            clear_blocked_reason=True,
+        )
         if updated is not None:
             await self._publish_task_update(updated)
         return updated

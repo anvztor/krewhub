@@ -88,6 +88,12 @@ class OrchestratorState:
     recipe_id: str
     iteration: int = 0  # global tick counter, advanced by Orchestrator if used
     task_results: dict[str, TaskNodeResult] = field(default_factory=dict)
+    # Agents that have already been dispatched to *any* task in this bundle.
+    # Shared across sibling dispatch_cycle calls so parallel steps prefer a
+    # fresh agent and the whole bundle reflects a multi-agent run whenever
+    # enough eligible agents exist. Falls back to reuse when no alternative
+    # is available (see dispatch_cycle).
+    bundle_dispatched_agents: set[str] = field(default_factory=set)
 
 
 # ---------------------------------------------------------------------------

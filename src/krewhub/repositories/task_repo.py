@@ -125,6 +125,7 @@ class TaskRepo:
         claimed_at: datetime | None = None,
         completed_at: datetime | None = None,
         blocked_reason: str | None = None,
+        clear_blocked_reason: bool = False,
         depends_on_task_ids: list[str] | None = None,
         expected_version: int | None = None,
     ) -> Task | None:
@@ -160,7 +161,9 @@ class TaskRepo:
         if completed_at is not None:
             parts.append("completed_at = ?")
             params.append(completed_at.isoformat())
-        if blocked_reason is not None:
+        if clear_blocked_reason:
+            parts.append("blocked_reason = NULL")
+        elif blocked_reason is not None:
             parts.append("blocked_reason = ?")
             params.append(blocked_reason)
         if depends_on_task_ids is not None:

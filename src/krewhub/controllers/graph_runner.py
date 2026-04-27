@@ -35,7 +35,7 @@ import aiosqlite
 import httpx
 
 from krewhub.controllers.base import BaseController
-from krewhub.models import BundleStatus, DigestDecision, WatchEventType
+from krewhub.models import BundleStatus, DigestDecision, TaskStatus, WatchEventType
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
@@ -267,20 +267,48 @@ class GraphRunnerController(BaseController):
             r.success for r in state.task_results.values()
         )
         if all_success:
+            # Before declaring the bundle COOKED, re-verify every task row
+            # is in a terminal state. graph.iter() returning doesn't prove
+            # this — an async branch could have recorded success in state
+            # while the task row is still WORKING (race against a sibling
+            # dispatch_cycle that's still polling). Submitting a digest
+            # against a working bundle causes the "done → open again" flap.
+            bundle_tasks = await task_repo.list_by_bundle(bundle_id)
+            _TERMINAL = (TaskStatus.DONE, TaskStatus.BLOCKED, TaskStatus.CANCELLED)
+            non_terminal = [t for t in bundle_tasks if t.status not in _TERMINAL]
+            if non_terminal:
+                await self._mark_blocked(
+                    bundle_id,
+                    "graph finished but {n} task(s) non-terminal: {ids}".format(
+                        n=len(non_terminal),
+                        ids=", ".join(f"{t.id}={t.status}" for t in non_terminal[:5]),
+                    ),
+                )
+                return
+
             updated = await bundle_repo.update_status(
                 bundle_id,
                 BundleStatus.COOKED,
                 cooked_at=datetime.now(timezone.utc),
             )
+            if updated is None:
+                # Bundle was mutated out from under us (e.g. cancelled);
+                # don't submit a digest against unknown state.
+                logger.warning(
+                    "graph runner: bundle %s COOKED transition returned None; "
+                    "skipping digest auto-submit",
+                    bundle_id,
+                )
+                return
+
             logger.info(
                 "graph runner: bundle %s COOKED (%d nodes)",
                 bundle_id, len(state.task_results),
             )
-            if updated is not None:
-                await self._watch.record_resource(
-                    "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-                    recipe_id=updated.recipe_id,
-                )
+            await self._watch.record_resource(
+                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+                recipe_id=updated.recipe_id,
+            )
 
             # Auto-submit digest: aggregate facts/code_refs collected by
             # dispatch_cycle across all graph nodes.
