@@ -58,8 +58,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     set_controller_manager(manager)
     await manager.start_all()
 
+    # Auth track A2 — sweep idle/aged sandboxes so cost stays bounded.
+    from krewhub.controllers.sandbox_sweeper import SandboxSweeper
+    from krewhub.db.connection import get_db as _get_singleton_db
+
+    sweeper = SandboxSweeper(
+        get_db=_get_singleton_db,
+        e2b=_app.state.e2b,
+        idle_seconds=settings.sandbox_idle_timeout_seconds,
+        max_age_seconds=settings.sandbox_max_age_seconds,
+    )
+    sweeper.start()
+    _app.state.sandbox_sweeper = sweeper
+
     yield
 
+    await sweeper.stop()
     await manager.stop_all()
     clear_controller_manager()
     clear_watch_service()
