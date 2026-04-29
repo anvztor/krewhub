@@ -222,6 +222,10 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Layer 4: session token isolation for event ingestion
     await _add_column_if_missing(db, "tasks", "session_token", "TEXT")
 
+    # Track A1: bundle ownership + default agent runtime
+    await _add_column_if_missing(db, "bundles", "owner_account_id", "TEXT")
+    await _add_column_if_missing(db, "bundles", "default_agent_runtime_id", "TEXT")
+
     await db.commit()
 
 
