@@ -263,8 +263,11 @@ async def resolve_caller_or_cookie(
             auth_method="api_key",
         )
 
-    # Try cookie
-    cookie_token = request.cookies.get("krew_session")
+    # Try cookie (Track A1: krewauth_session is canonical; krew_session legacy)
+    cookie_token = (
+        request.cookies.get("krewauth_session")
+        or request.cookies.get("krew_session")
+    )
     if cookie_token:
         payload = _decode_jwt_token(cookie_token, settings)
         if payload is None:

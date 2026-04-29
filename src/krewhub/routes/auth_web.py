@@ -11,10 +11,11 @@ import json
 import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
+from krewhub.auth import CallerContext, resolve_caller_or_cookie
 from krewhub.config import Settings, get_settings
 
 logger = logging.getLogger(__name__)
@@ -69,6 +70,20 @@ async def auth_callback(code: str, state: str = "") -> Response:  # noqa: ARG001
     response = RedirectResponse(url=redirect_url, status_code=302)
     response.set_cookie(key="krew_session", value=access_token, **_cookie_kwargs(settings))
     return response
+
+
+@router.get("/me")
+async def me(
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+) -> dict:
+    """Track A1 contract: returns the resolved caller (cookie or bearer)."""
+    return {
+        "account_id": caller.account_id,
+        "auth_method": caller.auth_method,
+        "principal_type": caller.principal_type,
+        "username": caller.username,
+        "wallet_address": caller.wallet_address,
+    }
 
 
 @router.get("/auth/me")
