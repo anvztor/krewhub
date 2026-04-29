@@ -249,6 +249,18 @@ async def resolve_caller_or_cookie(
 
     Priority: Bearer JWT > X-API-Key > Cookie.
     """
+    # Auth track A2 dev escape hatch — when KREWHUB_KREW_DEV_FAKE_AUTH=1,
+    # bypass all credential checks and resolve every request as
+    # `dev-user-1`. Used while Auth track A1 (passkey + cookie) is still
+    # in flight so A2 can be exercised end-to-end without krewauth.
+    if settings.krew_dev_fake_auth:
+        return CallerContext(
+            account_id="dev-user-1",
+            username="dev-user-1",
+            principal_type="human",
+            auth_method="dev_stub",
+        )
+
     # Try Bearer JWT
     if bearer is not None:
         payload = _decode_jwt_token(bearer.credentials, settings)
