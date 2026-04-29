@@ -43,6 +43,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 settings.jwks_url,
             )
 
+    # Auth track A2 — provision a single E2bClient and stash on app state.
+    # SandboxService and SandboxSweeper resolve it via deps.get_e2b.
+    from krewhub.services.e2b_client import E2bClient
+    _app.state.e2b = E2bClient(
+        base_url=settings.e2b_api_url,
+        api_key=settings.e2b_api_key,
+    )
+
     manager = ControllerManager(
         db, watch,
         heartbeat_timeout=settings.heartbeat_timeout_seconds,
