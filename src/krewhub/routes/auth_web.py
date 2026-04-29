@@ -9,14 +9,22 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import uuid
+from datetime import datetime, timezone
 
+import aiosqlite
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel
 
-from krewhub.auth import CallerContext, resolve_caller_or_cookie
+from krewhub.auth import (
+    CallerContext,
+    require_bundle_owner,
+    resolve_caller_or_cookie,
+)
 from krewhub.config import Settings, get_settings
+from krewhub.db.connection import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -203,3 +211,88 @@ async def set_username(body: SetUsernameRequest, request: Request) -> JSONRespon
     if new_token:
         response.set_cookie(key="krew_session", value=new_token, **_cookie_kwargs(settings))
     return response
+
+
+# ---------------------------------------------------------------------------
+# Track A1: machine-code pairing ("Hire Agent")
+# ---------------------------------------------------------------------------
+
+
+class PairAgentRequest(BaseModel, frozen=True):
+    user_code: str
+
+
+@router.post("/bundles/{bundle_id}/pair-agent")
+async def pair_agent(
+    bundle_id: str,
+    req: PairAgentRequest,
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
+    """Inverted RFC 8628: relay user_code approval to krewauth on behalf of caller.
+
+    Flow:
+      1. ABAC: caller must own the bundle.
+      2. Call krewauth /auth/device/approve-on-behalf with the service token
+         and X-On-Behalf-Of: <caller.account_id>.
+      3. Insert an agent_runtimes row, set bundles.default_agent_runtime_id.
+    """
+    bundle = await require_bundle_owner(bundle_id, caller, db)
+    settings = get_settings()
+    if not settings.krewauth_service_token:
+        raise HTTPException(
+            status_code=500, detail="krewauth_service_token_not_configured",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{settings.krewauth_url}/auth/device/approve-on-behalf",
+                json={"user_code": req.user_code},
+                headers={
+                    "X-Service-Token": settings.krewauth_service_token,
+                    "X-On-Behalf-Of": caller.account_id,
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.error("krewauth pair relay failed: %s", exc)
+        raise HTTPException(status_code=502, detail="auth_service_unreachable")
+
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", "pair_failed")
+        except Exception:
+            detail = "pair_failed"
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+
+    runtime_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    # agent_id semantically = bundle_id for v1 (one default agent per bundle)
+    await db.execute(
+        "INSERT INTO agent_runtimes "
+        "(id, agent_id, account_id, daemon_version, provider, host_info, "
+        "status, last_seen_at, started_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            runtime_id,
+            bundle_id,
+            caller.account_id,
+            None,
+            None,
+            "{}",
+            "online",
+            now,
+            now,
+        ),
+    )
+    await db.execute(
+        "UPDATE bundles SET default_agent_runtime_id = ?, "
+        "resource_version = resource_version + 1 WHERE id = ?",
+        (runtime_id, bundle_id),
+    )
+    await db.commit()
+    return {
+        "detail": "paired",
+        "runtime_id": runtime_id,
+        "bundle_id": bundle.id,
+    }
