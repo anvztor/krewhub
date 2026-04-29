@@ -222,6 +222,18 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Layer 4: session token isolation for event ingestion
     await _add_column_if_missing(db, "tasks", "session_token", "TEXT")
 
+    # Auth track A2: sandbox provisioning + runtime assignment.
+    # The sandboxes table itself is created by SCHEMA_SQL (CREATE IF NOT EXISTS);
+    # these are the column additions for existing DBs.
+    await _add_column_if_missing(db, "tasks", "assigned_runtime_id", "TEXT")
+    await _add_column_if_missing(db, "tasks", "sandbox_id", "TEXT")
+
+    # Auth track A1 columns added defensively here so A2 can develop in
+    # parallel. If A1 migration logic lands first this is a no-op.
+    # REMOVE coordination comment once A1 merges.
+    await _add_column_if_missing(db, "bundles", "owner_account_id", "TEXT")
+    await _add_column_if_missing(db, "bundles", "default_agent_runtime_id", "TEXT")
+
     await db.commit()
 
 
