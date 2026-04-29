@@ -129,6 +129,42 @@ async def auth_logout() -> JSONResponse:
         path="/",
         domain=settings.cookie_domain or None,
     )
+    response.delete_cookie(
+        key="krewauth_session",
+        path="/",
+        domain=settings.cookie_domain or None,
+    )
+    return response
+
+
+@router.post("/auth/logout")
+async def post_auth_logout(request: Request) -> JSONResponse:
+    """Track A1 contract: log out via krewauth + clear local cookie."""
+    settings = get_settings()
+    cookie_token = (
+        request.cookies.get("krewauth_session")
+        or request.cookies.get("krew_session")
+    )
+    if cookie_token:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                await client.post(
+                    f"{settings.krewauth_url}/oauth/logout",
+                    cookies={"krewauth_session": cookie_token},
+                )
+        except Exception as exc:  # pragma: no cover - best-effort
+            logger.warning("krewauth logout relay failed: %s", exc)
+    response = JSONResponse(content={"detail": "logged_out"})
+    response.delete_cookie(
+        key="krewauth_session",
+        path="/",
+        domain=settings.cookie_domain or None,
+    )
+    response.delete_cookie(
+        key="krew_session",
+        path="/",
+        domain=settings.cookie_domain or None,
+    )
     return response
 
 

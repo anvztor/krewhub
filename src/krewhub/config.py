@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_domain: str = ""
 
+    # Track A1: krewauth relay (canonical names)
+    krewauth_url: str = "http://localhost:8421"
+    krewauth_service_token: str = ""
+
     model_config = {"env_prefix": "KREWHUB_"}
 
 
