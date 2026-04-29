@@ -287,6 +287,28 @@ async def optional_cookie_caller(
         return None
 
 
+# ---------------------------------------------------------------------------
+# ABAC predicates
+# ---------------------------------------------------------------------------
+
+
+async def require_bundle_owner(
+    bundle_id: str, caller: CallerContext, db,
+):
+    """Allow only the bundle owner. Returns the Bundle.
+
+    Track A1 ABAC predicate. Imported by Track A2 routes.
+    """
+    from krewhub.repositories.bundle_repo import BundleRepo
+
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="bundle_not_found")
+    if not bundle.owner_account_id or bundle.owner_account_id != caller.account_id:
+        raise HTTPException(status_code=403, detail="not_your_bundle")
+    return bundle
+
+
 # Backward-compat alias
 async def verify_api_key(
     api_key: str | None = Depends(_api_key_header),

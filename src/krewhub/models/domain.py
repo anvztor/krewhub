@@ -141,6 +141,9 @@ class Bundle(BaseModel, frozen=True):
     graph_mermaid: str | None = None
     resource_version: int = 1
     generation: int = 1
+    # Track A1: ownership + default agent runtime (set on first pair)
+    owner_account_id: str | None = None
+    default_agent_runtime_id: str | None = None
 
 
 class Task(BaseModel, frozen=True):
