@@ -5,12 +5,33 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import resolve_caller_or_cookie
+from krewhub.auth import (
+    CallerContext,
+    is_assigned_runtime,
+    resolve_caller_or_cookie,
+)
 from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
 from krewhub.services.task_service import SessionTokenMismatch, TaskService
+
+
+async def _enforce_assigned_runtime_or_legacy(
+    caller: CallerContext, task, db,
+) -> None:
+    """A2 ABAC: when a task has a runtime assignment, only that runtime
+    (or its account) can ingest events / claim it. Legacy API-key callers
+    bypass since they predate the auth journey.
+    """
+    if caller.auth_method == "api_key":
+        return
+    runtime_id = getattr(task, "assigned_runtime_id", None)
+    if runtime_id is None:
+        # Task pre-dates auth track A2 — keep the legacy contract.
+        return
+    if not await is_assigned_runtime(caller, task, db):
+        raise HTTPException(status_code=403, detail="not_assigned_runtime")
 from krewhub.routes.schemas import (
     ClaimTaskRequest,
     EditTaskRequest,
@@ -42,10 +63,13 @@ async def claim_task(
     task_id: str,
     req: ClaimTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _enforce_assigned_runtime_or_legacy(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -71,10 +95,13 @@ async def post_task_event(
     task_id: str,
     req: PostEventRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _enforce_assigned_runtime_or_legacy(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
