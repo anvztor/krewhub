@@ -141,6 +141,12 @@ class Bundle(BaseModel, frozen=True):
     graph_mermaid: str | None = None
     resource_version: int = 1
     generation: int = 1
+    # Auth track A2: bundle ownership for ABAC + paired-agent assignment.
+    # owner_account_id is populated by A1's pair-agent flow (or by the
+    # KREW_DEV_FAKE_AUTH seed for dev). NULL on legacy bundles created
+    # before the auth journey.
+    owner_account_id: str | None = None
+    default_agent_runtime_id: str | None = None
 
 
 class Task(BaseModel, frozen=True):

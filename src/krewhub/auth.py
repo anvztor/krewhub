@@ -295,3 +295,63 @@ async def verify_api_key(
     if not api_key or api_key != settings.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return api_key
+
+
+# ---------------------------------------------------------------------------
+# ABAC predicates (Auth track A2)
+# ---------------------------------------------------------------------------
+#
+# require_bundle_owner is owned by Auth track A1; we ship a defensive
+# stub here so A2 can be developed in parallel. When A1 merges, this
+# stub should be replaced by A1's canonical implementation.
+# REMOVE ON A1 MERGE.
+
+async def require_bundle_owner(
+    bundle_id: str,
+    caller: "CallerContext",
+    db,
+):
+    """Resolve a bundle and assert the caller owns it.
+
+    A1 will replace this with the canonical predicate. For now we accept
+    legacy bundles (owner_account_id NULL) when KREWHUB_KREW_DEV_FAKE_AUTH
+    is set, and we accept the hardcoded `acc_legacy_apikey` to keep
+    existing API-key flows working.
+    """
+    from krewhub.repositories.bundle_repo import BundleRepo
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="Bundle not found")
+
+    # Legacy bundles may not yet have owner_account_id populated.
+    owner = getattr(bundle, "owner_account_id", None)
+    if owner is None:
+        # Fall back to created_by string for legacy ownership.
+        if bundle.created_by != caller.account_id and caller.account_id != _LEGACY_ACCOUNT_ID:
+            settings = get_settings()
+            if not settings.krew_dev_fake_auth:
+                raise HTTPException(status_code=403, detail="Not your bundle")
+        return bundle
+
+    if owner != caller.account_id:
+        settings = get_settings()
+        if not settings.krew_dev_fake_auth:
+            raise HTTPException(status_code=403, detail="Not your bundle")
+    return bundle
+
+
+async def is_assigned_runtime(
+    caller: "CallerContext",
+    task,
+    db,
+) -> bool:
+    """Return True iff the caller owns the runtime assigned to a task."""
+    runtime_id = getattr(task, "assigned_runtime_id", None)
+    if runtime_id is None:
+        return False
+    cursor = await db.execute(
+        "SELECT account_id FROM agent_runtimes WHERE id = ?",
+        (runtime_id,),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row["account_id"] == caller.account_id)

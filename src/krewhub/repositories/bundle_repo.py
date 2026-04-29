@@ -163,6 +163,7 @@ class BundleRepo:
 
 
 def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
+    keys = row.keys()
     return Bundle(
         id=row["id"],
         recipe_id=row["recipe_id"],
@@ -174,8 +175,13 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         cooked_at=datetime.fromisoformat(row["cooked_at"]) if row["cooked_at"] else None,
         digested_at=datetime.fromisoformat(row["digested_at"]) if row["digested_at"] else None,
         blocked_reason=row["blocked_reason"],
-        graph_code=row["graph_code"] if "graph_code" in row.keys() else None,
-        graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in row.keys() else None,
+        graph_code=row["graph_code"] if "graph_code" in keys else None,
+        graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in keys else None,
         resource_version=row["resource_version"],
         generation=row["generation"],
+        owner_account_id=row["owner_account_id"] if "owner_account_id" in keys else None,
+        default_agent_runtime_id=(
+            row["default_agent_runtime_id"]
+            if "default_agent_runtime_id" in keys else None
+        ),
     )

@@ -63,7 +63,12 @@ CREATE TABLE IF NOT EXISTS bundles (
     graph_code TEXT,
     graph_mermaid TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
-    generation INTEGER NOT NULL DEFAULT 1
+    generation INTEGER NOT NULL DEFAULT 1,
+    -- Auth track A1 (defensive A2 add): bundle ownership + paired agent
+    -- runtime. A1 owns the canonical migration and may rename / NOT NULL
+    -- these later. Kept nullable here to avoid blocking parallel work.
+    owner_account_id TEXT,
+    default_agent_runtime_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);

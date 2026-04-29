@@ -77,6 +77,15 @@ def create_app() -> FastAPI:
     # CORS — allow the frontend origin with credentials (cookies)
     from krewhub.config import get_settings
     settings = get_settings()
+
+    # Auth track A2 — pre-init E2bClient on app.state so dependency
+    # injection works even when ASGITransport tests skip lifespan. The
+    # production lifespan re-assigns a fresh client at startup.
+    from krewhub.services.e2b_client import E2bClient
+    app.state.e2b = E2bClient(
+        base_url=settings.e2b_api_url,
+        api_key=settings.e2b_api_key,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.app_origin],
