@@ -63,7 +63,9 @@ CREATE TABLE IF NOT EXISTS bundles (
     graph_code TEXT,
     graph_mermaid TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
-    generation INTEGER NOT NULL DEFAULT 1
+    generation INTEGER NOT NULL DEFAULT 1,
+    owner_account_id TEXT,
+    default_agent_runtime_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);

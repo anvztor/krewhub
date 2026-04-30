@@ -28,8 +28,9 @@ class BundleRepo:
                (id, recipe_id, prompt, status, created_by, created_at,
                 claimed_at, cooked_at, digested_at, blocked_reason,
                 graph_code, graph_mermaid,
-                resource_version, generation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                resource_version, generation,
+                owner_account_id, default_agent_runtime_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (bundle.id, bundle.recipe_id, bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
@@ -37,10 +38,24 @@ class BundleRepo:
              bundle.digested_at.isoformat() if bundle.digested_at else None,
              bundle.blocked_reason,
              bundle.graph_code, bundle.graph_mermaid,
-             bundle.resource_version, bundle.generation),
+             bundle.resource_version, bundle.generation,
+             bundle.owner_account_id, bundle.default_agent_runtime_id),
         )
         await self._db.commit()
         return bundle
+
+    async def set_default_agent_runtime(
+        self, bundle_id: str, runtime_id: str,
+    ) -> Bundle | None:
+        await self._db.execute(
+            """UPDATE bundles
+               SET default_agent_runtime_id = ?,
+                   resource_version = resource_version + 1
+               WHERE id = ?""",
+            (runtime_id, bundle_id),
+        )
+        await self._db.commit()
+        return await self.get(bundle_id)
 
     async def get(self, bundle_id: str) -> Bundle | None:
         cursor = await self._db.execute(
@@ -163,6 +178,7 @@ class BundleRepo:
 
 
 def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
+    keys = set(row.keys())
     return Bundle(
         id=row["id"],
         recipe_id=row["recipe_id"],
@@ -174,8 +190,14 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         cooked_at=datetime.fromisoformat(row["cooked_at"]) if row["cooked_at"] else None,
         digested_at=datetime.fromisoformat(row["digested_at"]) if row["digested_at"] else None,
         blocked_reason=row["blocked_reason"],
-        graph_code=row["graph_code"] if "graph_code" in row.keys() else None,
-        graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in row.keys() else None,
+        graph_code=row["graph_code"] if "graph_code" in keys else None,
+        graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in keys else None,
         resource_version=row["resource_version"],
         generation=row["generation"],
+        owner_account_id=row["owner_account_id"] if "owner_account_id" in keys else None,
+        default_agent_runtime_id=(
+            row["default_agent_runtime_id"]
+            if "default_agent_runtime_id" in keys
+            else None
+        ),
     )

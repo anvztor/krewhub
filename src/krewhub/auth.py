@@ -263,8 +263,11 @@ async def resolve_caller_or_cookie(
             auth_method="api_key",
         )
 
-    # Try cookie
-    cookie_token = request.cookies.get("krew_session")
+    # Try cookie (Track A1: krewauth_session is canonical; krew_session legacy)
+    cookie_token = (
+        request.cookies.get("krewauth_session")
+        or request.cookies.get("krew_session")
+    )
     if cookie_token:
         payload = _decode_jwt_token(cookie_token, settings)
         if payload is None:
@@ -285,6 +288,28 @@ async def optional_cookie_caller(
         return await resolve_caller_or_cookie(request, bearer, api_key, settings)
     except HTTPException:
         return None
+
+
+# ---------------------------------------------------------------------------
+# ABAC predicates
+# ---------------------------------------------------------------------------
+
+
+async def require_bundle_owner(
+    bundle_id: str, caller: CallerContext, db,
+):
+    """Allow only the bundle owner. Returns the Bundle.
+
+    Track A1 ABAC predicate. Imported by Track A2 routes.
+    """
+    from krewhub.repositories.bundle_repo import BundleRepo
+
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="bundle_not_found")
+    if not bundle.owner_account_id or bundle.owner_account_id != caller.account_id:
+        raise HTTPException(status_code=403, detail="not_your_bundle")
+    return bundle
 
 
 # Backward-compat alias

@@ -222,6 +222,11 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Layer 4: session token isolation for event ingestion
     await _add_column_if_missing(db, "tasks", "session_token", "TEXT")
 
+    # Track A1: bundle ownership + default agent runtime
+    await _add_column_if_missing(db, "bundles", "owner_account_id", "TEXT")
+    await _add_column_if_missing(db, "bundles", "default_agent_runtime_id", "TEXT")
+    await _backfill_bundle_owner_from_created_by(db)
+
     await db.commit()
 
 
@@ -368,6 +373,25 @@ async def _backfill_accounts_from_identities(db: aiosqlite.Connection) -> None:
             (account_id, wallet),
         )
     logger.info("Migration: backfilled %d identities to accounts", len(rows))
+
+
+async def _backfill_bundle_owner_from_created_by(db: aiosqlite.Connection) -> None:
+    """Best-effort backfill: copy bundles.created_by to owner_account_id."""
+    if not await _table_exists(db, "bundles"):
+        return
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    cols = {row["name"] for row in await cursor.fetchall()}
+    if "created_by" not in cols or "owner_account_id" not in cols:
+        return
+    try:
+        await db.execute(
+            "UPDATE bundles SET owner_account_id = created_by "
+            "WHERE owner_account_id IS NULL AND created_by IS NOT NULL "
+            "AND created_by != ''",
+        )
+    except aiosqlite.OperationalError:
+        # Schema variant without expected columns — silently skip
+        return
 
 
 async def _add_column_if_missing(
