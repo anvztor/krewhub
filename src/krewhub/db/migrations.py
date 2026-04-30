@@ -227,6 +227,11 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _add_column_if_missing(db, "bundles", "default_agent_runtime_id", "TEXT")
     await _backfill_bundle_owner_from_created_by(db)
 
+    # Track A2: sandbox provisioning + runtime assignment columns on tasks.
+    # The sandboxes table itself is created by SCHEMA_SQL (CREATE IF NOT EXISTS).
+    await _add_column_if_missing(db, "tasks", "assigned_runtime_id", "TEXT")
+    await _add_column_if_missing(db, "tasks", "sandbox_id", "TEXT")
+
     await db.commit()
 
 

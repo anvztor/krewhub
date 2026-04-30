@@ -5,7 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import CallerContext, resolve_caller_or_cookie
+from krewhub.auth import CallerContext, require_bundle_owner, resolve_caller_or_cookie
+from krewhub.config import get_settings
 from krewhub.db.connection import get_db
 from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
@@ -13,7 +14,10 @@ from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
+from krewhub.services.deps import get_e2b
 from krewhub.services.digest_service import DigestService
+from krewhub.services.e2b_client import E2bClient
+from krewhub.services.sandbox_service import SandboxService
 from krewhub.routes.schemas import (
     AddTaskRequest,
     AttachGraphRequest,
@@ -181,10 +185,37 @@ async def add_task_to_bundle(
     bundle_id: str,
     req: AddTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    e2b: E2bClient = Depends(get_e2b),
 ):
-    bundle = await BundleRepo(db).get(bundle_id)
-    if bundle is None:
-        raise HTTPException(status_code=404, detail="Bundle not found")
+    """Create a task on a bundle and provision an e2b sandbox for it.
+
+    Auth track A2:
+      1. ABAC — caller must own the bundle (require_bundle_owner).
+      2. Bundle must have a paired agent (default_agent_runtime_id set);
+         otherwise we return 400 no_paired_agent so the UI can prompt
+         the user to "Hire an agent first".
+      3. Provision an e2b sandbox via SandboxService.create_for_task.
+      4. Persist task.assigned_runtime_id + task.sandbox_id so the
+         krewcli daemon can pick it up.
+    """
+    bundle = await require_bundle_owner(bundle_id, caller, db)
+
+    # Legacy API-key callers (acc_legacy_apikey) skip sandbox provisioning
+    # entirely — they were not part of the auth journey and existing
+    # integrations use POST /bundles/{id}/tasks for orchestration only.
+    # Cookie/JWT callers go through the full A2 flow.
+    is_legacy_apikey = caller.auth_method == "api_key"
+
+    if not is_legacy_apikey:
+        if bundle.default_agent_runtime_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "no_paired_agent",
+                    "message": "Hire an agent first",
+                },
+            )
 
     from krewhub.services.task_service import TaskService
     svc = TaskService(db, get_watch_service())
@@ -194,7 +225,43 @@ async def add_task_to_bundle(
         description=req.description,
         depends_on_task_ids=req.depends_on_task_ids,
     )
-    return {"task": task.model_dump(mode="json")}
+
+    if is_legacy_apikey or bundle.default_agent_runtime_id is None:
+        # Legacy path — no sandbox.
+        return {"task": task.model_dump(mode="json")}
+
+    settings = get_settings()
+    try:
+        sandbox = await SandboxService(db, e2b).create_for_task(
+            task_id=task.id,
+            owner_account_id=caller.account_id,
+            template=settings.e2b_default_template,
+        )
+    except Exception as exc:
+        # Bubble out a structured 503 so the UI can offer a retry button.
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "sandbox_provision_timeout",
+                "message": str(exc) or "e2b sandbox provisioning failed",
+            },
+        ) from exc
+
+    # Persist the assignment + sandbox id on the task row.
+    await db.execute(
+        "UPDATE tasks SET assigned_runtime_id = ?, sandbox_id = ? WHERE id = ?",
+        (bundle.default_agent_runtime_id, sandbox.id, task.id),
+    )
+    await db.commit()
+
+    task_payload = task.model_dump(mode="json")
+    task_payload["assigned_runtime_id"] = bundle.default_agent_runtime_id
+    task_payload["sandbox_id"] = sandbox.id
+
+    return {
+        "task": task_payload,
+        "sandbox": sandbox.model_dump(mode="json"),
+    }
 
 
 @router.post("/bundles/{bundle_id}/digest")

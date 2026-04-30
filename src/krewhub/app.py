@@ -43,6 +43,14 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 settings.jwks_url,
             )
 
+    # Auth track A2 — provision a single E2bClient and stash on app state.
+    # SandboxService and SandboxSweeper resolve it via deps.get_e2b.
+    from krewhub.services.e2b_client import E2bClient
+    _app.state.e2b = E2bClient(
+        base_url=settings.e2b_api_url,
+        api_key=settings.e2b_api_key,
+    )
+
     manager = ControllerManager(
         db, watch,
         heartbeat_timeout=settings.heartbeat_timeout_seconds,
@@ -50,8 +58,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     set_controller_manager(manager)
     await manager.start_all()
 
+    # Auth track A2 — sweep idle/aged sandboxes so cost stays bounded.
+    from krewhub.controllers.sandbox_sweeper import SandboxSweeper
+    from krewhub.db.connection import get_db as _get_singleton_db
+
+    sweeper = SandboxSweeper(
+        get_db=_get_singleton_db,
+        e2b=_app.state.e2b,
+        idle_seconds=settings.sandbox_idle_timeout_seconds,
+        max_age_seconds=settings.sandbox_max_age_seconds,
+    )
+    sweeper.start()
+    _app.state.sandbox_sweeper = sweeper
+
     yield
 
+    await sweeper.stop()
     await manager.stop_all()
     clear_controller_manager()
     clear_watch_service()
@@ -69,6 +91,15 @@ def create_app() -> FastAPI:
     # CORS — allow the frontend origin with credentials (cookies)
     from krewhub.config import get_settings
     settings = get_settings()
+
+    # Auth track A2 — pre-init E2bClient on app.state so dependency
+    # injection works even when ASGITransport tests skip lifespan. The
+    # production lifespan re-assigns a fresh client at startup.
+    from krewhub.services.e2b_client import E2bClient
+    app.state.e2b = E2bClient(
+        base_url=settings.e2b_api_url,
+        api_key=settings.e2b_api_key,
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.app_origin],

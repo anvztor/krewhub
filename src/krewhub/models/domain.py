@@ -141,7 +141,9 @@ class Bundle(BaseModel, frozen=True):
     graph_mermaid: str | None = None
     resource_version: int = 1
     generation: int = 1
-    # Track A1: ownership + default agent runtime (set on first pair)
+    # Bundle ownership for ABAC + paired-agent assignment.
+    # owner_account_id set by A1 pair-agent flow (or KREW_DEV_FAKE_AUTH seed).
+    # NULL on legacy bundles created before the auth journey.
     owner_account_id: str | None = None
     default_agent_runtime_id: str | None = None
 
@@ -173,6 +175,10 @@ class Task(BaseModel, frozen=True):
     artifacts: dict = Field(default_factory=dict)
     # Layer 4: session token isolation — first event stamps, mismatches rejected
     session_token: str | None = None
+    # Auth track A2: runtime + sandbox assignment populated when a task is
+    # dispatched to a paired agent runtime via an e2b sandbox.
+    assigned_runtime_id: str | None = None
+    sandbox_id: str | None = None
 
 
 class FactRef(BaseModel, frozen=True):

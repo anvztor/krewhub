@@ -47,6 +47,20 @@ class Settings(BaseSettings):
     krewauth_url: str = "http://localhost:8421"
     krewauth_service_token: str = ""
 
+    # Track A2: e2b orchestrator (template-based sandbox per task).
+    # See infra/e2b/scripts/remote-api-create-base-sandbox.sh for the
+    # reference API shape: POST <e2b_api_url>/sandboxes with X-API-Key.
+    e2b_api_url: str = "http://10.20.100.214:3000"
+    e2b_api_key: str = ""
+    e2b_default_template: str = "base"
+    sandbox_idle_timeout_seconds: int = 600
+    sandbox_max_age_seconds: int = 3600
+
+    # Dev escape hatch: when KREWHUB_KREW_DEV_FAKE_AUTH=1, skip cookie/JWT
+    # checks and resolve all callers as `dev-user-1`. Kept post-merge as a
+    # documented dev-only switch; OFF in prod.
+    krew_dev_fake_auth: bool = False
+
     model_config = {"env_prefix": "KREWHUB_"}
 
 

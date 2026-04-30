@@ -1,16 +1,52 @@
+"""Task routes — claim, events, completion, SSE stream.
+
+Auth track A2 — event kinds emitted on /tasks/{id}/stream:
+  sandbox.attached    payload: { sandbox_id }
+  agent.output.line   payload: { line }
+  task.completed      payload: { exit_code: int, summary: str }
+
+These are free-form `kind` strings already accepted by post_task_event.
+Consumers MAY ignore other kinds; producers SHOULD emit them in order
+sandbox.attached → agent.output.line(*) → task.completed.
+"""
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import asyncio
+import json
+
+from fastapi import APIRouter, Depends, HTTPException, Request
+from sse_starlette.sse import EventSourceResponse
 
 import aiosqlite
 
 from krewhub.watch.globals import get_watch_service
-from krewhub.auth import resolve_caller_or_cookie
+from krewhub.auth import (
+    CallerContext,
+    is_assigned_runtime,
+    resolve_caller_or_cookie,
+)
 from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
 from krewhub.services.task_service import SessionTokenMismatch, TaskService
+
+
+async def _enforce_assigned_runtime_or_legacy(
+    caller: CallerContext, task, db,
+) -> None:
+    """A2 ABAC: when a task has a runtime assignment, only that runtime
+    (or its account) can ingest events / claim it. Legacy API-key callers
+    bypass since they predate the auth journey.
+    """
+    if caller.auth_method == "api_key":
+        return
+    runtime_id = getattr(task, "assigned_runtime_id", None)
+    if runtime_id is None:
+        # Task pre-dates auth track A2 — keep the legacy contract.
+        return
+    if not await is_assigned_runtime(caller, task, db):
+        raise HTTPException(status_code=403, detail="not_assigned_runtime")
 from krewhub.routes.schemas import (
     ClaimTaskRequest,
     EditTaskRequest,
@@ -42,10 +78,13 @@ async def claim_task(
     task_id: str,
     req: ClaimTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _enforce_assigned_runtime_or_legacy(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -71,10 +110,13 @@ async def post_task_event(
     task_id: str,
     req: PostEventRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await _enforce_assigned_runtime_or_legacy(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -418,3 +460,51 @@ async def remove_task(
     if not removed:
         raise HTTPException(status_code=400, detail="Cannot remove task (not found or not open)")
     return {"removed": True}
+
+
+@router.get("/tasks/{task_id}/stream")
+async def stream_task_events(
+    task_id: str,
+    request: Request,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """SSE stream scoped to a single task.
+
+    Subscribes to the global watch service and filters events whose
+    `object.task_id` matches the requested task. Used by cookrew-beta's
+    task-live-card and event-feed to display in-flight agent telemetry.
+
+    Emits at minimum (per the contract documented at the top of this file):
+      sandbox.attached, agent.output.line, task.completed.
+    """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    watch = get_watch_service()
+    queue = watch.subscribe()
+
+    async def event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=30.0)
+                    payload = event.object or {}
+                    if payload.get("task_id") != task_id and event.resource_id != task_id:
+                        continue
+                    yield {
+                        "event": event.channel or event.event_type,
+                        "data": json.dumps({
+                            "kind": payload.get("type") or event.channel or event.event_type,
+                            "payload": payload,
+                            "seq": event.seq,
+                        }),
+                    }
+                except asyncio.TimeoutError:
+                    yield {"event": "ping", "data": ""}
+        finally:
+            watch.unsubscribe(queue)
+
+    return EventSourceResponse(event_generator())

@@ -20,6 +20,7 @@ from krewhub.models.domain import (
     WatchEntry,
     WatchEventType,
 )
+from krewhub.models.sandbox import Sandbox, SandboxStatus
 
 __all__ = [
     "ActorType",
@@ -38,6 +39,8 @@ __all__ = [
     "Recipe",
     "RecipeMember",
     "Role",
+    "Sandbox",
+    "SandboxStatus",
     "Task",
     "TaskStatus",
     "WatchEntry",

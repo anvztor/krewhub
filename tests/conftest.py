@@ -32,6 +32,12 @@ async def _setup_db():
 
 
 @pytest_asyncio.fixture
+async def test_db(_setup_db):
+    """Direct handle to the in-memory db (auth track A2 unit tests)."""
+    return await get_db()
+
+
+@pytest_asyncio.fixture
 async def client(_setup_db):
     """Client authenticated with legacy API key (backward compat)."""
     app = create_app()

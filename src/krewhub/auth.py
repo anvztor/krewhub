@@ -249,6 +249,18 @@ async def resolve_caller_or_cookie(
 
     Priority: Bearer JWT > X-API-Key > Cookie.
     """
+    # Auth track A2 dev escape hatch — when KREWHUB_KREW_DEV_FAKE_AUTH=1,
+    # bypass all credential checks and resolve every request as
+    # `dev-user-1`. Used while Auth track A1 (passkey + cookie) is still
+    # in flight so A2 can be exercised end-to-end without krewauth.
+    if settings.krew_dev_fake_auth:
+        return CallerContext(
+            account_id="dev-user-1",
+            username="dev-user-1",
+            principal_type="human",
+            auth_method="dev_stub",
+        )
+
     # Try Bearer JWT
     if bearer is not None:
         payload = _decode_jwt_token(bearer.credentials, settings)
@@ -300,14 +312,32 @@ async def require_bundle_owner(
 ):
     """Allow only the bundle owner. Returns the Bundle.
 
-    Track A1 ABAC predicate. Imported by Track A2 routes.
+    Auth track ABAC predicate. Imported by both A1 and A2 routes.
+
+    Resolution order:
+      1. owner_account_id matches caller.account_id → allow
+      2. owner_account_id is NULL (legacy bundle, backfill missed) →
+         fall back to created_by match
+      3. Legacy api-key sentinel (`acc_legacy_apikey`) is allowed for
+         backward compatibility with existing service integrations
+      4. Otherwise → 403
     """
     from krewhub.repositories.bundle_repo import BundleRepo
 
     bundle = await BundleRepo(db).get(bundle_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="bundle_not_found")
-    if not bundle.owner_account_id or bundle.owner_account_id != caller.account_id:
+
+    if caller.account_id == _LEGACY_ACCOUNT_ID:
+        return bundle
+
+    owner = bundle.owner_account_id
+    if owner is None:
+        if bundle.created_by == caller.account_id:
+            return bundle
+        raise HTTPException(status_code=403, detail="not_your_bundle")
+
+    if owner != caller.account_id:
         raise HTTPException(status_code=403, detail="not_your_bundle")
     return bundle
 
@@ -320,3 +350,20 @@ async def verify_api_key(
     if not api_key or api_key != settings.api_key:
         raise HTTPException(status_code=401, detail="Invalid or missing API key")
     return api_key
+
+
+async def is_assigned_runtime(
+    caller: "CallerContext",
+    task,
+    db,
+) -> bool:
+    """Return True iff the caller owns the runtime assigned to a task."""
+    runtime_id = getattr(task, "assigned_runtime_id", None)
+    if runtime_id is None:
+        return False
+    cursor = await db.execute(
+        "SELECT account_id FROM agent_runtimes WHERE id = ?",
+        (runtime_id,),
+    )
+    row = await cursor.fetchone()
+    return bool(row and row["account_id"] == caller.account_id)

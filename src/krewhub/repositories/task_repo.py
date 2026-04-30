@@ -272,6 +272,16 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
     except (IndexError, KeyError):
         session_token = None
 
+    # Auth track A2: assigned_runtime_id + sandbox_id may not exist on older DBs
+    try:
+        assigned_runtime_id = row["assigned_runtime_id"]
+    except (IndexError, KeyError):
+        assigned_runtime_id = None
+    try:
+        sandbox_id = row["sandbox_id"]
+    except (IndexError, KeyError):
+        sandbox_id = None
+
     return Task(
         id=row["id"],
         bundle_id=row["bundle_id"],
@@ -292,4 +302,6 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         work_dir=work_dir,
         artifacts=artifacts,
         session_token=session_token,
+        assigned_runtime_id=assigned_runtime_id,
+        sandbox_id=sandbox_id,
     )

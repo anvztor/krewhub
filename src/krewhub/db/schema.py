@@ -64,6 +64,9 @@ CREATE TABLE IF NOT EXISTS bundles (
     graph_mermaid TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,
     generation INTEGER NOT NULL DEFAULT 1,
+    -- Track A1: bundle ownership + paired agent runtime. Nullable for
+    -- legacy bundles created before the auth journey; future migration
+    -- will backfill + add NOT NULL once all bundles have an owner.
     owner_account_id TEXT,
     default_agent_runtime_id TEXT
 );
@@ -94,8 +97,31 @@ CREATE TABLE IF NOT EXISTS tasks (
     work_dir TEXT,
     artifacts_json TEXT,
     -- Layer 4: session token isolation for event ingestion
-    session_token TEXT
+    session_token TEXT,
+    -- Auth track A2: runtime assignment + sandbox attachment
+    assigned_runtime_id TEXT,
+    sandbox_id TEXT
 );
+
+-- Auth track A2: e2b sandboxes provisioned per task.
+-- Lifecycle: provisioning -> ready -> running -> terminated|error.
+-- Sweeper terminates idle (last_event_at older than threshold) or
+-- aged (created_at older than max-age) sandboxes.
+CREATE TABLE IF NOT EXISTS sandboxes (
+    id              TEXT PRIMARY KEY,
+    task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    owner_account_id TEXT NOT NULL,
+    e2b_sandbox_id  TEXT NOT NULL,
+    template        TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    terminated_at   TEXT,
+    last_event_at   TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sandboxes_status_last_event
+    ON sandboxes(status, last_event_at);
 
 CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
