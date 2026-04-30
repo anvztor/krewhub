@@ -326,7 +326,7 @@ async def require_bundle_owner(
 
     bundle = await BundleRepo(db).get(bundle_id)
     if bundle is None:
-        raise HTTPException(status_code=404, detail="bundle_not_found")
+        raise HTTPException(status_code=404, detail="Bundle not found")
 
     if caller.account_id == _LEGACY_ACCOUNT_ID:
         return bundle
@@ -335,10 +335,10 @@ async def require_bundle_owner(
     if owner is None:
         if bundle.created_by == caller.account_id:
             return bundle
-        raise HTTPException(status_code=403, detail="not_your_bundle")
+        raise HTTPException(status_code=403, detail="Not your bundle")
 
     if owner != caller.account_id:
-        raise HTTPException(status_code=403, detail="not_your_bundle")
+        raise HTTPException(status_code=403, detail="Not your bundle")
     return bundle
 
 
