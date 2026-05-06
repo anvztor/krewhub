@@ -48,6 +48,45 @@ def _row_to_runtime(row: aiosqlite.Row) -> dict:
     }
 
 
+def _load_host_info(row: aiosqlite.Row) -> dict:
+    try:
+        return json.loads(row["host_info"]) if row["host_info"] else {}
+    except json.JSONDecodeError:
+        return {}
+
+
+def _same_device(existing: dict, incoming: dict) -> bool:
+    """Best-effort same-device check used to make daemon startup idempotent."""
+    existing_device = existing.get("device_id")
+    incoming_device = incoming.get("device_id")
+    if existing_device and incoming_device:
+        return existing_device == incoming_device
+
+    # Migration path for rows created before krewcli sent device_id.
+    existing_endpoint = existing.get("endpoint_url")
+    incoming_endpoint = incoming.get("endpoint_url")
+    if existing_endpoint and incoming_endpoint:
+        return existing_endpoint == incoming_endpoint
+
+    existing_host = existing.get("hostname")
+    incoming_host = incoming.get("hostname")
+    return bool(existing_host and incoming_host and existing_host == incoming_host)
+
+
+async def _mark_stale(db: aiosqlite.Connection) -> int:
+    cutoff = (
+        datetime.now(timezone.utc) - timedelta(seconds=STALE_THRESHOLD_SECONDS)
+    ).isoformat()
+    cursor = await db.execute(
+        """UPDATE agent_runtimes
+           SET status = 'offline'
+           WHERE last_seen_at < ? AND status != 'offline'""",
+        (cutoff,),
+    )
+    await db.commit()
+    return cursor.rowcount
+
+
 @router.post("/agents/runtime/register")
 async def register_runtime(
     req: RegisterRuntimeRequest,
@@ -59,8 +98,49 @@ async def register_runtime(
     and uses it for subsequent heartbeats.
     """
     now = datetime.now(timezone.utc).isoformat()
-    rt_id = f"rt_{uuid.uuid4().hex[:12]}"
+    host_info_json = json.dumps(req.host_info)
 
+    cursor = await db.execute(
+        """SELECT * FROM agent_runtimes
+           WHERE account_id = ?
+             AND agent_id = ?
+             AND COALESCE(provider, '') = COALESCE(?, '')
+           ORDER BY last_seen_at DESC""",
+        (req.account_id, req.agent_id, req.provider),
+    )
+    rows = await cursor.fetchall()
+    matches = [r for r in rows if _same_device(_load_host_info(r), req.host_info)]
+
+    if matches:
+        rt_id = matches[0]["id"]
+        await db.execute(
+            """UPDATE agent_runtimes
+               SET daemon_version = ?,
+                   host_info = ?,
+                   status = 'online',
+                   last_seen_at = ?
+               WHERE id = ?""",
+            (req.daemon_version, host_info_json, now, rt_id),
+        )
+        duplicate_ids = [r["id"] for r in matches[1:]]
+        if duplicate_ids:
+            placeholders = ",".join("?" for _ in duplicate_ids)
+            await db.execute(
+                f"""UPDATE agent_runtimes
+                    SET status = 'offline'
+                    WHERE id IN ({placeholders})""",
+                duplicate_ids,
+            )
+        await db.commit()
+
+        cursor2 = await db.execute(
+            "SELECT * FROM agent_runtimes WHERE id = ?", (rt_id,),
+        )
+        row = await cursor2.fetchone()
+        assert row is not None
+        return {"runtime": _row_to_runtime(row)}
+
+    rt_id = f"rt_{uuid.uuid4().hex[:12]}"
     await db.execute(
         """INSERT INTO agent_runtimes
            (id, agent_id, account_id, daemon_version, provider, host_info,
@@ -69,7 +149,7 @@ async def register_runtime(
         (
             rt_id, req.agent_id, req.account_id,
             req.daemon_version, req.provider,
-            json.dumps(req.host_info),
+            host_info_json,
             "online", now, now,
         ),
     )
@@ -121,6 +201,7 @@ async def list_runtimes(
     db: aiosqlite.Connection = Depends(get_db),
 ):
     """List all registered runtimes, optionally filtered by account_id."""
+    await _mark_stale(db)
     if account_id:
         cursor = await db.execute(
             "SELECT * FROM agent_runtimes WHERE account_id = ? ORDER BY last_seen_at DESC",
@@ -143,16 +224,8 @@ async def sweep_stale_runtimes(
     Intended to be called periodically (e.g. every 30s) by a controller
     or by cookrew's polling watcher. Tests call it directly.
     """
+    marked = await _mark_stale(db)
     cutoff = (
         datetime.now(timezone.utc) - timedelta(seconds=STALE_THRESHOLD_SECONDS)
     ).isoformat()
-
-    cursor = await db.execute(
-        """UPDATE agent_runtimes
-           SET status = 'offline'
-           WHERE last_seen_at < ? AND status != 'offline'""",
-        (cutoff,),
-    )
-    marked = cursor.rowcount
-    await db.commit()
     return {"marked_offline": marked, "cutoff": cutoff}

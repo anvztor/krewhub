@@ -32,6 +32,73 @@ class TestRuntimeRegister:
         })
         assert resp.status_code == 422
 
+    @pytest.mark.asyncio
+    async def test_register_runtime_reuses_same_device(self, client):
+        payload = {
+            "agent_id": "echo@alice",
+            "account_id": "acc_1",
+            "daemon_version": "krewcli-daemon",
+            "provider": "echo",
+            "host_info": {
+                "device_id": "dev_laptop_1",
+                "hostname": "laptop.local",
+                "pid": 100,
+                "runtime": "krewcli-daemon",
+                "endpoint_url": "http://hub/a2a/alice/echo",
+            },
+        }
+        first = await client.post("/api/v1/agents/runtime/register", json=payload)
+        assert first.status_code == 200
+        first_runtime = first.json()["runtime"]
+
+        second_payload = {
+            **payload,
+            "host_info": {**payload["host_info"], "pid": 200},
+        }
+        second = await client.post(
+            "/api/v1/agents/runtime/register", json=second_payload,
+        )
+        assert second.status_code == 200
+        second_runtime = second.json()["runtime"]
+
+        assert second_runtime["id"] == first_runtime["id"]
+        assert second_runtime["host_info"]["pid"] == 200
+
+        listed = await client.get("/api/v1/agents/runtimes?account_id=acc_1")
+        runtimes = listed.json()["runtimes"]
+        assert len(runtimes) == 1
+        assert runtimes[0]["id"] == first_runtime["id"]
+
+    @pytest.mark.asyncio
+    async def test_register_runtime_migrates_pre_device_endpoint_row(self, client):
+        old = await client.post("/api/v1/agents/runtime/register", json={
+            "agent_id": "codex@alice",
+            "account_id": "acc_1",
+            "daemon_version": "krewcli-daemon",
+            "provider": "codex",
+            "host_info": {
+                "endpoint_url": "http://hub/a2a/alice/codex",
+            },
+        })
+        old_id = old.json()["runtime"]["id"]
+
+        new = await client.post("/api/v1/agents/runtime/register", json={
+            "agent_id": "codex@alice",
+            "account_id": "acc_1",
+            "daemon_version": "krewcli-daemon",
+            "provider": "codex",
+            "host_info": {
+                "device_id": "dev_laptop_1",
+                "hostname": "laptop.local",
+                "runtime": "krewcli-daemon",
+                "endpoint_url": "http://hub/a2a/alice/codex",
+            },
+        })
+        runtime = new.json()["runtime"]
+
+        assert runtime["id"] == old_id
+        assert runtime["host_info"]["device_id"] == "dev_laptop_1"
+
 
 class TestRuntimeHeartbeat:
     @pytest.mark.asyncio
