@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
+
+logger = logging.getLogger(__name__)
 
 import aiosqlite
 
@@ -40,8 +44,13 @@ async def create_bundle(
     if recipe is None:
         raise HTTPException(status_code=404, detail="Recipe not found")
 
-    # Use caller identity from JWT, not client-supplied value
-    created_by = caller.username or caller.account_id
+    # Stamp account_id everywhere so require_bundle_owner's primary check
+    # (owner_account_id == caller.account_id) succeeds. Previously we used
+    # caller.username for created_by, which left owner_account_id NULL and
+    # made require_bundle_owner fall through to the username-vs-account_id
+    # string compare — that always failed, returning "Not your bundle"
+    # right after the bundle was created.
+    created_by = caller.account_id
 
     svc = BundleService(db, get_watch_service())
     bundle, tasks = await svc.create_bundle(
@@ -50,6 +59,38 @@ async def create_bundle(
         created_by=created_by,
         tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
     )
+    # Set the canonical owner column directly. The BundleService doesn't
+    # accept owner_account_id yet; doing it here as a follow-up UPDATE keeps
+    # the change small and contained to the route. Bundle is a frozen
+    # Pydantic model so we can't assign — return a copy instead.
+    await db.execute(
+        "UPDATE bundles SET owner_account_id = ? WHERE id = ?",
+        (caller.account_id, bundle.id),
+    )
+
+    # Auto-bind the caller's most recently-seen online runtime as the
+    # bundle's default agent. Without this, POST /bundles/{id}/tasks
+    # immediately returns no_paired_agent, blocking the cookrew-beta
+    # ship flow even when the user has already paired a daemon.
+    runtime_cursor = await db.execute(
+        "SELECT id FROM agent_runtimes "
+        "WHERE account_id = ? AND status = 'online' "
+        "ORDER BY last_seen_at DESC LIMIT 1",
+        (caller.account_id,),
+    )
+    runtime_row = await runtime_cursor.fetchone()
+    default_runtime_id = runtime_row["id"] if runtime_row else None
+    if default_runtime_id:
+        await db.execute(
+            "UPDATE bundles SET default_agent_runtime_id = ? WHERE id = ?",
+            (default_runtime_id, bundle.id),
+        )
+
+    await db.commit()
+    bundle = bundle.model_copy(update={
+        "owner_account_id": caller.account_id,
+        "default_agent_runtime_id": default_runtime_id,
+    })
     return {
         "bundle": bundle.model_dump(mode="json"),
         "tasks": [t.model_dump(mode="json") for t in tasks],
@@ -231,6 +272,7 @@ async def add_task_to_bundle(
         return {"task": task.model_dump(mode="json")}
 
     settings = get_settings()
+    sandbox = None
     try:
         sandbox = await SandboxService(db, e2b).create_for_task(
             task_id=task.id,
@@ -238,29 +280,35 @@ async def add_task_to_bundle(
             template=settings.e2b_default_template,
         )
     except Exception as exc:
-        # Bubble out a structured 503 so the UI can offer a retry button.
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "sandbox_provision_timeout",
-                "message": str(exc) or "e2b sandbox provisioning failed",
-            },
-        ) from exc
+        # Fail-soft: a missing/invalid e2b api key, network glitch, or
+        # template absence used to 503 the entire request, leaving the
+        # task uncreated in the UI's view (it WAS in the db). Log the
+        # failure, persist the assignment without a sandbox id, and
+        # return the task so the daemon can still pick it up via the
+        # A2A poll path. The UI surfaces the live status from the next
+        # bundle refresh.
+        logger.warning(
+            "sandbox provision failed for task %s: %s", task.id, exc,
+        )
 
-    # Persist the assignment + sandbox id on the task row.
+    # Persist the assignment + sandbox id (if any) on the task row.
     await db.execute(
         "UPDATE tasks SET assigned_runtime_id = ?, sandbox_id = ? WHERE id = ?",
-        (bundle.default_agent_runtime_id, sandbox.id, task.id),
+        (
+            bundle.default_agent_runtime_id,
+            sandbox.id if sandbox else None,
+            task.id,
+        ),
     )
     await db.commit()
 
     task_payload = task.model_dump(mode="json")
     task_payload["assigned_runtime_id"] = bundle.default_agent_runtime_id
-    task_payload["sandbox_id"] = sandbox.id
+    task_payload["sandbox_id"] = sandbox.id if sandbox else None
 
     return {
         "task": task_payload,
-        "sandbox": sandbox.model_dump(mode="json"),
+        "sandbox": sandbox.model_dump(mode="json") if sandbox else None,
     }
 
 
