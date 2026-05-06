@@ -296,3 +296,73 @@ async def pair_agent(
         "runtime_id": runtime_id,
         "bundle_id": bundle.id,
     }
+
+
+@router.post("/agents/pair")
+async def pair_agent_account(
+    req: PairAgentRequest,
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
+    """Account-scoped variant of /bundles/{id}/pair-agent.
+
+    Same inverted RFC 8628 flow — relay user_code approval to krewauth
+    on behalf of the caller, then create an agent_runtimes row owned
+    by the caller's account. No bundle is required; the runtime is
+    global to the user and can be assigned to any bundle later.
+
+    Used by cookrew-beta's "Hire Agent" UI when no scratch bundle
+    exists yet.
+    """
+    settings = get_settings()
+    if not settings.krewauth_service_token:
+        raise HTTPException(
+            status_code=500, detail="krewauth_service_token_not_configured",
+        )
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                f"{settings.krewauth_url}/auth/device/approve-on-behalf",
+                json={"user_code": req.user_code},
+                headers={
+                    "X-Service-Token": settings.krewauth_service_token,
+                    "X-On-Behalf-Of": caller.account_id,
+                },
+            )
+    except httpx.RequestError as exc:
+        logger.error("krewauth pair relay failed: %s", exc)
+        raise HTTPException(status_code=502, detail="auth_service_unreachable")
+
+    if resp.status_code != 200:
+        try:
+            detail = resp.json().get("detail", "pair_failed")
+        except Exception:
+            detail = "pair_failed"
+        raise HTTPException(status_code=resp.status_code, detail=detail)
+
+    runtime_id = str(uuid.uuid4())
+    now = datetime.now(timezone.utc).isoformat()
+    # No bundle binding — agent_id is a stable label tied to the account.
+    await db.execute(
+        "INSERT INTO agent_runtimes "
+        "(id, agent_id, account_id, daemon_version, provider, host_info, "
+        "status, last_seen_at, started_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            runtime_id,
+            f"acct_{caller.account_id}",
+            caller.account_id,
+            None,
+            None,
+            "{}",
+            "online",
+            now,
+            now,
+        ),
+    )
+    await db.commit()
+    return {
+        "detail": "paired",
+        "runtime_id": runtime_id,
+    }

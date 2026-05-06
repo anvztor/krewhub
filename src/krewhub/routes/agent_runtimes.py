@@ -19,11 +19,16 @@ from datetime import datetime, timedelta, timezone
 import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import resolve_caller_or_cookie
 from krewhub.db.connection import get_db
 from krewhub.routes.schemas import RegisterRuntimeRequest
 
-router = APIRouter(tags=["agent-runtimes"], dependencies=[Depends(resolve_caller)])
+# Cookie-friendly auth so the cookrew-beta SPA (browser session) can
+# read its own roster. Daemon callers (Bearer token) keep working —
+# resolve_caller_or_cookie supports both.
+router = APIRouter(
+    tags=["agent-runtimes"], dependencies=[Depends(resolve_caller_or_cookie)],
+)
 
 # A runtime that hasn't heartbeated in this many seconds is stale.
 STALE_THRESHOLD_SECONDS = 60
