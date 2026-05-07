@@ -360,4 +360,65 @@ CREATE TABLE IF NOT EXISTS a2a_invocations (
 
 CREATE INDEX IF NOT EXISTS idx_a2a_invocations_agent ON a2a_invocations(owner, agent_name, status);
 CREATE INDEX IF NOT EXISTS idx_a2a_invocations_expires ON a2a_invocations(expires_at);
+
+-- Invocation Contract — slice 1 (docs/INVOCATION-CONTRACT.md §6, §9)
+-- One row per addressable Hand invocation; one tape per invocation.
+CREATE TABLE IF NOT EXISTS invocations (
+    id TEXT PRIMARY KEY,
+    -- target_type validated at the route layer (parse_target() enforces
+    -- the contract's closed set: sandbox/agent/human). Free-form here so
+    -- the service can host test doubles + future Hand types without a
+    -- schema bump.
+    target_type TEXT NOT NULL,
+    target_id TEXT,
+    input_json TEXT NOT NULL,
+    schema_json TEXT,
+    deadline_s INTEGER NOT NULL,
+    label TEXT,
+    parent_tape_id TEXT,
+    parent_fork_point INTEGER,
+    idempotency_key TEXT,
+    tape_id TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL CHECK (status IN ('pending','running','completed','cancelled','errored')) DEFAULT 'pending',
+    result_json TEXT,
+    created_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    created_by TEXT NOT NULL
+);
+
+-- Idempotency: same (parent_tape_id, idempotency_key) → same invocation.
+-- NULL keys never collide because SQLite treats NULL as distinct in UNIQUE.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_idempotency
+    ON invocations(parent_tape_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_invocations_status ON invocations(status);
+CREATE INDEX IF NOT EXISTS idx_invocations_target ON invocations(target_type, target_id);
+
+-- Append-only event log for invocation tapes. (tape_id, id) is monotonic
+-- per tape; ids start at 0 and increment by 1.
+CREATE TABLE IF NOT EXISTS invocation_events (
+    tape_id TEXT NOT NULL,
+    id INTEGER NOT NULL,
+    parent_id INTEGER,
+    fork_id TEXT,
+    actor_type TEXT NOT NULL CHECK (actor_type IN ('brain','sandbox','human','system')),
+    actor_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    body TEXT NOT NULL DEFAULT '',
+    payload_json TEXT NOT NULL DEFAULT '{}',
+    ts TEXT NOT NULL,
+    PRIMARY KEY (tape_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_invocation_events_kind ON invocation_events(kind);
+
+-- Fork registry: a child tape names its parent tape + the event id at
+-- which it branched off. Handoff events on the parent tape close the loop.
+CREATE TABLE IF NOT EXISTS tape_forks (
+    child_tape_id TEXT PRIMARY KEY,
+    parent_tape_id TEXT NOT NULL,
+    fork_point_event_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tape_forks_parent ON tape_forks(parent_tape_id);
 """

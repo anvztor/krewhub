@@ -81,3 +81,8 @@ async def cookie_client(_setup_db):
         cookies={"krew_session": token},
     ) as ac:
         yield ac
+
+
+# Re-export Invocation Contract fixtures into this conftest so pytest
+# auto-discovers them across tests/test_invocation_*.py.
+from tests.conftest_invocations import _install_fake_hand, inv_client  # noqa: E402, F401

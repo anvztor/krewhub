@@ -254,6 +254,64 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         "INTEGER NOT NULL DEFAULT 0",
     )
 
+    # Invocation Contract slice 1 — three new tables (idempotent for
+    # databases predating the contract).
+    await _create_table_if_missing(db, "invocations", """
+        CREATE TABLE IF NOT EXISTS invocations (
+            id TEXT PRIMARY KEY,
+            target_type TEXT NOT NULL,
+            target_id TEXT,
+            input_json TEXT NOT NULL,
+            schema_json TEXT,
+            deadline_s INTEGER NOT NULL,
+            label TEXT,
+            parent_tape_id TEXT,
+            parent_fork_point INTEGER,
+            idempotency_key TEXT,
+            tape_id TEXT NOT NULL UNIQUE,
+            status TEXT NOT NULL CHECK (status IN ('pending','running','completed','cancelled','errored')) DEFAULT 'pending',
+            result_json TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            created_by TEXT NOT NULL
+        )
+    """)
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_invocations_idempotency "
+        "ON invocations(parent_tape_id, idempotency_key) "
+        "WHERE idempotency_key IS NOT NULL"
+    )
+    await _create_index_if_missing(db, "idx_invocations_status", "invocations", "(status)")
+    await _create_index_if_missing(db, "idx_invocations_target", "invocations", "(target_type, target_id)")
+
+    await _create_table_if_missing(db, "invocation_events", """
+        CREATE TABLE IF NOT EXISTS invocation_events (
+            tape_id TEXT NOT NULL,
+            id INTEGER NOT NULL,
+            parent_id INTEGER,
+            fork_id TEXT,
+            actor_type TEXT NOT NULL CHECK (actor_type IN ('brain','sandbox','human','system')),
+            actor_id TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            body TEXT NOT NULL DEFAULT '',
+            payload_json TEXT NOT NULL DEFAULT '{}',
+            ts TEXT NOT NULL,
+            PRIMARY KEY (tape_id, id)
+        )
+    """)
+    await _create_index_if_missing(db, "idx_invocation_events_kind", "invocation_events", "(kind)")
+
+    await _create_table_if_missing(db, "tape_forks", """
+        CREATE TABLE IF NOT EXISTS tape_forks (
+            child_tape_id TEXT PRIMARY KEY,
+            parent_tape_id TEXT NOT NULL,
+            fork_point_event_id INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        )
+    """)
+    await _create_index_if_missing(db, "idx_tape_forks_parent", "tape_forks", "(parent_tape_id)")
+
     await db.commit()
 
 

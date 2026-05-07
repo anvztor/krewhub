@@ -63,3 +63,54 @@ class E2bClient:
         if response.status_code in (200, 204, 404):
             return
         response.raise_for_status()
+
+    async def exec_command(
+        self,
+        sandbox_id: str,
+        command: str,
+        *,
+        cwd: str | None = None,
+        env: dict[str, str] | None = None,
+        timeout: float = 300.0,
+    ):
+        """Run `command` in the sandbox; yield NDJSON chunks.
+
+        Each chunk is one of:
+          - {"stream": "stdout"|"stderr", "data": "..."}  — output chunk
+          - {"exit_code": int}                            — terminal
+          - {"error": "..."}                              — terminal infra failure
+
+        Caller MUST async-iterate the returned object, not await it.
+        Returns an async generator; raise/timeout propagates to caller.
+        """
+        import json as _json
+        url = f"{self.base_url}/sandboxes/{sandbox_id}/processes"
+        body: dict = {"command": command}
+        if cwd is not None:
+            body["cwd"] = cwd
+        if env is not None:
+            body["env"] = env
+
+        async def _stream():
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                async with client.stream(
+                    "POST", url,
+                    headers=self._headers(),
+                    json=body,
+                ) as resp:
+                    if resp.status_code != 200:
+                        text = await resp.aread()
+                        raise httpx.HTTPStatusError(
+                            f"e2b exec returned {resp.status_code}: {text.decode(errors='replace')[:500]}",
+                            request=resp.request, response=resp,
+                        )
+                    async for line in resp.aiter_lines():
+                        if not line.strip():
+                            continue
+                        try:
+                            chunk = _json.loads(line)
+                        except _json.JSONDecodeError:
+                            continue
+                        yield chunk
+
+        return _stream()
