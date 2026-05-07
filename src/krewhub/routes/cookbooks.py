@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import resolve_caller_or_cookie
 from krewhub.config import get_settings
 from krewhub.db.connection import get_db
 from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
@@ -18,7 +18,14 @@ from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import CreateCookbookRequest
 from krewhub.watch.globals import get_watch_service
 
-router = APIRouter(tags=["cookbooks"], dependencies=[Depends(resolve_caller)])
+# Cookie-friendly auth so the cookrew-beta SPA (browser session) can
+# discover its owned cookbooks via /api/v1/cookbooks?owner_id=<me>.
+# Daemon / api-key callers keep working — resolve_caller_or_cookie
+# accepts Bearer JWT, X-API-Key, AND krewauth_session / krew_session
+# cookies.
+router = APIRouter(
+    tags=["cookbooks"], dependencies=[Depends(resolve_caller_or_cookie)],
+)
 
 
 @router.post("/cookbooks")

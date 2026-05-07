@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 import aiosqlite
 
-from krewhub.auth import resolve_caller
+from krewhub.auth import resolve_caller_or_cookie
 from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, Recipe, RecipeMember, Role, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
@@ -18,7 +18,12 @@ from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import CreateRecipeRequest, InviteMemberRequest, PostRecipeEventRequest
 from krewhub.watch.globals import get_watch_service
 
-router = APIRouter(tags=["recipes"], dependencies=[Depends(resolve_caller)])
+# Cookie-or-Bearer auth: cookrew-beta SPA reads /api/v1/cookbooks/{id}
+# (which fetches recipes) and /api/v1/recipes/{id}/* via the
+# krewauth_session cookie; daemon + API key callers keep working.
+router = APIRouter(
+    tags=["recipes"], dependencies=[Depends(resolve_caller_or_cookie)],
+)
 
 
 @router.post("/recipes")
