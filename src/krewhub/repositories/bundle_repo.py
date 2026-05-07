@@ -29,8 +29,8 @@ class BundleRepo:
                 claimed_at, cooked_at, digested_at, blocked_reason,
                 graph_code, graph_mermaid,
                 resource_version, generation,
-                owner_account_id, default_agent_runtime_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                owner_account_id, default_agent_runtime_id, sandbox_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (bundle.id, bundle.recipe_id, bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
@@ -39,10 +39,22 @@ class BundleRepo:
              bundle.blocked_reason,
              bundle.graph_code, bundle.graph_mermaid,
              bundle.resource_version, bundle.generation,
-             bundle.owner_account_id, bundle.default_agent_runtime_id),
+             bundle.owner_account_id, bundle.default_agent_runtime_id,
+             bundle.sandbox_id),
         )
         await self._db.commit()
         return bundle
+
+    async def set_sandbox(self, bundle_id: str, sandbox_id: str) -> None:
+        """Bind a freshly-provisioned sandbox to the bundle."""
+        await self._db.execute(
+            """UPDATE bundles
+               SET sandbox_id = ?,
+                   resource_version = resource_version + 1
+               WHERE id = ?""",
+            (sandbox_id, bundle_id),
+        )
+        await self._db.commit()
 
     async def set_default_agent_runtime(
         self, bundle_id: str, runtime_id: str,
@@ -200,4 +212,5 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
             if "default_agent_runtime_id" in keys
             else None
         ),
+        sandbox_id=row["sandbox_id"] if "sandbox_id" in keys else None,
     )

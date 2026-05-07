@@ -146,6 +146,10 @@ class Bundle(BaseModel, frozen=True):
     # NULL on legacy bundles created before the auth journey.
     owner_account_id: str | None = None
     default_agent_runtime_id: str | None = None
+    # Per-bundle e2b sandbox. Provisioned on bundle create; every task
+    # in this bundle reuses it so the agent's working tree (cloned repo,
+    # generated files, edits) survives across tasks.
+    sandbox_id: str | None = None
 
 
 class Task(BaseModel, frozen=True):

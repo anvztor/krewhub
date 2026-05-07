@@ -39,6 +39,7 @@ async def create_bundle(
     req: CreateBundleRequest,
     db: aiosqlite.Connection = Depends(get_db),
     caller: CallerContext = Depends(resolve_caller_or_cookie),
+    e2b: E2bClient = Depends(get_e2b),
 ):
     recipe = await RecipeRepo(db).get(recipe_id)
     if recipe is None:
@@ -87,9 +88,34 @@ async def create_bundle(
         )
 
     await db.commit()
+
+    # Bundle-level sandbox provisioning. cookrew-beta wants this so the
+    # agent has one persistent working tree (cloned repo, generated
+    # files, edits) for every task in the bundle. Fail-soft: a bad e2b
+    # config shouldn't block bundle creation, the bundle just won't
+    # have a sandbox and the legacy per-task path will provision one
+    # on first ship.
+    settings = get_settings()
+    bundle_sandbox_id: str | None = None
+    try:
+        sandbox = await SandboxService(db, e2b).create_for_bundle(
+            bundle_id=bundle.id,
+            owner_account_id=caller.account_id,
+            template=settings.e2b_default_template,
+        )
+        bundle_sandbox_id = sandbox.id
+        await BundleRepo(db).set_sandbox(bundle.id, sandbox.id)
+    except Exception as exc:
+        logger.warning(
+            "bundle %s: sandbox provision failed: %s — bundle returned "
+            "without a sandbox; tasks will fall back to per-task path",
+            bundle.id, exc,
+        )
+
     bundle = bundle.model_copy(update={
         "owner_account_id": caller.account_id,
         "default_agent_runtime_id": default_runtime_id,
+        "sandbox_id": bundle_sandbox_id,
     })
     return {
         "bundle": bundle.model_dump(mode="json"),
@@ -272,31 +298,40 @@ async def add_task_to_bundle(
         return {"task": task.model_dump(mode="json")}
 
     settings = get_settings()
-    sandbox = None
-    try:
-        sandbox = await SandboxService(db, e2b).create_for_task(
-            task_id=task.id,
-            owner_account_id=caller.account_id,
-            template=settings.e2b_default_template,
-        )
-    except Exception as exc:
-        # Fail-soft: a missing/invalid e2b api key, network glitch, or
-        # template absence used to 503 the entire request, leaving the
-        # task uncreated in the UI's view (it WAS in the db). Log the
-        # failure, persist the assignment without a sandbox id, and
-        # return the task so the daemon can still pick it up via the
-        # A2A poll path. The UI surfaces the live status from the next
-        # bundle refresh.
-        logger.warning(
-            "sandbox provision failed for task %s: %s", task.id, exc,
-        )
+    sandbox_service = SandboxService(db, e2b)
 
-    # Persist the assignment + sandbox id (if any) on the task row.
+    # Reuse the bundle's primary sandbox if it was provisioned at
+    # bundle-create time (the new path). Only fall back to per-task
+    # provisioning for legacy bundles that pre-date this column.
+    sandbox = None
+    sandbox_id_for_task: str | None = bundle.sandbox_id
+    if sandbox_id_for_task is None:
+        try:
+            sandbox = await sandbox_service.create_for_task(
+                task_id=task.id,
+                owner_account_id=caller.account_id,
+                template=settings.e2b_default_template,
+            )
+            sandbox_id_for_task = sandbox.id
+        except Exception as exc:
+            # Fail-soft: a missing/invalid e2b api key, network glitch,
+            # or template absence used to 503 the entire request,
+            # leaving the task uncreated in the UI's view (it WAS in
+            # the db). Log the failure, persist the assignment without
+            # a sandbox id, and return the task so the daemon can still
+            # pick it up via the A2A poll path. The UI surfaces the
+            # live status from the next bundle refresh.
+            logger.warning(
+                "sandbox provision failed for task %s: %s", task.id, exc,
+            )
+
+    # Persist the assignment + sandbox id (whether bundle-shared or
+    # per-task) on the task row.
     await db.execute(
         "UPDATE tasks SET assigned_runtime_id = ?, sandbox_id = ? WHERE id = ?",
         (
             bundle.default_agent_runtime_id,
-            sandbox.id if sandbox else None,
+            sandbox_id_for_task,
             task.id,
         ),
     )
@@ -304,11 +339,15 @@ async def add_task_to_bundle(
 
     task_payload = task.model_dump(mode="json")
     task_payload["assigned_runtime_id"] = bundle.default_agent_runtime_id
-    task_payload["sandbox_id"] = sandbox.id if sandbox else None
+    task_payload["sandbox_id"] = sandbox_id_for_task
 
     return {
         "task": task_payload,
+        # Expose the sandbox row when this request created it; the
+        # bundle-shared case returns None here because the bundle
+        # already owns the sandbox row.
         "sandbox": sandbox.model_dump(mode="json") if sandbox else None,
+        "shared_bundle_sandbox_id": bundle.sandbox_id,
     }
 
 

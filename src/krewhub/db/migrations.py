@@ -231,6 +231,18 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # The sandboxes table itself is created by SCHEMA_SQL (CREATE IF NOT EXISTS).
     await _add_column_if_missing(db, "tasks", "assigned_runtime_id", "TEXT")
     await _add_column_if_missing(db, "tasks", "sandbox_id", "TEXT")
+    # Bundle-level sandbox: when cookrew-beta opens a bundle tab, krewhub
+    # provisions ONE e2b sandbox and every task in the bundle reuses it.
+    # bundles.sandbox_id is the bundle's primary sandbox; sandboxes.bundle_id
+    # is the reverse lookup (and lets a sandbox row be bundle-scoped instead
+    # of task-scoped).
+    await _add_column_if_missing(db, "bundles", "sandbox_id", "TEXT")
+    await _add_column_if_missing(db, "sandboxes", "bundle_id", "TEXT")
+    # The original sandboxes schema declared task_id as NOT NULL with a
+    # FOREIGN KEY into tasks(id). Bundle-scoped sandboxes don't have an
+    # owning task — rebuild the table to make task_id nullable and drop
+    # the FK. Idempotent via the column probe at the top.
+    await _relax_sandboxes_task_id(db)
 
     await db.commit()
 
@@ -456,3 +468,62 @@ async def _create_index_if_missing(
     if await cursor.fetchone() is None:
         await db.execute(f"CREATE INDEX IF NOT EXISTS {index_name} ON {table}{columns}")
         logger.info("Migration: created index %s", index_name)
+
+
+async def _relax_sandboxes_task_id(db: aiosqlite.Connection) -> None:
+    """Rebuild `sandboxes` so task_id is nullable and the FK is dropped.
+
+    The original schema declared
+        task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE
+    which blocks bundle-scoped sandboxes (the row has no owning task).
+    Idempotent: detects whether the constraint is still in place by
+    inspecting `sqlite_master.sql` and skips if already relaxed.
+    """
+    if not await _table_exists(db, "sandboxes"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='sandboxes'",
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    ddl = (row["sql"] or "").upper()
+    if "TASK_ID" not in ddl or ("NOT NULL" not in ddl and "REFERENCES" not in ddl):
+        # Already relaxed.
+        return
+
+    logger.info("Migration: rebuilding sandboxes table to relax task_id")
+    await db.executescript(
+        """
+        BEGIN;
+        CREATE TABLE sandboxes_new (
+            id              TEXT PRIMARY KEY,
+            task_id         TEXT,
+            bundle_id       TEXT,
+            owner_account_id TEXT NOT NULL,
+            e2b_sandbox_id  TEXT NOT NULL,
+            template        TEXT NOT NULL,
+            status          TEXT NOT NULL,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL,
+            terminated_at   TEXT,
+            last_event_at   TEXT
+        );
+        INSERT INTO sandboxes_new (
+            id, task_id, bundle_id, owner_account_id, e2b_sandbox_id,
+            template, status, created_at, updated_at, terminated_at, last_event_at
+        )
+        SELECT
+            id, task_id,
+            CASE WHEN bundle_id IS NULL THEN NULL ELSE bundle_id END,
+            owner_account_id, e2b_sandbox_id, template, status,
+            created_at, updated_at, terminated_at, last_event_at
+        FROM sandboxes;
+        DROP TABLE sandboxes;
+        ALTER TABLE sandboxes_new RENAME TO sandboxes;
+        CREATE INDEX IF NOT EXISTS idx_sandboxes_status_last_event
+            ON sandboxes(status, last_event_at);
+        COMMIT;
+        """
+    )

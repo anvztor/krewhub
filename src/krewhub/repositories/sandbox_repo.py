@@ -9,9 +9,12 @@ from krewhub.models.sandbox import Sandbox
 
 
 def _row_to_sandbox(row: aiosqlite.Row) -> Sandbox:
+    keys = row.keys() if hasattr(row, "keys") else []
+    bundle_id = row["bundle_id"] if "bundle_id" in keys else None
     return Sandbox(
         id=row["id"],
         task_id=row["task_id"],
+        bundle_id=bundle_id,
         owner_account_id=row["owner_account_id"],
         e2b_sandbox_id=row["e2b_sandbox_id"],
         template=row["template"],
@@ -33,12 +36,14 @@ class SandboxRepo:
 
     async def create(self, sb: Sandbox) -> None:
         await self._db.execute(
-            "INSERT INTO sandboxes (id, task_id, owner_account_id, e2b_sandbox_id, "
-            "template, status, created_at, updated_at, terminated_at, last_event_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO sandboxes (id, task_id, bundle_id, owner_account_id, "
+            "e2b_sandbox_id, template, status, created_at, updated_at, "
+            "terminated_at, last_event_at) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 sb.id,
                 sb.task_id,
+                sb.bundle_id,
                 sb.owner_account_id,
                 sb.e2b_sandbox_id,
                 sb.template,

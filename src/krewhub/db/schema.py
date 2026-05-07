@@ -68,7 +68,12 @@ CREATE TABLE IF NOT EXISTS bundles (
     -- legacy bundles created before the auth journey; future migration
     -- will backfill + add NOT NULL once all bundles have an owner.
     owner_account_id TEXT,
-    default_agent_runtime_id TEXT
+    default_agent_runtime_id TEXT,
+    -- Bundle-level sandbox: cookrew-beta provisions one e2b sandbox per
+    -- bundle tab; every task in the bundle reuses it so the agent's
+    -- working tree (cloned repo, edits, generated files) survives
+    -- across tasks.
+    sandbox_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
@@ -103,13 +108,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     sandbox_id TEXT
 );
 
--- Auth track A2: e2b sandboxes provisioned per task.
--- Lifecycle: provisioning -> ready -> running -> terminated|error.
--- Sweeper terminates idle (last_event_at older than threshold) or
--- aged (created_at older than max-age) sandboxes.
+-- Auth track A2: e2b sandboxes — provisioned per bundle (preferred) or
+-- per task (legacy). Lifecycle: provisioning -> ready -> running ->
+-- terminated|error. Sweeper terminates idle (last_event_at older than
+-- threshold) or aged (created_at older than max-age) sandboxes.
+--
+-- task_id is nullable (and has no FK) so bundle-scoped rows are valid;
+-- bundle_id is the reverse pointer set when a sandbox is bundle-scoped.
+-- The original schema had `task_id NOT NULL REFERENCES tasks(id)` and a
+-- migration (_relax_sandboxes_task_id) rebuilds legacy DBs to match.
 CREATE TABLE IF NOT EXISTS sandboxes (
     id              TEXT PRIMARY KEY,
-    task_id         TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    task_id         TEXT,
+    bundle_id       TEXT,
     owner_account_id TEXT NOT NULL,
     e2b_sandbox_id  TEXT NOT NULL,
     template        TEXT NOT NULL,
