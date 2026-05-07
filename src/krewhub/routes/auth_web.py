@@ -25,6 +25,10 @@ from krewhub.auth import (
 )
 from krewhub.config import Settings, get_settings
 from krewhub.db.connection import get_db
+from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
+from krewhub.models import Cookbook, Recipe, RecipeMember
+from krewhub.repositories.cookbook_repo import CookbookRepo
+from krewhub.repositories.recipe_repo import RecipeRepo
 
 logger = logging.getLogger(__name__)
 
@@ -365,4 +369,79 @@ async def pair_agent_account(
     return {
         "detail": "paired",
         "runtime_id": runtime_id,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Workspace bootstrap — first-time web users
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/v1/me/init-workspace")
+async def init_workspace(
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> dict:
+    """Idempotent: ensure the caller has at least one owned cookbook
+    and one recipe inside it.
+
+    First-time web users (those who land on beta.cookrew.dev BEFORE
+    running ``krewcli login`` on their laptop) used to get stuck on
+    "recipe still loading" because no cookbook existed for their
+    account, and the SPA wouldn't show the empty-state CTA without a
+    bundle. krewcli's auto-bootstrap (``_ensure_cookbook`` /
+    ``_ensure_recipe``) already does the same work — this endpoint is
+    the server-side equivalent, callable from the SPA.
+
+    Reuses the existing entities (no duplicate creation) so calling it
+    on every load is safe.
+    """
+    cookbook_repo = CookbookRepo(db)
+    recipe_repo = RecipeRepo(db)
+
+    # 1. Find or create the user's "my-cookbook".
+    cookbook = await cookbook_repo.find_by_name_and_owner(
+        "my-cookbook", caller.account_id,
+    )
+    if cookbook is None:
+        # Init bare repo on disk so future git pushes have a target.
+        # ensure_bare_repo is idempotent.
+        repo_path = resolve_repo_path(caller.account_id, "my-cookbook")
+        await ensure_bare_repo(repo_path)
+        now = datetime.now(timezone.utc)
+        cookbook = Cookbook(
+            id=f"cb_{uuid.uuid4().hex[:8]}",
+            name="my-cookbook",
+            owner_id=caller.account_id,
+            created_at=now,
+        )
+        cookbook = await cookbook_repo.create(cookbook, repo_path=str(repo_path))
+
+    # 2. Find or create "my-recipe" inside it.
+    existing = await recipe_repo.list_by_cookbook(cookbook.id)
+    recipe = next((r for r in existing if r.name == "my-recipe"), None)
+    if recipe is None:
+        now = datetime.now(timezone.utc)
+        recipe = Recipe(
+            id=f"rec_{uuid.uuid4().hex[:8]}",
+            name="my-recipe",
+            repo_url="",
+            default_branch="main",
+            created_by=caller.account_id,
+            created_at=now,
+            cookbook_id=cookbook.id,
+        )
+        recipe = await recipe_repo.create(recipe)
+        await recipe_repo.add_member(RecipeMember(
+            id=f"mem_{uuid.uuid4().hex[:8]}",
+            recipe_id=recipe.id,
+            actor_id=caller.account_id,
+            actor_type="human",
+            role="owner",
+            joined_at=now,
+        ))
+
+    return {
+        "cookbook": cookbook.model_dump(mode="json"),
+        "recipe": recipe.model_dump(mode="json"),
     }
