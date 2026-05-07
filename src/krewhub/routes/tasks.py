@@ -26,7 +26,7 @@ from krewhub.auth import (
     resolve_caller_or_cookie,
 )
 from krewhub.db.connection import get_db
-from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus
+from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus, WatchEventType
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
 from krewhub.services.task_service import SessionTokenMismatch, TaskService
@@ -370,6 +370,98 @@ async def get_task_cancel_status(
         "cancelled": task.status == TaskStatus.CANCELLED,
         "status": task.status,
     }
+
+
+# ---------------------------------------------------------------------------
+# HITL — human-in-the-loop answer to a blocked task
+# ---------------------------------------------------------------------------
+
+
+from pydantic import BaseModel  # noqa: E402 — keep route-local schema close to handler
+
+
+class TaskHitlAnswerRequest(BaseModel):
+    answer: str
+
+
+@router.post("/tasks/{task_id}/hitl/answer")
+async def post_task_hitl_answer(
+    task_id: str,
+    req: TaskHitlAnswerRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+):
+    """Operator answer to a blocked task — un-block + re-queue.
+
+    Flow when a task lands in `blocked` (CLI timeout, agent gave up,
+    etc.) the cookrew-beta SPA renders an HITL clickbar chip; clicking
+    pops a textarea where the operator types guidance. Submitting POSTs
+    here:
+
+      1. Append the answer onto the task description so the agent
+         sees it on the next attempt (krewcli's prompt builder
+         concatenates title + description).
+      2. Drop a `prompt` event onto the recipe stream so the SPA's
+         event-feed surfaces what the operator said.
+      3. Reset status from `blocked` → `open` and clear the prior
+         `claimed_by_agent_id` / `claimed_at` so TaskDispatchController
+         re-dispatches on its next reconcile tick.
+    """
+    answer = (req.answer or "").strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="empty_answer")
+
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    if task.status != TaskStatus.BLOCKED:
+        raise HTTPException(
+            status_code=400,
+            detail=f"task is {task.status}, not blocked",
+        )
+
+    # 1. Append answer to description so the daemon sees it next run.
+    new_description_lines = []
+    if task.description:
+        new_description_lines.append(task.description.rstrip())
+    new_description_lines.append(
+        f"\n[OPERATOR ({caller.account_id}) ANSWER]\n{answer}",
+    )
+    new_description = "\n".join(new_description_lines)
+
+    # 2. Drop a HITL event onto the bundle stream.
+    from krewhub.repositories.bundle_repo import BundleRepo
+    bundle = await BundleRepo(db).get(task.bundle_id)
+    recipe_id = bundle.recipe_id if bundle else None
+
+    svc = TaskService(db, get_watch_service())
+    if recipe_id:
+        await svc.post_event(
+            task_id,
+            recipe_id=recipe_id,
+            event_type=EventType.PROMPT,
+            actor_id=caller.account_id,
+            actor_type=ActorType.HUMAN,
+            body=answer,
+            payload={"hitl": True, "kind": "answer"},
+            facts=[],
+            code_refs=[],
+        )
+
+    # 3. Reset status + clear claim so dispatch picks it back up.
+    updated = await TaskRepo(db).update(
+        task_id,
+        status=TaskStatus.OPEN,
+        description=new_description,
+        clear_claim=True,
+        clear_blocked_reason=True,
+    )
+    if updated is not None and recipe_id:
+        await get_watch_service().record_resource(
+            "task", task_id, WatchEventType.MODIFIED, updated, recipe_id=recipe_id,
+        )
+
+    return {"task": updated.model_dump(mode="json") if updated else None}
 
 
 @router.post("/tasks/{task_id}/progress")

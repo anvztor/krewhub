@@ -126,6 +126,7 @@ class TaskRepo:
         completed_at: datetime | None = None,
         blocked_reason: str | None = None,
         clear_blocked_reason: bool = False,
+        clear_claim: bool = False,
         depends_on_task_ids: list[str] | None = None,
         expected_version: int | None = None,
     ) -> Task | None:
@@ -152,6 +153,12 @@ class TaskRepo:
         if assigned_agent_id is not None:
             parts.append("assigned_agent_id = ?")
             params.append(assigned_agent_id)
+        if clear_claim:
+            # HITL retry path: reset claim columns to NULL so
+            # TaskDispatchController re-dispatches on next reconcile.
+            parts.append("claimed_by_agent_id = NULL")
+            parts.append("claimed_at = NULL")
+            parts.append("assigned_agent_id = NULL")
         if claimed_by_agent_id is not None:
             parts.append("claimed_by_agent_id = ?")
             params.append(claimed_by_agent_id)
