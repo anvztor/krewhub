@@ -150,6 +150,23 @@ class SandboxHand:
             )
 
         if infra_error is not None:
+            # Detect the self-hosted e2b deployment's "exec endpoint not
+            # wired" failure mode and surface a clearer reason. The
+            # orchestrator returns 404 "no matching operation was found"
+            # because exec lives on envd (per-sandbox), not on the
+            # orchestrator. krewhub's e2b client needs to be taught to
+            # route through the client-proxy with the right Host header
+            # to reach the sandbox's envd; until then SandboxHand is
+            # contract-shaped but operationally inert.
+            if "no matching operation" in infra_error or "404" in infra_error:
+                return ResultEnvelope(
+                    action="error",
+                    reason=(
+                        "e2b_exec_not_wired: the krewhub→envd exec path "
+                        "is not configured in this deployment. "
+                        f"Underlying: {infra_error}"
+                    ),
+                )
             return ResultEnvelope(action="error", reason=infra_error)
 
         # If the stream ended without an exit_code event AND no error event,
