@@ -74,15 +74,17 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Invocation Contract — register the InvocationService singleton with
     # the production Hand registry. Routes resolve it via app.state.
     from krewhub.services.invocation_service import InvocationService
-    from krewhub.workers import HumanHand, SandboxHand
+    from krewhub.workers import AgentHand, HumanHand, SandboxHand
     _app.state.invocations = InvocationService(
         db, watch=watch,
         hands={
             "sandbox": SandboxHand(_app.state.e2b),
             "human": HumanHand(),
-            # AgentHand wires into the existing A2A queue; ships in a
-            # later slice. Until then, delegate(to="agent:...") returns
-            # an `error` envelope with reason="no_hand_registered".
+            # AgentHand bridges to the existing A2A queue. The krewcli
+            # daemon must implement method="delegate" to actually run a
+            # sub-Brain; without that, agent invocations time out and
+            # return action=cancel reason=a2a_deadline_exceeded.
+            "agent": AgentHand(db),
         },
     )
 
