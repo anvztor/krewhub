@@ -244,6 +244,16 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # the FK. Idempotent via the column probe at the top.
     await _relax_sandboxes_task_id(db)
 
+    # Opt-in autoplan: every bundle previously got auto-dispatched to a
+    # planner agent on the next reconcile. The cookrew-beta "+ NEW"
+    # button and any other empty-bundle-from-UI flow want a blank
+    # board, not a generated graph. Default to OFF; orchestrator-mode
+    # flows that genuinely want a planner flip this on at create time.
+    await _add_column_if_missing(
+        db, "bundles", "autoplan_enabled",
+        "INTEGER NOT NULL DEFAULT 0",
+    )
+
     await db.commit()
 
 

@@ -30,6 +30,12 @@ class CreateBundleRequest(BaseModel):
     requested_by: str
     tasks: list[CreateTaskInput] = []
     template: str | None = None  # built-in graph template name
+    # Opt-in flag for the PlannerDispatchController. Default false so a
+    # plain "new mission" tab on cookrew-beta renders an empty board and
+    # waits for the operator to add tasks (double-click). Orchestrator-
+    # mode flows that genuinely want LLM planning set this to true on
+    # create, or POST /bundles/{id}/dispatch-planner later.
+    autoplan: bool = False
 
 
 class ClaimTaskRequest(BaseModel):

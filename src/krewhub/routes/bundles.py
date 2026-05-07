@@ -59,6 +59,7 @@ async def create_bundle(
         prompt=req.prompt,
         created_by=created_by,
         tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
+        autoplan=req.autoplan,
     )
     # Set the canonical owner column directly. The BundleService doesn't
     # accept owner_account_id yet; doing it here as a follow-up UPDATE keeps

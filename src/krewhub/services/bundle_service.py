@@ -67,6 +67,8 @@ class BundleService:
         prompt: str,
         created_by: str,
         tasks: list[dict],
+        *,
+        autoplan: bool = False,
     ) -> tuple[Bundle, list[Task]]:
         now = datetime.now(timezone.utc)
         bundle_id = f"bun_{uuid.uuid4().hex[:8]}"
@@ -80,6 +82,13 @@ class BundleService:
             created_at=now,
         )
         bundle = await self._bundles.create(bundle)
+        # PlannerDispatchController only picks up bundles where this is 1.
+        # Empty "+ NEW" bundles from cookrew-beta stay blank by default.
+        if autoplan:
+            await self._bundles._db.execute(  # type: ignore[attr-defined]
+                "UPDATE bundles SET autoplan_enabled = 1 WHERE id = ?",
+                (bundle_id,),
+            )
 
         created_tasks: list[Task] = []
         for i, t in enumerate(tasks):

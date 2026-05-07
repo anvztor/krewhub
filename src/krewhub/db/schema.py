@@ -73,7 +73,12 @@ CREATE TABLE IF NOT EXISTS bundles (
     -- bundle tab; every task in the bundle reuses it so the agent's
     -- working tree (cloned repo, edits, generated files) survives
     -- across tasks.
-    sandbox_id TEXT
+    sandbox_id TEXT,
+    -- Opt-in flag for the PlannerDispatchController. Default 0 so a
+    -- plain "+ NEW" tab on cookrew-beta renders an empty board and
+    -- waits for the operator. Orchestrator-mode flows that want LLM
+    -- planning set this to 1 on create.
+    autoplan_enabled INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);

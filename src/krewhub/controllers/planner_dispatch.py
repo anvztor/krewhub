@@ -174,11 +174,21 @@ class PlannerDispatchController(BaseController):
     # ------------------------------------------------------------------
 
     async def _find_empty_bundles(self) -> list["Bundle"]:
-        """Return open bundles with no graph_code and no tasks."""
+        """Return open bundles with no graph_code and no tasks AND
+        autoplan_enabled=1.
+
+        The autoplan filter is the new opt-in gate: a "+ NEW" tab from
+        cookrew-beta creates an empty bundle with autoplan_enabled=0
+        on purpose — the operator wants a blank board to drop tasks
+        onto, not an LLM-generated graph. Orchestrator-mode flows
+        flip the flag at create time (or via a dedicated dispatch
+        endpoint) to opt back in.
+        """
         cursor = await self._db.execute(
             """SELECT b.* FROM bundles b
                WHERE b.status = 'open'
                  AND b.graph_code IS NULL
+                 AND b.autoplan_enabled = 1
                  AND NOT EXISTS (
                    SELECT 1 FROM tasks t WHERE t.bundle_id = b.id
                  )
