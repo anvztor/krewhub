@@ -41,6 +41,14 @@ async def test_default_bundle_creation_is_inert(cookie_client: AsyncClient):
     assert row is not None
     assert row["autoplan_enabled"] == 0
 
+    cur = await db.execute(
+        "SELECT body FROM events WHERE bundle_id = ? AND type = 'plan'",
+        (bundle_id,),
+    )
+    event = await cur.fetchone()
+    assert event is not None
+    assert event["body"] == "Created empty bundle; add tasks when ready."
+
 
 @pytest.mark.asyncio
 async def test_autoplan_true_persists_flag(cookie_client: AsyncClient):

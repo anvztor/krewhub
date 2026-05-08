@@ -114,18 +114,15 @@ class BundleService:
         )
         await self._events.create(prompt_event)
 
-        # Wording reflects the two shapes of bundle creation:
-        #   * Empty bundle → PlannerDispatchController will dispatch a
-        #     planner agent on its next reconcile; the planner will POST
-        #     graph code to /bundles/{id}/graph, which produces its own
-        #     PLAN event once the graph is attached.
-        #   * Non-empty bundle → the caller (manual seeds, demo store)
-        #     baked in tasks up-front; no planner will run.
-        plan_body = (
-            f"Created bundle with {len(created_tasks)} tasks."
-            if created_tasks
-            else "Created empty bundle; awaiting planner dispatch."
-        )
+        # Wording reflects the actual UX path. A plain "+ NEW" bundle is
+        # intentionally blank and inert; only explicit autoplan callers are
+        # waiting for PlannerDispatchController to attach a graph.
+        if created_tasks:
+            plan_body = f"Created bundle with {len(created_tasks)} tasks."
+        elif autoplan:
+            plan_body = "Created empty bundle; awaiting planner dispatch."
+        else:
+            plan_body = "Created empty bundle; add tasks when ready."
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=recipe_id,

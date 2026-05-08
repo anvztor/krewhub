@@ -85,6 +85,7 @@ async def _seed_empty_bundle(
     *,
     suffix: str | None = None,
     with_planner: bool = True,
+    autoplan_enabled: bool = True,
     planner_capabilities: tuple[str, ...] = (PLANNER_CAPABILITY,),
     planner_status: AgentStatus = AgentStatus.ONLINE,
     planner_endpoint: str | None = "http://planner/api",
@@ -101,6 +102,12 @@ async def _seed_empty_bundle(
             created_at=_now(),
         )
     )
+    if autoplan_enabled:
+        await db.execute(
+            "UPDATE bundles SET autoplan_enabled = 1 WHERE id = ?",
+            (bundle.id,),
+        )
+        await db.commit()
 
     if with_planner:
         await AgentRepo(db).upsert_presence(
@@ -240,7 +247,10 @@ class TestDispatch:
         try:
             await controller.reconcile()
             call = http.post.await_args
-            assert call.args[0] == "http://planner/api"
+            suffix = bundle_id.removeprefix("b-")
+            assert call.args[0] == (
+                f"http://127.0.0.1:8420/a2a/planner-{suffix}/planner-{suffix}"
+            )
             payload = call.kwargs["json"]
             assert payload["method"] == "message/send"
             metadata = payload["params"]["message"]["metadata"]
