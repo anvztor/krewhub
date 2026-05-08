@@ -49,6 +49,8 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _app.state.e2b = E2bClient(
         base_url=settings.e2b_api_url,
         api_key=settings.e2b_api_key,
+        proxy_url=settings.e2b_client_proxy_url or None,
+        envd_proxy_domain=settings.e2b_envd_proxy_domain,
     )
 
     manager = ControllerManager(
@@ -78,7 +80,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     _app.state.invocations = InvocationService(
         db, watch=watch,
         hands={
-            "sandbox": SandboxHand(_app.state.e2b),
+            "sandbox": SandboxHand(_app.state.e2b, db=db),
             "human": HumanHand(),
             # AgentHand bridges to the existing A2A queue. The krewcli
             # daemon must implement method="delegate" to actually run a

@@ -35,11 +35,16 @@ class SandboxHand:
 
     target_type: Literal["sandbox", "agent", "human"] = "sandbox"
 
-    def __init__(self, e2b: Any) -> None:
+    def __init__(self, e2b: Any, db: Any | None = None) -> None:
         # Duck-typed: anything with `exec_command(sandbox_id, command, ...)`
         # returning an async-iterable of NDJSON chunks. Real prod is
         # `krewhub.services.e2b_client.E2bClient`.
         self._e2b = e2b
+        # When set, target_id is treated as a krewhub-side `sbx_*` id
+        # and resolved to the actual e2b sandbox id via `SandboxRepo`
+        # before calling `exec_command`. When None, target_id is passed
+        # through verbatim (test path).
+        self._db = db
 
     async def execute(
         self,
@@ -57,6 +62,26 @@ class SandboxHand:
                 reason="sandbox_id_missing: SandboxHand requires a target_id",
             )
 
+        # Resolve the krewhub-side `sbx_*` id to e2b's actual sandbox id
+        # (long alphanumeric the orchestrator/proxy expects). Tests skip
+        # this by constructing SandboxHand without `db`.
+        e2b_sandbox_id = target_id
+        if self._db is not None and target_id.startswith("sbx_"):
+            try:
+                from krewhub.repositories.sandbox_repo import SandboxRepo
+                row = await SandboxRepo(self._db).get(target_id)
+                if row is None:
+                    return ResultEnvelope(
+                        action="error",
+                        reason=f"sandbox_not_found: {target_id}",
+                    )
+                e2b_sandbox_id = row.e2b_sandbox_id
+            except Exception as exc:
+                return ResultEnvelope(
+                    action="error",
+                    reason=f"sandbox_lookup_failed: {exc}",
+                )
+
         command, cwd, env = _parse_input(input)
         if not command:
             return ResultEnvelope(
@@ -73,7 +98,7 @@ class SandboxHand:
         # The e2b client returns an async generator (via async function).
         try:
             stream = await self._e2b.exec_command(
-                target_id, command,
+                e2b_sandbox_id, command,
                 cwd=cwd, env=env,
                 timeout=float(deadline_s),
             )

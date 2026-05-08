@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     e2b_api_url: str = "http://10.20.100.214:3000"
     e2b_api_key: str = ""
     e2b_default_template: str = "base"
+    # The e2b client-proxy address used to reach envd inside sandbox VMs
+    # for `Process.Start` exec calls. Defaults to same host as the
+    # orchestrator on port 3002. Set explicitly when deployed elsewhere.
+    e2b_client_proxy_url: str = ""
+    # Host header pattern used by the proxy to route to a sandbox's
+    # envd port. The proxy parses `<port>-<sandbox_id>.<domain>` and
+    # forwards to the right firecracker VM; the actual domain doesn't
+    # need to resolve in DNS — the proxy uses Host string matching.
+    e2b_envd_proxy_domain: str = "api.cookrew.dev"
     sandbox_idle_timeout_seconds: int = 600
     sandbox_max_age_seconds: int = 3600
 
