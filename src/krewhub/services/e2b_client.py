@@ -68,13 +68,29 @@ class E2bClient:
             "Content-Type": "application/json",
         }
 
-    async def create_sandbox(self, *, template: str) -> str:
+    async def create_sandbox(
+        self, *, template: str, timeout_s: int = 300,
+    ) -> str:
+        """Provision a sandbox.
+
+        `timeout_s` is the orchestrator's `timeout` field — *seconds*, max
+        3600 — and bounds how long the firecracker VM lives without any
+        traffic. Self-hosted e2b's default is 15s, which is too short to
+        outlast the cold-start of any real client (verified during the
+        2026-05-08 brain smoke). Default 300s (5 min) gives every flow
+        room to breathe; krewhub's sandbox_sweeper still reaps idle rows
+        on its own schedule.
+        """
+        if timeout_s < 1 or timeout_s > 3600:
+            raise ValueError(
+                f"timeout_s must be in [1, 3600], got {timeout_s}"
+            )
         url = f"{self.base_url}/sandboxes"
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.post(
                 url,
                 headers=self._headers(),
-                json={"templateID": template},
+                json={"templateID": template, "timeout": timeout_s},
             )
             response.raise_for_status()
             body = response.json()

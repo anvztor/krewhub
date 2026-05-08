@@ -34,7 +34,7 @@ async def test_create_sandbox_falls_back_to_id_field(httpx_mock):
 
 
 @pytest.mark.asyncio
-async def test_create_sandbox_sends_template_and_api_key(httpx_mock):
+async def test_create_sandbox_sends_template_api_key_and_default_timeout(httpx_mock):
     httpx_mock.add_response(
         method="POST",
         url="http://e2b.local/sandboxes",
@@ -48,7 +48,35 @@ async def test_create_sandbox_sends_template_and_api_key(httpx_mock):
     assert req.headers["X-API-Key"] == "api-key-test"
     import json as _json
     body = _json.loads(req.content)
-    assert body == {"templateID": "base"}
+    # `timeout` (seconds) carries the sandbox's wall-clock lifetime; the
+    # self-hosted e2b orchestrator's default is 15s if omitted, which is
+    # too short to outlast a real client cold start (see brain smoke
+    # 2026-05-08). Default 300s gives every flow breathing room.
+    assert body == {"templateID": "base", "timeout": 300}
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_honours_custom_timeout_s(httpx_mock):
+    httpx_mock.add_response(
+        method="POST",
+        url="http://e2b.local/sandboxes",
+        json={"sandboxID": "sbx_t"},
+        status_code=201,
+    )
+    c = E2bClient(base_url="http://e2b.local/", api_key="k")
+    await c.create_sandbox(template="base", timeout_s=900)
+    req = httpx_mock.get_request()
+    import json as _json
+    assert _json.loads(req.content)["timeout"] == 900
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_rejects_out_of_range_timeout():
+    c = E2bClient(base_url="http://e2b.local", api_key="k")
+    with pytest.raises(ValueError, match="timeout_s must be in"):
+        await c.create_sandbox(template="base", timeout_s=0)
+    with pytest.raises(ValueError, match="timeout_s must be in"):
+        await c.create_sandbox(template="base", timeout_s=4000)
 
 
 @pytest.mark.asyncio
