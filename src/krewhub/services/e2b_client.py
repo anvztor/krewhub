@@ -30,6 +30,11 @@ logger = logging.getLogger(__name__)
 # envd's default port inside the sandbox VM.
 _ENVD_PORT = 49983
 
+# Hard cap on a single write_file payload to avoid blowing up JSON envelopes
+# and the bridge's HTTP body. Larger writes should go via shell (curl /
+# git inside the sandbox) on agent decision.
+_MAX_WRITE_BYTES = 1 * 1024 * 1024  # 1 MiB
+
 
 class E2bClient:
     def __init__(
@@ -87,6 +92,134 @@ class E2bClient:
         if response.status_code in (200, 204, 404):
             return
         response.raise_for_status()
+
+    def _envd_host_header(self, sandbox_id: str) -> str:
+        """Host header that routes the proxy to a specific sandbox's envd."""
+        return f"{_ENVD_PORT}-{sandbox_id}.{self.envd_proxy_domain}"
+
+    async def _connect_unary_json(
+        self, sandbox_id: str, rpc_path: str, body: dict,
+    ) -> httpx.Response:
+        """POST a Connect-UNARY RPC.
+
+        Connect protocol uses `application/json` (no envelope frame) for unary
+        RPCs and `application/connect+json` (with frame) only for streaming.
+        envd 0.5.15 enforces this distinction; sending the wrong type yields
+        HTTP 415. Verified end-to-end in
+        `infra/e2b/scripts/remote-verify-fs-via-proxy.sh` (Phase 1 recon).
+
+        Returns the raw Response so callers decide how to map status codes
+        (e.g. 404 → FileNotFoundError vs swallow for best-effort kill).
+        """
+        if not self.proxy_url:
+            raise RuntimeError(
+                "proxy_not_configured: e2b client-proxy not set"
+            )
+        headers = {
+            "Host": self._envd_host_header(sandbox_id),
+            "Content-Type": "application/json",
+            "Connect-Protocol-Version": "1",
+        }
+        url = f"{self.proxy_url}{rpc_path}"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            return await client.post(url, headers=headers, json=body)
+
+    # ---- Filesystem RPCs --------------------------------------------------
+
+    async def write_file(
+        self, sandbox_id: str, path: str, data: bytes,
+    ) -> None:
+        """POST raw bytes to envd's REST `/files?path=<urlenc>` endpoint.
+
+        Capped at 1 MiB. Larger writes should be agent-driven via shell.
+        """
+        if len(data) > _MAX_WRITE_BYTES:
+            raise ValueError(
+                f"path_too_large: {len(data)} bytes exceeds "
+                f"{_MAX_WRITE_BYTES}-byte cap"
+            )
+        if not self.proxy_url:
+            raise RuntimeError(
+                "proxy_not_configured: e2b client-proxy not set"
+            )
+        url = f"{self.proxy_url}/files"
+        headers = {
+            "Host": self._envd_host_header(sandbox_id),
+            "Content-Type": "application/octet-stream",
+        }
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.post(
+                url, headers=headers, params={"path": path}, content=data,
+            )
+        resp.raise_for_status()
+
+    async def read_file(self, sandbox_id: str, path: str) -> bytes:
+        """GET raw bytes from envd's REST `/files?path=<urlenc>` endpoint.
+
+        404 maps to FileNotFoundError so SandboxHand can surface a stable
+        `path_not_found` reason in its ResultEnvelope.
+        """
+        if not self.proxy_url:
+            raise RuntimeError(
+                "proxy_not_configured: e2b client-proxy not set"
+            )
+        url = f"{self.proxy_url}/files"
+        headers = {"Host": self._envd_host_header(sandbox_id)}
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            resp = await client.get(
+                url, headers=headers, params={"path": path},
+            )
+        if resp.status_code == 404:
+            raise FileNotFoundError(path)
+        resp.raise_for_status()
+        return resp.content
+
+    async def list_dir(
+        self, sandbox_id: str, path: str, *, depth: int = 1,
+    ) -> list[dict]:
+        """Connect-unary call to `filesystem.Filesystem/ListDir`."""
+        resp = await self._connect_unary_json(
+            sandbox_id,
+            "/filesystem.Filesystem/ListDir",
+            {"path": path, "depth": depth},
+        )
+        if resp.status_code == 404:
+            raise FileNotFoundError(path)
+        resp.raise_for_status()
+        return resp.json().get("entries", [])
+
+    async def stat(self, sandbox_id: str, path: str) -> dict:
+        """Connect-unary call to `filesystem.Filesystem/Stat`."""
+        resp = await self._connect_unary_json(
+            sandbox_id,
+            "/filesystem.Filesystem/Stat",
+            {"path": path},
+        )
+        if resp.status_code == 404:
+            raise FileNotFoundError(path)
+        resp.raise_for_status()
+        return resp.json().get("entry", {})
+
+    # ---- Process control --------------------------------------------------
+
+    async def kill_process(
+        self, sandbox_id: str, *, process_id: str | None = None,
+    ) -> None:
+        """Best-effort `process.Process/SendSignal` to terminate a running
+        process. Swallows all failures — the SandboxHand caller invokes
+        this on operator cancel and must not raise from the cleanup path.
+        """
+        if not self.proxy_url:
+            return
+        body: dict = {"signal": "SIGNAL_SIGTERM"}
+        if process_id:
+            body["process"] = {"selector": process_id}
+        try:
+            await self._connect_unary_json(
+                sandbox_id, "/process.Process/SendSignal", body,
+            )
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.debug("kill_process suppressed: %s", exc)
 
     async def exec_command(
         self,

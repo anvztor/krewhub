@@ -179,3 +179,107 @@ async def test_non_zero_exit_is_completed(sandbox_app):
     assert body["status"] == "completed"
     assert body["invocation"]["result"]["action"] == "accept"
     assert body["invocation"]["result"]["content"]["exit_code"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — agent-driven file ops through the full HTTP → InvocationService
+# → SandboxHand path. Plan:
+# docs/superpowers/plans/2026-05-08-sandbox-hand-vocabulary.md
+# ---------------------------------------------------------------------------
+
+
+async def _wait_terminal(ac, inv_id: str) -> dict:
+    """Poll until the invocation reaches a terminal status (cap ~1s)."""
+    for _ in range(50):
+        resp = await ac.get(f"/api/v1/invocations/{inv_id}")
+        body = resp.json()
+        if body["status"] in ("completed", "errored", "cancelled"):
+            return body
+        await asyncio.sleep(0.02)
+    return body
+
+
+@pytest.mark.asyncio
+async def test_op_write_round_trip_through_http(sandbox_app):
+    ac, fake_e2b = sandbox_app
+
+    create = await ac.post("/api/v1/invocations", json={
+        "target": "sandbox:sbx_42",
+        "input": {"op": "write", "path": "/tmp/hi.txt", "data": "hello"},
+    })
+    assert create.status_code == 200
+    inv_id = create.json()["invocation_id"]
+
+    body = await _wait_terminal(ac, inv_id)
+    assert body["status"] == "completed"
+    result = body["invocation"]["result"]
+    assert result["action"] == "accept"
+    assert result["content"] == {"path": "/tmp/hi.txt", "bytes_written": 5}
+
+    # FakeE2bClient saw the decoded bytes.
+    assert fake_e2b.write_calls == [("sbx_42", "/tmp/hi.txt", b"hello")]
+
+
+@pytest.mark.asyncio
+async def test_op_read_round_trip_through_http(sandbox_app):
+    ac, fake_e2b = sandbox_app
+    fake_e2b.read_files["/tmp/hi.txt"] = b"hello"
+
+    create = await ac.post("/api/v1/invocations", json={
+        "target": "sandbox:sbx_42",
+        "input": {"op": "read", "path": "/tmp/hi.txt"},
+    })
+    assert create.status_code == 200
+    inv_id = create.json()["invocation_id"]
+
+    body = await _wait_terminal(ac, inv_id)
+    assert body["status"] == "completed"
+    result = body["invocation"]["result"]
+    assert result["action"] == "accept"
+    assert result["content"] == {
+        "path": "/tmp/hi.txt",
+        "data": "hello",
+        "encoding": "utf-8",
+    }
+
+
+@pytest.mark.asyncio
+async def test_op_list_round_trip_through_http(sandbox_app):
+    ac, fake_e2b = sandbox_app
+    entries = [
+        {"name": "hi.txt", "type": "FILE_TYPE_FILE", "path": "/tmp/hi.txt", "size": "5"},
+        {"name": "sub", "type": "FILE_TYPE_DIRECTORY", "path": "/tmp/sub", "size": "4096"},
+    ]
+    fake_e2b.list_entries["/tmp"] = entries
+
+    create = await ac.post("/api/v1/invocations", json={
+        "target": "sandbox:sbx_42",
+        "input": {"op": "list", "path": "/tmp"},
+    })
+    assert create.status_code == 200
+    inv_id = create.json()["invocation_id"]
+
+    body = await _wait_terminal(ac, inv_id)
+    assert body["status"] == "completed"
+    result = body["invocation"]["result"]
+    assert result["action"] == "accept"
+    assert result["content"] == {"path": "/tmp", "entries": entries}
+
+
+@pytest.mark.asyncio
+async def test_op_read_path_not_found_marks_errored(sandbox_app):
+    """Distinct from exec: a missing-path read is `errored`, not `accept`
+    with a non-zero exit. Stable reason code lets the agent branch on it."""
+    ac, _fake_e2b = sandbox_app
+
+    create = await ac.post("/api/v1/invocations", json={
+        "target": "sandbox:sbx_42",
+        "input": {"op": "read", "path": "/tmp/nope"},
+    })
+    inv_id = create.json()["invocation_id"]
+
+    body = await _wait_terminal(ac, inv_id)
+    assert body["status"] == "errored"
+    result = body["invocation"]["result"]
+    assert result["action"] == "error"
+    assert "path_not_found" in (result.get("reason") or "")

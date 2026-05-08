@@ -42,6 +42,12 @@ class FakeE2bClient:
         self.scripts = scripts or {}
         self.calls: list[dict] = []
         self.kill_calls: list[str] = []
+        # Filesystem RPC scripting (Phase 3).
+        self.write_calls: list[tuple[str, str, bytes]] = []
+        self.read_files: dict[str, bytes] = {}
+        self.list_entries: dict[str, list[dict]] = {}
+        self.stat_entries: dict[str, dict] = {}
+        self.fs_errors: dict[str, Exception] = {}  # method name → exception
 
     async def exec_command(
         self,
@@ -73,6 +79,34 @@ class FakeE2bClient:
 
     async def kill_process(self, sandbox_id: str, *, process_id: str | None = None) -> None:
         self.kill_calls.append(sandbox_id)
+
+    async def write_file(self, sandbox_id: str, path: str, data: bytes) -> None:
+        if "write_file" in self.fs_errors:
+            raise self.fs_errors["write_file"]
+        self.write_calls.append((sandbox_id, path, data))
+
+    async def read_file(self, sandbox_id: str, path: str) -> bytes:
+        if "read_file" in self.fs_errors:
+            raise self.fs_errors["read_file"]
+        if path not in self.read_files:
+            raise FileNotFoundError(path)
+        return self.read_files[path]
+
+    async def list_dir(
+        self, sandbox_id: str, path: str, *, depth: int = 1,
+    ) -> list[dict]:
+        if "list_dir" in self.fs_errors:
+            raise self.fs_errors["list_dir"]
+        if path not in self.list_entries:
+            raise FileNotFoundError(path)
+        return self.list_entries[path]
+
+    async def stat(self, sandbox_id: str, path: str) -> dict:
+        if "stat" in self.fs_errors:
+            raise self.fs_errors["stat"]
+        if path not in self.stat_entries:
+            raise FileNotFoundError(path)
+        return self.stat_entries[path]
 
 
 class _CapturingTape:
@@ -362,3 +396,239 @@ async def test_target_type_attribute():
 
     hand = SandboxHand(FakeE2bClient())
     assert hand.target_type == "sandbox"
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 — agent-driven `op` vocabulary (write / read / list)
+# Plan: docs/superpowers/plans/2026-05-08-sandbox-hand-vocabulary.md
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_op_exec_explicit_dispatches_to_exec_command():
+    """Agent passes {op:'exec', command:'foo'} → goes through exec_command path."""
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient(scripts={"sbx_1": [{"exit_code": 0}]})
+    hand = SandboxHand(e2b)
+    tape = _CapturingTape()
+    cancel = _StubCancel()
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "exec", "command": "echo hi", "cwd": "/tmp"},
+        schema=None, deadline_s=10,
+        tape=tape, cancel=cancel,  # type: ignore[arg-type]
+    )
+
+    assert result.action == "accept"
+    assert e2b.calls[0]["command"] == "echo hi"
+    assert e2b.calls[0]["cwd"] == "/tmp"
+
+
+@pytest.mark.asyncio
+async def test_op_write_returns_accept_with_bytes_written():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    hand = SandboxHand(e2b)
+    tape = _CapturingTape()
+    cancel = _StubCancel()
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "write", "path": "/tmp/hi.txt", "data": "hello"},
+        schema=None, deadline_s=10,
+        tape=tape, cancel=cancel,  # type: ignore[arg-type]
+    )
+
+    assert result.action == "accept"
+    assert result.content == {"path": "/tmp/hi.txt", "bytes_written": 5}
+    assert e2b.write_calls == [("sbx_1", "/tmp/hi.txt", b"hello")]
+
+
+@pytest.mark.asyncio
+async def test_op_write_base64_decodes_data_before_write():
+    from krewhub.workers.sandbox_hand import SandboxHand
+    import base64 as _b64
+
+    raw = bytes([0, 1, 2, 0xff])
+    e2b = FakeE2bClient()
+    hand = SandboxHand(e2b)
+    tape = _CapturingTape()
+    cancel = _StubCancel()
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={
+            "op": "write", "path": "/tmp/blob.bin",
+            "data": _b64.b64encode(raw).decode("ascii"),
+            "encoding": "base64",
+        },
+        schema=None, deadline_s=10,
+        tape=tape, cancel=cancel,  # type: ignore[arg-type]
+    )
+
+    assert result.action == "accept"
+    assert result.content["bytes_written"] == 4
+    assert e2b.write_calls == [("sbx_1", "/tmp/blob.bin", raw)]
+
+
+@pytest.mark.asyncio
+async def test_op_write_missing_path_returns_error():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "write", "data": "hello"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "path" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_op_write_missing_data_returns_error():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "write", "path": "/tmp/x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "data" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_op_write_path_too_large_surfaces_as_error():
+    """E2bClient raises ValueError('path_too_large') above the size cap.
+    SandboxHand maps that to an `error` envelope with stable reason."""
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    e2b.fs_errors["write_file"] = ValueError("path_too_large: 2000000 bytes exceeds cap")
+    hand = SandboxHand(e2b)
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "write", "path": "/tmp/big", "data": "x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "path_too_large" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_op_read_text_returns_utf8_encoding():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    e2b.read_files["/tmp/hi.txt"] = b"hello world"
+    hand = SandboxHand(e2b)
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/hi.txt"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "accept"
+    assert result.content == {
+        "path": "/tmp/hi.txt",
+        "data": "hello world",
+        "encoding": "utf-8",
+    }
+
+
+@pytest.mark.asyncio
+async def test_op_read_binary_returns_base64_encoding():
+    from krewhub.workers.sandbox_hand import SandboxHand
+    import base64 as _b64
+
+    raw = bytes([0, 1, 2, 0xff, 0xfe])  # has NUL → must base64
+    e2b = FakeE2bClient()
+    e2b.read_files["/tmp/blob.bin"] = raw
+    hand = SandboxHand(e2b)
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/blob.bin"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "accept"
+    assert result.content["encoding"] == "base64"
+    assert _b64.b64decode(result.content["data"]) == raw
+
+
+@pytest.mark.asyncio
+async def test_op_read_missing_path_returns_error_path_not_found():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())  # no preloaded files
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/nope"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "path_not_found" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_op_list_returns_accept_with_entries():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    entries = [
+        {"name": "a.txt", "type": "FILE_TYPE_FILE", "path": "/tmp/a.txt", "size": "5"},
+        {"name": "sub", "type": "FILE_TYPE_DIRECTORY", "path": "/tmp/sub", "size": "4096"},
+    ]
+    e2b = FakeE2bClient()
+    e2b.list_entries["/tmp"] = entries
+    hand = SandboxHand(e2b)
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "list", "path": "/tmp"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "accept"
+    assert result.content == {"path": "/tmp", "entries": entries}
+
+
+@pytest.mark.asyncio
+async def test_op_list_missing_path_returns_error():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())  # no preloaded list_entries
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "list", "path": "/nope"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "path_not_found" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_op_unknown_returns_error():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "wat", "path": "/tmp"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "unknown_op" in (result.reason or "")

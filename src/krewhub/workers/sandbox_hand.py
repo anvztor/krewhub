@@ -17,7 +17,10 @@ Behavior (contract §10.1, §13.12):
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import logging
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from krewhub.invocations.protocol import CancelToken, Hand, TapeWriter
@@ -82,13 +85,38 @@ class SandboxHand:
                     reason=f"sandbox_lookup_failed: {exc}",
                 )
 
-        command, cwd, env = _parse_input(input)
-        if not command:
-            return ResultEnvelope(
-                action="error",
-                reason="empty_command: SandboxHand input must contain a non-empty command",
-            )
+        op, parse_err = _parse_op(input)
+        if op is None:
+            return ResultEnvelope(action="error", reason=parse_err or "bad_input")
 
+        if isinstance(op, _OpWrite):
+            return await self._execute_write(e2b_sandbox_id, op.path, op.data)
+        if isinstance(op, _OpRead):
+            return await self._execute_read(e2b_sandbox_id, op.path)
+        if isinstance(op, _OpList):
+            return await self._execute_list(e2b_sandbox_id, op.path, op.depth)
+        # Default + explicit op="exec" fall through to the streaming path.
+
+        return await self._execute_exec(
+            target_id=target_id,
+            e2b_sandbox_id=e2b_sandbox_id,
+            command=op.command, cwd=op.cwd, env=op.env,
+            deadline_s=deadline_s,
+            tape=tape, cancel=cancel,
+        )
+
+    async def _execute_exec(
+        self,
+        *,
+        target_id: str,
+        e2b_sandbox_id: str,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str] | None,
+        deadline_s: int,
+        tape: TapeWriter,
+        cancel: CancelToken,
+    ) -> ResultEnvelope:
         stdout_buf = _Tail(_TAIL_BYTES)
         stderr_buf = _Tail(_TAIL_BYTES)
         exit_code: int | None = None
@@ -213,26 +241,196 @@ class SandboxHand:
             },
         )
 
+    # ---- File-op dispatchers (Phase 3) ------------------------------------
+
+    async def _execute_write(
+        self, e2b_sandbox_id: str, path: str, data: bytes,
+    ) -> ResultEnvelope:
+        try:
+            await self._e2b.write_file(e2b_sandbox_id, path, data)
+        except ValueError as exc:
+            msg = str(exc)
+            # Preserve the stable `path_too_large:` reason code from the
+            # client so the agent can branch on it; map any other ValueError
+            # to a generic filesystem-failure envelope.
+            if "path_too_large" in msg:
+                return ResultEnvelope(action="error", reason=msg)
+            return ResultEnvelope(
+                action="error", reason=f"e2b_filesystem_failed: {exc}",
+            )
+        except FileNotFoundError as exc:
+            return ResultEnvelope(
+                action="error", reason=f"path_not_found: {exc}",
+            )
+        except Exception as exc:
+            return ResultEnvelope(
+                action="error", reason=f"e2b_filesystem_failed: {exc}",
+            )
+        return ResultEnvelope(
+            action="accept",
+            content={"path": path, "bytes_written": len(data)},
+        )
+
+    async def _execute_read(
+        self, e2b_sandbox_id: str, path: str,
+    ) -> ResultEnvelope:
+        try:
+            data = await self._e2b.read_file(e2b_sandbox_id, path)
+        except FileNotFoundError as exc:
+            return ResultEnvelope(
+                action="error", reason=f"path_not_found: {exc}",
+            )
+        except Exception as exc:
+            return ResultEnvelope(
+                action="error", reason=f"e2b_filesystem_failed: {exc}",
+            )
+        text, encoding = _classify_bytes(data)
+        return ResultEnvelope(
+            action="accept",
+            content={"path": path, "data": text, "encoding": encoding},
+        )
+
+    async def _execute_list(
+        self, e2b_sandbox_id: str, path: str, depth: int,
+    ) -> ResultEnvelope:
+        try:
+            entries = await self._e2b.list_dir(
+                e2b_sandbox_id, path, depth=depth,
+            )
+        except FileNotFoundError as exc:
+            return ResultEnvelope(
+                action="error", reason=f"path_not_found: {exc}",
+            )
+        except Exception as exc:
+            return ResultEnvelope(
+                action="error", reason=f"e2b_filesystem_failed: {exc}",
+            )
+        return ResultEnvelope(
+            action="accept",
+            content={"path": path, "entries": entries},
+        )
+
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Op vocabulary (Phase 3 — agent-driven file ops)
+#
+# Discriminated union over the input shapes accepted by `delegate(sandbox,
+# input)`. Backwards compat: a bare string OR a dict with no `op` key is
+# treated as `op:"exec"` so legacy callers continue to work.
 # ---------------------------------------------------------------------------
 
 
-def _parse_input(
-    input: str | dict,
-) -> tuple[str, str | None, dict[str, str] | None]:
-    """Extract (command, cwd, env) from either string or dict input."""
+@dataclass
+class _OpExec:
+    command: str
+    cwd: str | None = None
+    env: dict[str, str] | None = None
+
+
+@dataclass
+class _OpWrite:
+    path: str
+    data: bytes
+
+
+@dataclass
+class _OpRead:
+    path: str
+
+
+@dataclass
+class _OpList:
+    path: str
+    depth: int = 1
+
+
+_Op = _OpExec | _OpWrite | _OpRead | _OpList
+
+
+def _parse_op(input: str | dict) -> tuple[_Op | None, str | None]:
+    """Parse delegate input into a typed op. Returns `(op, None)` on success
+    or `(None, reason)` on a parse error so the caller can return a stable
+    error envelope."""
     if isinstance(input, str):
-        return input, None, None
-    command = str(input.get("command") or "")
-    cwd = input.get("cwd")
-    env = input.get("env")
-    if cwd is not None and not isinstance(cwd, str):
-        cwd = str(cwd)
-    if env is not None and not isinstance(env, dict):
-        env = None
-    return command, cwd, env
+        return _OpExec(command=input), None
+    if not isinstance(input, dict):
+        return None, "bad_input: input must be a string or object"
+
+    op = str(input.get("op") or "exec").lower()
+
+    if op == "exec":
+        command = str(input.get("command") or "")
+        if not command:
+            return None, (
+                "empty_command: SandboxHand exec requires a non-empty command"
+            )
+        cwd = input.get("cwd")
+        env = input.get("env")
+        if cwd is not None and not isinstance(cwd, str):
+            cwd = str(cwd)
+        if env is not None and not isinstance(env, dict):
+            env = None
+        return _OpExec(command=command, cwd=cwd, env=env), None
+
+    if op == "write":
+        path = input.get("path")
+        if not isinstance(path, str) or not path:
+            return None, "missing_path: write op requires 'path' string"
+        if "data" not in input:
+            return None, "missing_data: write op requires 'data' field"
+        encoding = str(input.get("encoding") or "utf-8").lower()
+        raw = input.get("data")
+        try:
+            if encoding == "base64":
+                if not isinstance(raw, (str, bytes)):
+                    return None, "bad_data: base64 'data' must be string"
+                data_bytes = base64.b64decode(raw, validate=True)
+            elif encoding == "utf-8":
+                if isinstance(raw, bytes):
+                    data_bytes = raw
+                else:
+                    data_bytes = str(raw).encode("utf-8")
+            else:
+                return None, (
+                    f"bad_encoding: '{encoding}' "
+                    f"(expected 'utf-8' or 'base64')"
+                )
+        except (binascii.Error, ValueError) as exc:
+            return None, f"bad_data: {exc}"
+        return _OpWrite(path=path, data=data_bytes), None
+
+    if op == "read":
+        path = input.get("path")
+        if not isinstance(path, str) or not path:
+            return None, "missing_path: read op requires 'path' string"
+        return _OpRead(path=path), None
+
+    if op == "list":
+        path = input.get("path")
+        if not isinstance(path, str) or not path:
+            return None, "missing_path: list op requires 'path' string"
+        depth = input.get("depth", 1)
+        try:
+            depth = max(1, int(depth))
+        except (TypeError, ValueError):
+            depth = 1
+        return _OpList(path=path, depth=depth), None
+
+    return None, (
+        f"unknown_op: '{op}' "
+        "(expected 'exec', 'write', 'read', or 'list')"
+    )
+
+
+def _classify_bytes(data: bytes) -> tuple[str, str]:
+    """Heuristic for read responses: prefer `(text, 'utf-8')` when the
+    bytes are clean UTF-8 with no NULs, else `(base64, 'base64')`."""
+    if b"\x00" in data:
+        return base64.b64encode(data).decode("ascii"), "base64"
+    try:
+        return data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        return base64.b64encode(data).decode("ascii"), "base64"
 
 
 class _Tail:
