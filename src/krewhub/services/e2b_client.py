@@ -69,17 +69,19 @@ class E2bClient:
         }
 
     async def create_sandbox(
-        self, *, template: str, timeout_s: int = 300,
+        self, *, template: str, timeout_s: int = 3600,
     ) -> str:
         """Provision a sandbox.
 
         `timeout_s` is the orchestrator's `timeout` field — *seconds*, max
         3600 — and bounds how long the firecracker VM lives without any
-        traffic. Self-hosted e2b's default is 15s, which is too short to
-        outlast the cold-start of any real client (verified during the
-        2026-05-08 brain smoke). Default 300s (5 min) gives every flow
-        room to breathe; krewhub's sandbox_sweeper still reaps idle rows
-        on its own schedule.
+        explicit refresh. e2b kills the VM at `created_at + timeout_s`
+        regardless of in-flight activity unless `set_timeout()` has
+        bumped the endAt. Default is the max (1 hour) to give bundles
+        room to run; SandboxHand additionally calls `set_timeout()`
+        after each successful op as a heartbeat, so an actively-used
+        sandbox never reaps. Krewhub's `sandbox_sweeper` reaps idle
+        rows on its own schedule (see `controllers/sandbox_sweeper.py`).
         """
         if timeout_s < 1 or timeout_s > 3600:
             raise ValueError(
@@ -106,6 +108,35 @@ class E2bClient:
         async with httpx.AsyncClient(timeout=self.timeout) as client:
             response = await client.delete(url, headers=self._headers())
         if response.status_code in (200, 204, 404):
+            return
+        response.raise_for_status()
+
+    async def set_timeout(self, sandbox_id: str, *, timeout_s: int = 3600) -> None:
+        """Refresh the sandbox's `endAt` to `now + timeout_s` (max 3600).
+
+        Used as a heartbeat by SandboxHand on every successful op so that
+        actively-used sandboxes never get reaped by the e2b orchestrator
+        mid-bundle. The endpoint is `POST /sandboxes/<id>/timeout` with
+        body `{"timeout": <seconds>}`, returns 204. Verified against
+        envd-orchestrator on 2026-05-09.
+
+        Best-effort by design — the caller (SandboxHand) swallows
+        failures rather than letting a missed heartbeat fail the actual
+        operation. A 404 here typically means the sandbox is already gone
+        and the caller will see the same 404 on its next op anyway.
+        """
+        if timeout_s < 1 or timeout_s > 3600:
+            raise ValueError(
+                f"timeout_s must be in [1, 3600], got {timeout_s}"
+            )
+        url = f"{self.base_url}/sandboxes/{sandbox_id}/timeout"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.post(
+                url,
+                headers=self._headers(),
+                json={"timeout": timeout_s},
+            )
+        if response.status_code in (200, 204):
             return
         response.raise_for_status()
 

@@ -42,6 +42,8 @@ class FakeE2bClient:
         self.scripts = scripts or {}
         self.calls: list[dict] = []
         self.kill_calls: list[str] = []
+        # Heartbeat tracker — SandboxHand calls set_timeout after success.
+        self.heartbeat_calls: list[tuple[str, int]] = []
         # Filesystem RPC scripting (Phase 3).
         self.write_calls: list[tuple[str, str, bytes]] = []
         self.read_files: dict[str, bytes] = {}
@@ -79,6 +81,11 @@ class FakeE2bClient:
 
     async def kill_process(self, sandbox_id: str, *, process_id: str | None = None) -> None:
         self.kill_calls.append(sandbox_id)
+
+    async def set_timeout(self, sandbox_id: str, *, timeout_s: int = 3600) -> None:
+        if "set_timeout" in self.fs_errors:
+            raise self.fs_errors["set_timeout"]
+        self.heartbeat_calls.append((sandbox_id, timeout_s))
 
     async def write_file(self, sandbox_id: str, path: str, data: bytes) -> None:
         if "write_file" in self.fs_errors:
@@ -632,3 +639,101 @@ async def test_op_unknown_returns_error():
     )
     assert result.action == "error"
     assert "unknown_op" in (result.reason or "")
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 — heartbeat: SandboxHand calls e2b.set_timeout(...) after every
+# successful op so actively-used sandboxes never get reaped mid-bundle.
+# Cookrew-beta task on 2026-05-09 surfaced the failure mode (502 "sandbox
+# not found" mid-task) that this fix prevents.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_fires_after_successful_exec():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient(scripts={"sbx_1": [{"exit_code": 0}]})
+    hand = SandboxHand(e2b)
+    await hand.execute(
+        target_id="sbx_1", input="ls",
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert e2b.heartbeat_calls == [("sbx_1", 3600)]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_fires_after_successful_write_read_list():
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    e2b.read_files["/tmp/x"] = b"hi"
+    e2b.list_entries["/tmp"] = []
+    hand = SandboxHand(e2b)
+
+    await hand.execute(
+        target_id="sbx_1",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    await hand.execute(
+        target_id="sbx_1",
+        input={"op": "list", "path": "/tmp"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    # One heartbeat per successful op — write, read, list = 3
+    assert e2b.heartbeat_calls == [
+        ("sbx_1", 3600),
+        ("sbx_1", 3600),
+        ("sbx_1", 3600),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_does_not_fire_on_failure():
+    """Failed ops should not waste a heartbeat call. Both keep
+    set_timeout best-effort so a heartbeat failure never becomes the
+    reason a task fails."""
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    hand = SandboxHand(FakeE2bClient())  # no preloaded read_files
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/missing"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    # The fake's heartbeat_calls list stays empty.
+    assert hand._e2b.heartbeat_calls == []  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_failure_does_not_break_op():
+    """If the orchestrator rejects set_timeout, the op result must still
+    return successfully. The user's task should not fail because of a
+    missed heartbeat."""
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    e2b.fs_errors["set_timeout"] = RuntimeError("orchestrator rejected")
+    e2b.read_files["/tmp/x"] = b"hi"
+    hand = SandboxHand(e2b)
+
+    result = await hand.execute(
+        target_id="sbx_1",
+        input={"op": "read", "path": "/tmp/x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "accept"
+    assert result.content == {"path": "/tmp/x", "data": "hi", "encoding": "utf-8"}

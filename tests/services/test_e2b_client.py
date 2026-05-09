@@ -51,8 +51,10 @@ async def test_create_sandbox_sends_template_api_key_and_default_timeout(httpx_m
     # `timeout` (seconds) carries the sandbox's wall-clock lifetime; the
     # self-hosted e2b orchestrator's default is 15s if omitted, which is
     # too short to outlast a real client cold start (see brain smoke
-    # 2026-05-08). Default 300s gives every flow breathing room.
-    assert body == {"templateID": "base", "timeout": 300}
+    # 2026-05-08). Default raised to 3600 (the max) on 2026-05-09 after
+    # cookrew-beta task surfaced a bundle exceeding the prior 300s ceiling;
+    # SandboxHand additionally heartbeats via set_timeout on every op.
+    assert body == {"templateID": "base", "timeout": 3600}
 
 
 @pytest.mark.asyncio
@@ -308,3 +310,66 @@ async def test_kill_process_swallows_when_proxy_unconfigured():
     c = E2bClient(base_url="http://e2b.local", api_key="k", proxy_url="")
     # Best-effort: must not raise even with no proxy.
     await c.kill_process("sbx_xyz")
+
+
+# ---- set_timeout (heartbeat to keep sandboxes alive) ---------------------
+
+
+@pytest.mark.asyncio
+async def test_set_timeout_posts_to_orchestrator_with_seconds(httpx_mock):
+    httpx_mock.add_response(method="POST", status_code=204)
+    c = _client()
+    await c.set_timeout("e2b_id_xyz", timeout_s=600)
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.url.path == "/sandboxes/e2b_id_xyz/timeout"
+    assert req.headers["X-API-Key"] == "k"
+    import json as _json
+    assert _json.loads(req.content) == {"timeout": 600}
+
+
+@pytest.mark.asyncio
+async def test_set_timeout_default_is_one_hour(httpx_mock):
+    httpx_mock.add_response(method="POST", status_code=204)
+    c = _client()
+    await c.set_timeout("e2b_id_xyz")
+    req = httpx_mock.get_request()
+    import json as _json
+    assert _json.loads(req.content) == {"timeout": 3600}
+
+
+@pytest.mark.asyncio
+async def test_set_timeout_rejects_out_of_range():
+    c = _client()
+    with pytest.raises(ValueError, match=r"timeout_s must be in"):
+        await c.set_timeout("e2b_id_xyz", timeout_s=0)
+    with pytest.raises(ValueError, match=r"timeout_s must be in"):
+        await c.set_timeout("e2b_id_xyz", timeout_s=4000)
+
+
+@pytest.mark.asyncio
+async def test_set_timeout_raises_on_http_error(httpx_mock):
+    httpx_mock.add_response(method="POST", status_code=404, text="not found")
+    c = _client()
+    with pytest.raises(httpx.HTTPStatusError):
+        await c.set_timeout("e2b_id_xyz")
+
+
+# ---- create_sandbox default is now 1h (was 5m) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_default_timeout_is_one_hour(httpx_mock):
+    """Default `timeout_s` must be 3600 (max). The 300s default left
+    bundles that took longer than ~5 min unable to use their sandbox.
+    Cookrew-beta task on 2026-05-09 surfaced the regression that prompted
+    this bump; SandboxHand's heartbeat handles activity-based extension."""
+    httpx_mock.add_response(
+        method="POST", status_code=201, json={"sandboxID": "sbx_x"},
+    )
+    c = _client()
+    await c.create_sandbox(template="base")
+    req = httpx_mock.get_request()
+    import json as _json
+    body = _json.loads(req.content)
+    assert body == {"templateID": "base", "timeout": 3600}

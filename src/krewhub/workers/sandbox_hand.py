@@ -230,6 +230,7 @@ class SandboxHand:
                 reason="no_exit_code: e2b stream ended without exit code",
             )
 
+        await self._heartbeat(e2b_sandbox_id)
         return ResultEnvelope(
             action="accept",
             content={
@@ -242,6 +243,26 @@ class SandboxHand:
         )
 
     # ---- File-op dispatchers (Phase 3) ------------------------------------
+
+    async def _heartbeat(self, e2b_sandbox_id: str) -> None:
+        """Bump the e2b sandbox's `endAt` to `now + 1h` after a successful
+        op. Best-effort: a missed heartbeat shouldn't fail the actual op.
+
+        Without this, a sandbox provisioned for a long bundle gets reaped
+        by the orchestrator at `created_at + timeout_s` (max 1h) regardless
+        of how active it is. Heartbeating on every successful Hand call
+        keeps actively-used sandboxes alive indefinitely.
+        """
+        set_timeout = getattr(self._e2b, "set_timeout", None)
+        if set_timeout is None:
+            return
+        try:
+            await set_timeout(e2b_sandbox_id, timeout_s=3600)
+        except Exception as exc:  # pragma: no cover — best-effort
+            logger.debug(
+                "heartbeat: set_timeout(%s) failed: %s",
+                e2b_sandbox_id, exc,
+            )
 
     async def _execute_write(
         self, e2b_sandbox_id: str, path: str, data: bytes,
@@ -266,6 +287,7 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
+        await self._heartbeat(e2b_sandbox_id)
         return ResultEnvelope(
             action="accept",
             content={"path": path, "bytes_written": len(data)},
@@ -284,6 +306,7 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
+        await self._heartbeat(e2b_sandbox_id)
         text, encoding = _classify_bytes(data)
         return ResultEnvelope(
             action="accept",
@@ -305,6 +328,7 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
+        await self._heartbeat(e2b_sandbox_id)
         return ResultEnvelope(
             action="accept",
             content={"path": path, "entries": entries},
