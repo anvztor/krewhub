@@ -15,10 +15,12 @@ import json
 import logging
 from typing import AsyncIterator
 
+import aiosqlite
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
 from krewhub.auth import resolve_caller_or_cookie, CallerContext
+from krewhub.db.connection import get_db
 from krewhub.models.invocation import (
     InvocationRequest,
     ResultEnvelope,
@@ -29,6 +31,7 @@ from krewhub.services.invocation_service import (
     InvocationService,
     _ConflictError,  # internal but exposed for HTTPException translation
 )
+from krewhub.services.sandbox_service import SandboxService
 from krewhub.watch.globals import get_watch_service
 from krewhub.watch.types import WatchOptions
 
@@ -64,10 +67,55 @@ def get_service(request: Request) -> InvocationService:
 
 @router.post("/invocations")
 async def post_invocation(
+    request: Request,
     req: InvocationRequest,
     svc: InvocationService = Depends(get_service),
     caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
+    # Bare `target: "sandbox"` (no id) triggers platform-side
+    # resolution: SandboxService.ensure_sandbox_for_bundle returns the
+    # bundle's current ready sandbox, provisioning if missing or
+    # terminated. With this in place, the bridge no longer caches
+    # KREWHUB_SANDBOX_ID at task spawn — every delegate(sandbox) call
+    # gets the bundle's current sandbox transparently. Brain never
+    # sees `no_sandbox_attached` and never asks the human.
+    if req.target == "sandbox":
+        if not req.bundle_id:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "code": "bad_target",
+                    "message": (
+                        "bare `target: \"sandbox\"` requires `bundle_id` "
+                        "in the request body so the platform can resolve "
+                        "to (or provision) the bundle's sandbox"
+                    ),
+                },
+            )
+        e2b = getattr(request.app.state, "e2b", None)
+        if e2b is None:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "platform_unavailable",
+                    "message": "e2b client not initialised on app state",
+                },
+            )
+        try:
+            resolved = await SandboxService(db, e2b).ensure_sandbox_for_bundle(
+                req.bundle_id,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "code": "platform_unavailable",
+                    "message": f"could not ensure sandbox for bundle: {exc}",
+                },
+            )
+        req = req.model_copy(update={"target": f"sandbox:{resolved.id}"})
+
     # Service.create() validates target shape (against its registry) and
     # schema dialect; both raise ValueError → 400. Out-of-bounds
     # `deadline_s` is already a 422 from pydantic.

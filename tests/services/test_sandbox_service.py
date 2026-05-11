@@ -260,3 +260,72 @@ async def test_reprovision_raises_for_missing_bundle(test_db):
     svc = SandboxService(test_db, e2b)
     with pytest.raises(ValueError, match="not found"):
         await svc.reprovision_for_bundle("does_not_exist")
+
+
+# ---------------------------------------------------------------------------
+# ensure_sandbox_for_bundle — Slice A: bridge calls this on bare
+# `target: "sandbox"`. Idempotent platform-side guarantee that the
+# bundle has a ready sandbox; brain never sees substrate state.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_ensure_returns_existing_when_ready(test_db):
+    """If the bundle's current sandbox is ready in db, just return it.
+    No e2b API calls."""
+    await _seed_bundle_with_sandbox(test_db)
+    e2b = AsyncMock()
+    svc = SandboxService(test_db, e2b)
+
+    result = await svc.ensure_sandbox_for_bundle("b1")
+    assert result.id == "sbx_dead_xyz"  # the seeded ready sandbox
+    e2b.create_sandbox.assert_not_called()
+    e2b.terminate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_ensure_provisions_when_bundle_has_no_sandbox(test_db):
+    """Brand new bundle without a sandbox — ensure provisions one
+    transparently."""
+    await _seed_task(test_db)  # bundle b1 with sandbox_id=NULL by default
+    await test_db.execute(
+        "UPDATE bundles SET owner_account_id = ? WHERE id = ?",
+        ("alice", "b1"),
+    )
+    await test_db.commit()
+    e2b = AsyncMock()
+    e2b.create_sandbox.return_value = "e2b_brand_new"
+    svc = SandboxService(test_db, e2b)
+
+    result = await svc.ensure_sandbox_for_bundle("b1")
+    assert result.bundle_id == "b1"
+    assert result.e2b_sandbox_id == "e2b_brand_new"
+    e2b.create_sandbox.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ensure_reprovisions_when_current_is_terminated(test_db):
+    """Current sandbox row is terminated (e2b VM gone, sweeper marked
+    it). Ensure provides a fresh one without operator involvement."""
+    await _seed_bundle_with_sandbox(test_db)
+    # Mark the seeded sandbox terminated (simulates sweeper).
+    await test_db.execute(
+        "UPDATE sandboxes SET status = 'terminated' WHERE id = ?",
+        ("sbx_dead_xyz",),
+    )
+    await test_db.commit()
+    e2b = AsyncMock()
+    e2b.create_sandbox.return_value = "e2b_fresh_after_term"
+    svc = SandboxService(test_db, e2b)
+
+    result = await svc.ensure_sandbox_for_bundle("b1")
+    assert result.e2b_sandbox_id == "e2b_fresh_after_term"
+    assert result.status == "ready"
+
+
+@pytest.mark.asyncio
+async def test_ensure_raises_for_missing_bundle(test_db):
+    e2b = AsyncMock()
+    svc = SandboxService(test_db, e2b)
+    with pytest.raises(ValueError, match="not found"):
+        await svc.ensure_sandbox_for_bundle("does_not_exist")

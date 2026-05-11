@@ -106,6 +106,40 @@ class SandboxService:
     async def mark_event(self, sandbox_id: str) -> None:
         await self._repo.mark_event(sandbox_id)
 
+    async def ensure_sandbox_for_bundle(self, bundle_id: str) -> Sandbox:
+        """Idempotent guarantee: this bundle has a ready sandbox.
+
+        Used by the invocation route when the brain calls bare
+        `delegate(to: "sandbox", ...)`. Replaces the old "bridge env
+        cached at task spawn" model where the brain's
+        `KREWHUB_SANDBOX_ID` could be missing or point at a dead row,
+        forcing a `no_sandbox_attached` error that the brain would
+        surface to the human. With this method, the platform owns
+        sandbox lifecycle end-to-end — the human is never asked.
+
+        Behavior:
+          - Bundle has a ready sandbox → return it.
+          - Bundle has no sandbox or its sandbox is terminated →
+            reprovision via `reprovision_for_bundle` (which itself is
+            idempotent under concurrent calls).
+        """
+        from krewhub.repositories.bundle_repo import BundleRepo
+        bundle = await BundleRepo(self._db).get(bundle_id)
+        if bundle is None:
+            raise ValueError(f"ensure: bundle {bundle_id} not found")
+
+        if bundle.sandbox_id:
+            sandbox = await self._repo.get(bundle.sandbox_id)
+            if sandbox is not None and sandbox.status == "ready":
+                return sandbox
+
+        # No sandbox, or current row is terminated. Reprovision is
+        # idempotent and atomically swaps bundle.sandbox_id; concurrent
+        # callers converge on the same fresh row.
+        return await self.reprovision_for_bundle(
+            bundle_id, dead_sandbox_id=bundle.sandbox_id,
+        )
+
     async def reprovision_for_bundle(
         self,
         bundle_id: str,

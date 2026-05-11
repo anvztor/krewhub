@@ -139,6 +139,13 @@ class InvocationRequest(BaseModel):
     # elicits without polling. Not persisted on the invocation row in
     # v1; only used as a watch-event tag.
     recipe_id: str | None = None
+    # Optional bundle scoping — required when `target == "sandbox"`
+    # (bare). The route resolves bare sandbox to the bundle's current
+    # ready sandbox via SandboxService.ensure_sandbox_for_bundle,
+    # provisioning if missing or terminated. Eliminates the
+    # `no_sandbox_attached` failure path; the brain never sees
+    # substrate state.
+    bundle_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
