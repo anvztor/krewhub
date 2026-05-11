@@ -586,19 +586,31 @@ def _classify_bytes(data: bytes) -> tuple[str, str]:
 
 # Dead-sandbox detection — conservative pattern match. Only patterns
 # that uniquely identify a reaped/missing sandbox trigger reprovision.
-# Generic 5xx and connection errors are NOT covered (could be transient
-# infra hiccups; reprovision is wasteful for those). e2b orchestrator's
-# "sandbox not found" comes back two ways:
-#   1. exec streaming: chunk `{"error": "envd Start returned 502: ...
-#      'message':'The sandbox was not found','code':502}"` (caught in the
-#      stream-consume loop and surfaced as `infra_error` in execute_exec)
-#   2. file ops: httpx 502 → HTTPStatusError with body containing
-#      "sandbox was not found" or `'code':502`.
+# Generic transient failures (connection refused, network timeout) are
+# NOT covered, since reprovisioning helps nothing if the path itself
+# is broken.
+#
+# A reaped sandbox surfaces three different ways depending on the path:
+#   1. Exec (Connect-streaming via :3002):
+#        envd Start returned 502 with body
+#        `{"sandboxId":"...","message":"The sandbox was not found","code":502}`
+#      → chunk `{"error": "envd Start returned 502: ..."}` in the stream
+#   2. Filesystem unary (Connect-unary via :3002):
+#        client-proxy responds 502 Bad Gateway when it can't route to
+#        a missing envd. httpx raises HTTPStatusError("Server error
+#        '502 Bad Gateway' for url '...'"). No body, just the status.
+#   3. REST file ops (/files endpoint via :3002): same as #2.
+#
+# Pattern (1) is detectable by the verbose message; (2) and (3) only
+# carry "502" in the httpx wrapper, so we accept "502 bad gateway" as
+# the dead-sandbox signal too. Real 502s from a healthy sandbox would
+# be a service bug we'd want to know about anyway.
 _DEAD_SANDBOX_MARKERS = (
     "sandbox was not found",
     "sandbox_not_found",
     '"code":502',
     "code:502",
+    "502 bad gateway",
 )
 
 
