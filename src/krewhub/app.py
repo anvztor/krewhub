@@ -76,11 +76,20 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # Invocation Contract — register the InvocationService singleton with
     # the production Hand registry. Routes resolve it via app.state.
     from krewhub.services.invocation_service import InvocationService
+    from krewhub.services.sandbox_service import SandboxService
     from krewhub.workers import AgentHand, HumanHand, SandboxHand
+    # SandboxHand auto-recovers from dead-sandbox 502s by reprovisioning
+    # via SandboxService.reprovision_for_bundle (the `provision({resources})`
+    # primitive from Anthropic Managed Agents). Without `sandbox_service`
+    # injected, SandboxHand falls back to surfacing the raw error to the
+    # brain — used in tests but not in production.
+    sandbox_service = SandboxService(db, _app.state.e2b)
     _app.state.invocations = InvocationService(
         db, watch=watch,
         hands={
-            "sandbox": SandboxHand(_app.state.e2b, db=db),
+            "sandbox": SandboxHand(
+                _app.state.e2b, db=db, sandbox_service=sandbox_service,
+            ),
             "human": HumanHand(),
             # AgentHand bridges to the existing A2A queue. The krewcli
             # daemon must implement method="delegate" to actually run a
