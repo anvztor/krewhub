@@ -737,3 +737,310 @@ async def test_heartbeat_failure_does_not_break_op():
     )
     assert result.action == "accept"
     assert result.content == {"path": "/tmp/x", "data": "hi", "encoding": "utf-8"}
+
+
+# ---------------------------------------------------------------------------
+# Phase 6 — `provision({resources})` recovery (Anthropic Managed Agents)
+# SandboxHand transparently reprovisions a fresh sandbox when an op
+# detects a dead one, then retries once. Brain sees clean success;
+# operator sees a `milestone` tape event for audit. Cookrew-beta task on
+# 2026-05-09 surfaced the dead-sandbox failure mode that prompted this.
+# ---------------------------------------------------------------------------
+
+
+class _FakeSandboxService:
+    """Test double for SandboxService — only `reprovision_for_bundle`."""
+
+    def __init__(self) -> None:
+        # records (bundle_id, dead_sandbox_id) per call
+        self.reprovision_calls: list[tuple[str, str | None]] = []
+        self.next_fresh_id = "sbx_fresh_1"
+        self.next_e2b_id = "e2b_fresh_1"
+        self.fail_with: Exception | None = None
+
+    async def reprovision_for_bundle(
+        self, bundle_id: str, *, dead_sandbox_id: str | None = None,
+    ):
+        self.reprovision_calls.append((bundle_id, dead_sandbox_id))
+        if self.fail_with is not None:
+            raise self.fail_with
+        # Return a stub Sandbox-shaped object.
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            id=self.next_fresh_id,
+            e2b_sandbox_id=self.next_e2b_id,
+            bundle_id=bundle_id,
+        )
+
+
+class _FakeSandboxRepo:
+    """Patches into the SandboxRepo lookup that SandboxHand performs."""
+
+    def __init__(self, rows: dict[str, "SimpleNamespace"]) -> None:
+        from types import SimpleNamespace  # noqa: F401
+        self._rows = rows
+
+    def __call__(self, _db) -> "_FakeSandboxRepo":  # SandboxRepo(db) shape
+        return self
+
+    async def get(self, sbx_id: str):
+        return self._rows.get(sbx_id)
+
+
+@pytest.mark.asyncio
+async def test_recovers_from_dead_sandbox_on_write(monkeypatch):
+    """Op:write hits a 'sandbox not found' from the e2b client. SandboxHand
+    catches it, calls reprovision_for_bundle, retries once on the fresh
+    e2b id. Brain sees `accept`; tape sees `milestone` event."""
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    # First write fails dead, second succeeds. We track that two writes
+    # were attempted to two different e2b ids.
+    seen_eids: list[str] = []
+    async def write_file(eid, path, data):
+        seen_eids.append(eid)
+        if eid == "e2b_dead":
+            raise RuntimeError("sandbox was not found (code:502)")
+        e2b.write_calls.append((eid, path, data))
+    e2b.write_file = write_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    sandbox_row = SimpleNamespace(
+        id="sbx_dead", e2b_sandbox_id="e2b_dead", bundle_id="bun_1",
+    )
+    monkeypatch.setattr(
+        sh, "SandboxRepo", lambda _db: SimpleNamespace(get=lambda sid: _async_return(sandbox_row)),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    svc.next_fresh_id = "sbx_new"
+    svc.next_e2b_id = "e2b_new"
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+    tape = _CapturingTape()
+
+    result = await hand.execute(
+        target_id="sbx_dead",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=tape, cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+
+    assert result.action == "accept"
+    assert result.content == {"path": "/tmp/x", "bytes_written": 2}
+    assert svc.reprovision_calls == [("bun_1", "sbx_dead")]
+    assert seen_eids == ["e2b_dead", "e2b_new"]
+    # Tape event for operator audit
+    milestones = [e for e in tape.events if e["kind"] == "milestone"]
+    assert len(milestones) == 1
+    assert "reprovisioned" in milestones[0]["body"]
+    assert milestones[0]["payload"]["old_sandbox_id"] == "sbx_dead"
+    assert milestones[0]["payload"]["new_sandbox_id"] == "sbx_new"
+
+
+@pytest.mark.asyncio
+async def test_recovers_from_dead_sandbox_on_read(monkeypatch):
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    e2b.read_files["/tmp/x"] = b"after_recovery"
+    seen_eids: list[str] = []
+    async def read_file(eid, path):
+        seen_eids.append(eid)
+        if eid == "e2b_dead":
+            raise RuntimeError("sandbox was not found")
+        if path not in e2b.read_files:
+            raise FileNotFoundError(path)
+        return e2b.read_files[path]
+    e2b.read_file = read_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        sh, "SandboxRepo",
+        lambda _db: SimpleNamespace(get=lambda sid: _async_return(
+            SimpleNamespace(id="sbx_dead", e2b_sandbox_id="e2b_dead", bundle_id="bun_1"),
+        )),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+    result = await hand.execute(
+        target_id="sbx_dead",
+        input={"op": "read", "path": "/tmp/x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "accept"
+    assert result.content["data"] == "after_recovery"
+
+
+@pytest.mark.asyncio
+async def test_no_recovery_when_sandbox_service_missing():
+    """Without SandboxService injected (legacy / test path), dead-sandbox
+    errors surface to the brain unchanged. Default ctor behavior."""
+    from krewhub.workers.sandbox_hand import SandboxHand
+
+    e2b = FakeE2bClient()
+    async def write_file(eid, path, data):
+        raise RuntimeError("sandbox was not found (code:502)")
+    e2b.write_file = write_file  # type: ignore[assignment]
+
+    hand = SandboxHand(e2b)  # no sandbox_service
+    result = await hand.execute(
+        target_id="sbx_dead",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "e2b_filesystem_failed" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_no_recovery_for_non_dead_errors(monkeypatch):
+    """path_not_found, generic 500, and similar failures must NOT trigger
+    reprovision. Recovery is reserved for the specific dead-sandbox
+    pattern; everything else is the brain's problem."""
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    # Generic non-dead error — should NOT trigger recovery.
+    async def read_file(eid, path):
+        raise RuntimeError("generic infra failure 500 timeout")
+    e2b.read_file = read_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        sh, "SandboxRepo",
+        lambda _db: SimpleNamespace(get=lambda sid: _async_return(
+            SimpleNamespace(id="sbx_x", e2b_sandbox_id="e2b_x", bundle_id="bun_1"),
+        )),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+    result = await hand.execute(
+        target_id="sbx_x",
+        input={"op": "read", "path": "/tmp/x"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    # No reprovision attempted
+    assert svc.reprovision_calls == []
+
+
+@pytest.mark.asyncio
+async def test_reprovision_failure_returns_original_error(monkeypatch):
+    """If reprovision itself fails, surface the ORIGINAL dead-sandbox
+    error to the brain (more useful than the secondary failure)."""
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    async def write_file(eid, path, data):
+        raise RuntimeError("sandbox was not found (code:502)")
+    e2b.write_file = write_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        sh, "SandboxRepo",
+        lambda _db: SimpleNamespace(get=lambda sid: _async_return(
+            SimpleNamespace(id="sbx_dead", e2b_sandbox_id="e2b_dead", bundle_id="bun_1"),
+        )),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    svc.fail_with = RuntimeError("orchestrator unreachable")
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+
+    result = await hand.execute(
+        target_id="sbx_dead",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert "sandbox was not found" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_recovery_skipped_when_no_bundle_id(monkeypatch):
+    """Per-task sandboxes (legacy create_for_task) have no bundle_id —
+    we have no spec to reprovision against. Should surface error rather
+    than infinite-loop or crash."""
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    async def write_file(eid, path, data):
+        raise RuntimeError("sandbox was not found")
+    e2b.write_file = write_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        sh, "SandboxRepo",
+        lambda _db: SimpleNamespace(get=lambda sid: _async_return(
+            SimpleNamespace(id="sbx_pertask", e2b_sandbox_id="e2b_pertask", bundle_id=None),
+        )),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+    result = await hand.execute(
+        target_id="sbx_pertask",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    assert svc.reprovision_calls == []
+
+
+@pytest.mark.asyncio
+async def test_recovery_retries_only_once(monkeypatch):
+    """If the freshly reprovisioned sandbox is ALSO dead immediately
+    (worst case — orchestrator broken), surface error after exactly one
+    retry. No infinite loop."""
+    from krewhub.workers import sandbox_hand as sh
+
+    e2b = FakeE2bClient()
+    call_count = 0
+    async def write_file(eid, path, data):
+        nonlocal call_count
+        call_count += 1
+        raise RuntimeError("sandbox was not found")
+    e2b.write_file = write_file  # type: ignore[assignment]
+
+    from types import SimpleNamespace
+    monkeypatch.setattr(
+        sh, "SandboxRepo",
+        lambda _db: SimpleNamespace(get=lambda sid: _async_return(
+            SimpleNamespace(id="sbx_dead", e2b_sandbox_id="e2b_dead", bundle_id="bun_1"),
+        )),
+        raising=False,
+    )
+
+    svc = _FakeSandboxService()
+    hand = sh.SandboxHand(e2b, db=object(), sandbox_service=svc)
+    result = await hand.execute(
+        target_id="sbx_dead",
+        input={"op": "write", "path": "/tmp/x", "data": "hi"},
+        schema=None, deadline_s=10,
+        tape=_CapturingTape(), cancel=_StubCancel(),  # type: ignore[arg-type]
+    )
+    assert result.action == "error"
+    # Exactly two attempts: original + one retry. No third.
+    assert call_count == 2
+    assert svc.reprovision_calls == [("bun_1", "sbx_dead")]
+
+
+def _async_return(value):
+    """Tiny helper: await-able that returns `value`. Used in monkeypatched
+    SandboxRepo.get stubs above."""
+    async def _f():
+        return value
+    return _f()

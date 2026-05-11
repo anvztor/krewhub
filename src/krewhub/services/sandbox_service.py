@@ -105,3 +105,91 @@ class SandboxService:
 
     async def mark_event(self, sandbox_id: str) -> None:
         await self._repo.mark_event(sandbox_id)
+
+    async def reprovision_for_bundle(
+        self,
+        bundle_id: str,
+        *,
+        dead_sandbox_id: str | None = None,
+    ) -> Sandbox:
+        """`provision({resources})` for a bundle whose sandbox has died.
+
+        Per Anthropic's Managed Agents framing — containers are cattle.
+        Terminate the dead sandbox, create a fresh one with the same
+        template, atomically update bundle.sandbox_id, return the new
+        Sandbox. SandboxHand calls this when an op detects "sandbox not
+        found"; the brain never sees the failure.
+
+        Concurrency: when SandboxHand ops detect a dead sandbox in
+        parallel, both will call this method. The `dead_sandbox_id`
+        argument is the caller's idempotency token — the id it just saw
+        die. If by the time we get here `bundle.sandbox_id` has already
+        been swapped to something else, we return that existing
+        replacement instead of provisioning yet another. Without this
+        fence, N concurrent recoveries → N fresh sandboxes → N-1 orphans.
+        """
+        from krewhub.repositories.bundle_repo import BundleRepo
+        repo_b = BundleRepo(self._db)
+        bundle = await repo_b.get(bundle_id)
+        if bundle is None:
+            raise ValueError(f"reprovision: bundle {bundle_id} not found")
+
+        # Idempotency fence: if a parallel call has already swapped
+        # bundle.sandbox_id since the caller looked, return THAT one.
+        if (
+            dead_sandbox_id is not None
+            and bundle.sandbox_id is not None
+            and bundle.sandbox_id != dead_sandbox_id
+        ):
+            current = await self._repo.get(bundle.sandbox_id)
+            if current is not None and current.status == "ready":
+                logger.info(
+                    "reprovision: bundle %s already has fresh sandbox %s "
+                    "(caller saw dead %s); returning existing replacement",
+                    bundle_id, current.id, dead_sandbox_id,
+                )
+                return current
+
+        # The "dead" sandbox to terminate is whichever id we'd be
+        # provisioning under. Fall back to bundle.sandbox_id if caller
+        # didn't specify (legacy compat / standalone reprovision).
+        to_terminate = dead_sandbox_id or bundle.sandbox_id
+
+        if to_terminate is not None:
+            try:
+                await self.terminate(to_terminate)
+            except Exception:
+                logger.exception(
+                    "reprovision: terminate of %s failed (continuing)",
+                    to_terminate,
+                )
+
+        template = (
+            (await self._template_for_bundle(bundle_id)) or "base"
+        )
+        owner = bundle.owner_account_id or ""
+
+        fresh = await self.create_for_bundle(
+            bundle_id=bundle_id,
+            owner_account_id=owner,
+            template=template,
+        )
+        await repo_b.set_sandbox(bundle_id, fresh.id)
+        logger.info(
+            "reprovisioned bundle %s: %s → %s (e2b %s)",
+            bundle_id, to_terminate, fresh.id, fresh.e2b_sandbox_id,
+        )
+        return fresh
+
+    async def _template_for_bundle(self, bundle_id: str) -> str | None:
+        """Look up the most recent sandbox template used by this bundle.
+        Falls back to None if no prior sandbox exists; caller should
+        substitute a default."""
+        cursor = await self._db.execute(
+            "SELECT template FROM sandboxes "
+            "WHERE bundle_id = ? "
+            "ORDER BY created_at DESC LIMIT 1",
+            (bundle_id,),
+        )
+        row = await cursor.fetchone()
+        return row[0] if row else None

@@ -20,11 +20,13 @@ import asyncio
 import base64
 import binascii
 import logging
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, Literal
 
 from krewhub.invocations.protocol import CancelToken, Hand, TapeWriter
 from krewhub.models.invocation import ResultEnvelope
+from krewhub.repositories.sandbox_repo import SandboxRepo
 
 
 logger = logging.getLogger(__name__)
@@ -38,7 +40,13 @@ class SandboxHand:
 
     target_type: Literal["sandbox", "agent", "human"] = "sandbox"
 
-    def __init__(self, e2b: Any, db: Any | None = None) -> None:
+    def __init__(
+        self,
+        e2b: Any,
+        db: Any | None = None,
+        *,
+        sandbox_service: Any | None = None,
+    ) -> None:
         # Duck-typed: anything with `exec_command(sandbox_id, command, ...)`
         # returning an async-iterable of NDJSON chunks. Real prod is
         # `krewhub.services.e2b_client.E2bClient`.
@@ -48,6 +56,12 @@ class SandboxHand:
         # before calling `exec_command`. When None, target_id is passed
         # through verbatim (test path).
         self._db = db
+        # When set, dead-sandbox failures trigger transparent re-provision
+        # via SandboxService.reprovision_for_bundle (Anthropic Managed
+        # Agents `provision({resources})`). When None, the brain sees the
+        # raw error envelope (legacy behavior — kept for tests that
+        # don't construct a SandboxService).
+        self._sandbox_service = sandbox_service
 
     async def execute(
         self,
@@ -71,7 +85,6 @@ class SandboxHand:
         e2b_sandbox_id = target_id
         if self._db is not None and target_id.startswith("sbx_"):
             try:
-                from krewhub.repositories.sandbox_repo import SandboxRepo
                 row = await SandboxRepo(self._db).get(target_id)
                 if row is None:
                     return ResultEnvelope(
@@ -90,11 +103,17 @@ class SandboxHand:
             return ResultEnvelope(action="error", reason=parse_err or "bad_input")
 
         if isinstance(op, _OpWrite):
-            return await self._execute_write(e2b_sandbox_id, op.path, op.data)
+            return await self._execute_write(
+                target_id, e2b_sandbox_id, op.path, op.data, tape,
+            )
         if isinstance(op, _OpRead):
-            return await self._execute_read(e2b_sandbox_id, op.path)
+            return await self._execute_read(
+                target_id, e2b_sandbox_id, op.path, tape,
+            )
         if isinstance(op, _OpList):
-            return await self._execute_list(e2b_sandbox_id, op.path, op.depth)
+            return await self._execute_list(
+                target_id, e2b_sandbox_id, op.path, op.depth, tape,
+            )
         # Default + explicit op="exec" fall through to the streaming path.
 
         return await self._execute_exec(
@@ -244,6 +263,83 @@ class SandboxHand:
 
     # ---- File-op dispatchers (Phase 3) ------------------------------------
 
+    async def _with_recovery(
+        self,
+        target_id: str,
+        e2b_sandbox_id: str,
+        op: Callable[[str], Awaitable[Any]],
+        tape: TapeWriter | None = None,
+    ) -> Any:
+        """Run `op(e2b_id)` once; if it dies with a `sandbox not found`
+        signal, reprovision via SandboxService and retry exactly once
+        with the new e2b id.
+
+        Returns op's return value on success; re-raises the original
+        exception if recovery isn't applicable (no service wired,
+        non-dead error, no bundle_id, reprovision itself fails).
+
+        The brain receives a clean ResultEnvelope; recovery is a system-
+        side concern surfaced only via the tape (`sandbox.reprovisioned`
+        event) for operator audit.
+        """
+        try:
+            return await op(e2b_sandbox_id)
+        except Exception as exc:
+            if not _looks_like_dead_sandbox(exc):
+                raise
+            if self._sandbox_service is None or self._db is None:
+                raise
+            sandbox_row = await self._lookup_sandbox(target_id)
+            if sandbox_row is None or not sandbox_row.bundle_id:
+                # Per-task sandboxes (no bundle_id) can't be safely
+                # re-provisioned — there's no recipe to recreate from.
+                raise
+            try:
+                # Pass the id we just saw die as the idempotency token.
+                # If a parallel recovery already swapped bundle.sandbox_id,
+                # the service returns that replacement instead of
+                # provisioning yet another.
+                fresh = await self._sandbox_service.reprovision_for_bundle(
+                    sandbox_row.bundle_id,
+                    dead_sandbox_id=sandbox_row.id,
+                )
+            except Exception as reprov_exc:
+                logger.warning(
+                    "recovery: reprovision_for_bundle(%s) failed: %s",
+                    sandbox_row.bundle_id, reprov_exc,
+                )
+                raise exc
+            if tape is not None:
+                try:
+                    await tape.append(
+                        "milestone",
+                        body=f"sandbox reprovisioned: {sandbox_row.id} → {fresh.id}",
+                        payload={
+                            "event": "sandbox_reprovisioned",
+                            "old_sandbox_id": sandbox_row.id,
+                            "new_sandbox_id": fresh.id,
+                            "new_e2b_id": fresh.e2b_sandbox_id,
+                            "reason": "dead_sandbox_recovery",
+                        },
+                        actor_type="system",
+                    )
+                except Exception:  # pragma: no cover — tape best-effort
+                    logger.exception("recovery: tape append failed (continuing)")
+            # Retry exactly once on the fresh sandbox. If this also
+            # fails, the caller surfaces the failure to the brain.
+            return await op(fresh.e2b_sandbox_id)
+
+    async def _lookup_sandbox(self, target_id: str) -> Any | None:
+        """Return the SandboxRow for `target_id` (krewhub `sbx_*` id),
+        or None if not resolvable. Bridges to SandboxRepo via the same
+        db handle SandboxHand was constructed with."""
+        if self._db is None or not target_id.startswith("sbx_"):
+            return None
+        try:
+            return await SandboxRepo(self._db).get(target_id)
+        except Exception:
+            return None
+
     async def _heartbeat(self, e2b_sandbox_id: str) -> None:
         """Bump the e2b sandbox's `endAt` to `now + 1h` after a successful
         op. Best-effort: a missed heartbeat shouldn't fail the actual op.
@@ -265,10 +361,20 @@ class SandboxHand:
             )
 
     async def _execute_write(
-        self, e2b_sandbox_id: str, path: str, data: bytes,
+        self,
+        target_id: str,
+        e2b_sandbox_id: str,
+        path: str,
+        data: bytes,
+        tape: TapeWriter,
     ) -> ResultEnvelope:
+        async def _op(eid: str) -> str:
+            await self._e2b.write_file(eid, path, data)
+            return eid  # propagate the e2b id heartbeat should refresh
         try:
-            await self._e2b.write_file(e2b_sandbox_id, path, data)
+            used_eid = await self._with_recovery(
+                target_id, e2b_sandbox_id, _op, tape,
+            )
         except ValueError as exc:
             msg = str(exc)
             # Preserve the stable `path_too_large:` reason code from the
@@ -287,17 +393,28 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
-        await self._heartbeat(e2b_sandbox_id)
+        await self._heartbeat(used_eid)
         return ResultEnvelope(
             action="accept",
             content={"path": path, "bytes_written": len(data)},
         )
 
     async def _execute_read(
-        self, e2b_sandbox_id: str, path: str,
+        self,
+        target_id: str,
+        e2b_sandbox_id: str,
+        path: str,
+        tape: TapeWriter,
     ) -> ResultEnvelope:
+        captured: dict[str, Any] = {}
+        async def _op(eid: str) -> bytes:
+            data = await self._e2b.read_file(eid, path)
+            captured["e2b_id"] = eid
+            return data
         try:
-            data = await self._e2b.read_file(e2b_sandbox_id, path)
+            data = await self._with_recovery(
+                target_id, e2b_sandbox_id, _op, tape,
+            )
         except FileNotFoundError as exc:
             return ResultEnvelope(
                 action="error", reason=f"path_not_found: {exc}",
@@ -306,7 +423,7 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
-        await self._heartbeat(e2b_sandbox_id)
+        await self._heartbeat(captured.get("e2b_id", e2b_sandbox_id))
         text, encoding = _classify_bytes(data)
         return ResultEnvelope(
             action="accept",
@@ -314,11 +431,21 @@ class SandboxHand:
         )
 
     async def _execute_list(
-        self, e2b_sandbox_id: str, path: str, depth: int,
+        self,
+        target_id: str,
+        e2b_sandbox_id: str,
+        path: str,
+        depth: int,
+        tape: TapeWriter,
     ) -> ResultEnvelope:
+        captured: dict[str, Any] = {}
+        async def _op(eid: str) -> list[dict]:
+            entries = await self._e2b.list_dir(eid, path, depth=depth)
+            captured["e2b_id"] = eid
+            return entries
         try:
-            entries = await self._e2b.list_dir(
-                e2b_sandbox_id, path, depth=depth,
+            entries = await self._with_recovery(
+                target_id, e2b_sandbox_id, _op, tape,
             )
         except FileNotFoundError as exc:
             return ResultEnvelope(
@@ -328,7 +455,7 @@ class SandboxHand:
             return ResultEnvelope(
                 action="error", reason=f"e2b_filesystem_failed: {exc}",
             )
-        await self._heartbeat(e2b_sandbox_id)
+        await self._heartbeat(captured.get("e2b_id", e2b_sandbox_id))
         return ResultEnvelope(
             action="accept",
             content={"path": path, "entries": entries},
@@ -455,6 +582,32 @@ def _classify_bytes(data: bytes) -> tuple[str, str]:
         return data.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
         return base64.b64encode(data).decode("ascii"), "base64"
+
+
+# Dead-sandbox detection — conservative pattern match. Only patterns
+# that uniquely identify a reaped/missing sandbox trigger reprovision.
+# Generic 5xx and connection errors are NOT covered (could be transient
+# infra hiccups; reprovision is wasteful for those). e2b orchestrator's
+# "sandbox not found" comes back two ways:
+#   1. exec streaming: chunk `{"error": "envd Start returned 502: ...
+#      'message':'The sandbox was not found','code':502}"` (caught in the
+#      stream-consume loop and surfaced as `infra_error` in execute_exec)
+#   2. file ops: httpx 502 → HTTPStatusError with body containing
+#      "sandbox was not found" or `'code':502`.
+_DEAD_SANDBOX_MARKERS = (
+    "sandbox was not found",
+    "sandbox_not_found",
+    '"code":502',
+    "code:502",
+)
+
+
+def _looks_like_dead_sandbox(error: BaseException | str) -> bool:
+    """True iff the error message uniquely identifies a reaped sandbox.
+    Used by SandboxHand to decide whether `_with_recovery` should call
+    SandboxService.reprovision_for_bundle and retry the op."""
+    msg = (str(error) if not isinstance(error, str) else error).lower()
+    return any(marker.lower() in msg for marker in _DEAD_SANDBOX_MARKERS)
 
 
 class _Tail:
