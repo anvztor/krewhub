@@ -70,6 +70,17 @@ class Settings(BaseSettings):
     # passphrase, then inject as env var when SandboxHand dispatches op:exec.
     credentials_encryption_key: str = ""
 
+    # GitHub OAuth App for the "Connect GitHub" credential bootstrap path.
+    # Register at https://github.com/settings/developers. Callback URL
+    # MUST be `<KREWHUB_PUBLIC_URL>/api/v1/oauth/github/callback`.
+    github_oauth_client_id: str = ""
+    github_oauth_client_secret: str = ""
+    # Externally-reachable krewhub URL used to build the callback URL
+    # in the GitHub authorize redirect + the redirect-back-to-web URL.
+    public_url: str = "https://hub.cookrew.dev"
+    # cookrew-web URL the OAuth callback redirects to after success/failure.
+    web_url: str = "https://beta.cookrew.dev"
+
     # Dev escape hatch: when KREWHUB_KREW_DEV_FAKE_AUTH=1, skip cookie/JWT
     # checks and resolve all callers as `dev-user-1`. Kept post-merge as a
     # documented dev-only switch; OFF in prod.

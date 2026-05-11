@@ -78,6 +78,22 @@ class CredentialListResponse(BaseModel):
     credentials: list[CredentialView]
 
 
+class EnvsResponse(BaseModel):
+    """Plaintext env-var view of the caller's stored credentials.
+
+    Returned only to the krewcli daemon (or an equivalently trusted
+    caller) for injection into a brain subprocess's spawn env. The
+    daemon merges these into the env passed to `Popen(claude/codex/
+    gemini, ...)` so MCP servers (mcp__github__*, etc.) inherit
+    them as `GITHUB_TOKEN`, `OPENAI_API_KEY`, etc.
+
+    The Path-B credential leak surface: plaintext briefly lives in the
+    daemon's process memory and the brain's env. Accepted trade for
+    not running an in-line egress broker.
+    """
+    envs: dict[str, str]
+
+
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
@@ -149,6 +165,27 @@ async def list_credentials(
             for r in rows
         ]
     )
+
+
+@router.get("/credentials/envs", response_model=EnvsResponse)
+async def get_credentials_envs(
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> EnvsResponse:
+    """Return plaintext env-vars for the caller's stored credentials.
+
+    Called by the krewcli daemon at brain-spawn time so the brain
+    subprocess inherits GITHUB_TOKEN, OPENAI_API_KEY, etc. Re-uses
+    cookie/bearer auth — the daemon's pairing token resolves to the
+    same account that owns the bundle the brain is about to work on.
+    """
+    svc = _service(db)
+    envs = await svc.get_envs(caller.account_id)
+    logger.info(
+        "credentials.envs account=%s keys=%s",
+        caller.account_id, sorted(envs.keys()),
+    )
+    return EnvsResponse(envs=envs)
 
 
 @router.delete("/credentials/{host:path}")

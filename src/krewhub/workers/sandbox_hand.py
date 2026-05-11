@@ -35,6 +35,11 @@ logger = logging.getLogger(__name__)
 _TAIL_BYTES = 16 * 1024  # 16KB per stream
 
 
+class _DeadSandboxExecError(Exception):
+    """Sentinel raised by the exec attempt when infra_error matches a
+    dead-sandbox shape. Caught by `_with_recovery` to trigger reprovision."""
+
+
 class SandboxHand:
     """Hand impl for `target_type="sandbox"`."""
 
@@ -172,6 +177,50 @@ class SandboxHand:
         return merged
 
     async def _execute_exec(
+        self,
+        *,
+        target_id: str,
+        e2b_sandbox_id: str,
+        command: str,
+        cwd: str | None,
+        env: dict[str, str] | None,
+        deadline_s: int,
+        tape: TapeWriter,
+        cancel: CancelToken,
+    ) -> ResultEnvelope:
+        """Run exec with dead-sandbox auto-recovery (parity with file ops).
+
+        Dead-sandbox surfaces in exec as a yielded `{"error": "..."}` chunk
+        (envd Start returned 502 / "sandbox was not found"), captured into
+        `infra_error` rather than raised. We re-raise it as
+        `_DeadSandboxExecError` so the shared `_with_recovery` wrapper can
+        reprovision and re-attempt exactly once on a fresh e2b id.
+
+        Cancellation, normal completion, and non-recovery errors pass
+        through unchanged.
+        """
+        async def _attempt(eid: str) -> ResultEnvelope:
+            result = await self._do_exec_attempt(
+                target_id=target_id, e2b_sandbox_id=eid,
+                command=command, cwd=cwd, env=env,
+                deadline_s=deadline_s, tape=tape, cancel=cancel,
+            )
+            if (
+                result.action == "error"
+                and result.reason
+                and _looks_like_dead_sandbox(result.reason)
+            ):
+                raise _DeadSandboxExecError(result.reason)
+            return result
+
+        try:
+            return await self._with_recovery(
+                target_id, e2b_sandbox_id, _attempt, tape,
+            )
+        except _DeadSandboxExecError as exc:
+            return ResultEnvelope(action="error", reason=str(exc))
+
+    async def _do_exec_attempt(
         self,
         *,
         target_id: str,
