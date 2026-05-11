@@ -421,4 +421,25 @@ CREATE TABLE IF NOT EXISTS tape_forks (
     created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_tape_forks_parent ON tape_forks(parent_tape_id);
+
+-- Operator credentials, scoped per cookrew account. Plaintext is held
+-- only in the operator's browser (paste form) and on the wire to the
+-- agent sandbox (as env var on op:exec). At rest we hold AES-GCM
+-- ciphertext + 12-byte nonce. AES key is derived from
+-- settings.credentials_encryption_key via sha256.
+CREATE TABLE IF NOT EXISTS credentials (
+    id TEXT PRIMARY KEY,
+    account_id TEXT NOT NULL,
+    host TEXT NOT NULL,
+    env_var_name TEXT NOT NULL,
+    ciphertext BLOB NOT NULL,
+    nonce BLOB NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    archived_at TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_account_host
+    ON credentials(account_id, host) WHERE archived_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_credentials_account
+    ON credentials(account_id) WHERE archived_at IS NULL;
 """

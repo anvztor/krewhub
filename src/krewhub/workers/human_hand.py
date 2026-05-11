@@ -52,25 +52,45 @@ class HumanHand:
                 reason="bad_target: human accepts no id",
             )
 
+        # Two delegate shapes land here:
+        #  - Free-form: input is a string OR {message: "..."}.
+        #  - Structured op: input is {op: "auth_required", host: "...", ...}.
+        # The structured form lets cookrew-web render a typed card (e.g.
+        # AuthRequiredCard for paste-PAT or OAuth-launch) instead of a
+        # generic textbox. Brain's DELEGATE_SYSTEM_NOTE tells it to use
+        # the structured form on auth failures.
+        structured = _parse_structured_op(input)
         message = _parse_human_input(input)
-        if not message:
+        if structured is None and not message:
             return ResultEnvelope(
                 action="error",
-                reason="empty_message: HumanHand input must contain a non-empty message",
+                reason="empty_message: HumanHand input must contain a non-empty message or structured op",
             )
+
+        # For structured ops with no explicit message, synthesize one so
+        # the tape body remains human-readable.
+        if structured is not None and not message:
+            message = _synthesize_message(structured)
 
         deadline_ts = (
             datetime.now(timezone.utc) + timedelta(seconds=deadline_s)
         ).isoformat()
 
+        payload: dict = {
+            "message": message,
+            "schema": schema,
+            "deadline_ts": deadline_ts,
+        }
+        if structured is not None:
+            payload["op"] = structured.get("op")
+            for k in ("host", "reason", "env_var_name", "hint"):
+                if k in structured:
+                    payload[k] = structured[k]
+
         await tape.append(
             "elicit",
             body=message[:200],
-            payload={
-                "message": message,
-                "schema": schema,
-                "deadline_ts": deadline_ts,
-            },
+            payload=payload,
             actor_type="human",
             actor_id="operator",
         )
@@ -108,3 +128,35 @@ def _parse_human_input(input: str | dict) -> str:
         if isinstance(msg, str):
             return msg.strip()
     return ""
+
+
+# Allow-list of structured ops the brain can issue via delegate(to: "human").
+# Adding a new op MUST be paired with cookrew-web rendering logic — otherwise
+# the operator gets a textbox that can't actually resolve the credential
+# need.
+_KNOWN_HUMAN_OPS: frozenset[str] = frozenset({
+    "auth_required",   # paste a credential / launch OAuth ceremony
+})
+
+
+def _parse_structured_op(input: str | dict) -> dict | None:
+    """Return the structured op dict iff input has a recognized `op`."""
+    if not isinstance(input, dict):
+        return None
+    op = input.get("op")
+    if not isinstance(op, str) or op not in _KNOWN_HUMAN_OPS:
+        return None
+    return input
+
+
+def _synthesize_message(structured: dict) -> str:
+    """Default tape-body text for a structured op when no message is set."""
+    op = structured.get("op")
+    host = structured.get("host", "")
+    reason = structured.get("reason", "")
+    if op == "auth_required":
+        base = f"Authentication needed for {host}".strip()
+        if reason:
+            return f"{base} — {reason}"
+        return base or "Authentication needed"
+    return "Operator action requested"

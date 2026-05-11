@@ -46,6 +46,7 @@ class SandboxHand:
         db: Any | None = None,
         *,
         sandbox_service: Any | None = None,
+        credentials_service: Any | None = None,
     ) -> None:
         # Duck-typed: anything with `exec_command(sandbox_id, command, ...)`
         # returning an async-iterable of NDJSON chunks. Real prod is
@@ -62,6 +63,11 @@ class SandboxHand:
         # raw error envelope (legacy behavior — kept for tests that
         # don't construct a SandboxService).
         self._sandbox_service = sandbox_service
+        # When set, op:exec calls are augmented with the sandbox owner's
+        # stored credentials (encrypted-at-rest, decrypted just-in-time).
+        # This is the Path-B env-injection MVP for the credential vault.
+        # See services/credentials_service.py.
+        self._credentials_service = credentials_service
 
     async def execute(
         self,
@@ -83,6 +89,7 @@ class SandboxHand:
         # (long alphanumeric the orchestrator/proxy expects). Tests skip
         # this by constructing SandboxHand without `db`.
         e2b_sandbox_id = target_id
+        owner_account_id: str | None = None
         if self._db is not None and target_id.startswith("sbx_"):
             try:
                 row = await SandboxRepo(self._db).get(target_id)
@@ -92,6 +99,9 @@ class SandboxHand:
                         reason=f"sandbox_not_found: {target_id}",
                     )
                 e2b_sandbox_id = row.e2b_sandbox_id
+                # `owner_account_id` is optional on legacy rows / test
+                # fixtures — fall back to None and skip env injection.
+                owner_account_id = getattr(row, "owner_account_id", None)
             except Exception as exc:
                 return ResultEnvelope(
                     action="error",
@@ -115,14 +125,51 @@ class SandboxHand:
                 target_id, e2b_sandbox_id, op.path, op.depth, tape,
             )
         # Default + explicit op="exec" fall through to the streaming path.
+        # Merge operator-stored credentials (env-var form) into the brain's
+        # env. Brain-supplied env vars win on conflict — the brain may
+        # legitimately want to override e.g. GITHUB_TOKEN with a per-op
+        # value. Credentials are decrypted just-in-time and never logged.
+        merged_env = await self._merge_credentials_into_env(
+            owner_account_id, op.env,
+        )
 
         return await self._execute_exec(
             target_id=target_id,
             e2b_sandbox_id=e2b_sandbox_id,
-            command=op.command, cwd=op.cwd, env=op.env,
+            command=op.command, cwd=op.cwd, env=merged_env,
             deadline_s=deadline_s,
             tape=tape, cancel=cancel,
         )
+
+    async def _merge_credentials_into_env(
+        self,
+        owner_account_id: str | None,
+        brain_env: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Return env with operator's credentials merged in.
+
+        Brain's env wins on conflict. Returns None iff both sources are
+        empty, to preserve the existing test-path behavior of "no env" =
+        envd uses sandbox defaults.
+        """
+        if self._credentials_service is None or owner_account_id is None:
+            return brain_env
+        try:
+            stored = await self._credentials_service.get_envs(owner_account_id)
+        except Exception as exc:
+            # A storage failure shouldn't block the op — the brain may
+            # be running something that doesn't need a credential at all.
+            logger.warning(
+                "credentials.get_envs failed for account=%s: %s",
+                owner_account_id, exc,
+            )
+            return brain_env
+        if not stored and not brain_env:
+            return None
+        merged: dict[str, str] = dict(stored)
+        if brain_env:
+            merged.update(brain_env)  # brain wins on key conflict
+        return merged
 
     async def _execute_exec(
         self,

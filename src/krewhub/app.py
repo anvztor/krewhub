@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 from krewhub.db.connection import close_db, init_db
 from krewhub.routes import (
     a2a_callback, a2a_gateway, agent_runtimes, agents, aggregate, auth_web,
-    bundles, cookbooks, git_http, hooks, invocations, proxy_krewauth,
-    recipes, stream, tapes, tasks,
+    bundles, cookbooks, credentials, git_http, hooks, invocations,
+    proxy_krewauth, recipes, stream, tapes, tasks,
 )
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
@@ -84,11 +84,21 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     # injected, SandboxHand falls back to surfacing the raw error to the
     # brain — used in tests but not in production.
     sandbox_service = SandboxService(db, _app.state.e2b)
+    # CredentialsService: at-rest credential store, decrypted at op:exec
+    # dispatch time and merged into the sandbox's env. See
+    # services/credentials_service.py for the encryption model.
+    from krewhub.services.credentials_service import (
+        CredentialsService, resolve_encryption_key,
+    )
+    credentials_service = CredentialsService(
+        db, resolve_encryption_key(settings.credentials_encryption_key),
+    )
     _app.state.invocations = InvocationService(
         db, watch=watch,
         hands={
             "sandbox": SandboxHand(
                 _app.state.e2b, db=db, sandbox_service=sandbox_service,
+                credentials_service=credentials_service,
             ),
             "human": HumanHand(),
             # AgentHand bridges to the existing A2A queue. The krewcli
@@ -157,6 +167,7 @@ def create_app() -> FastAPI:
     app.include_router(a2a_callback.router, prefix="/api/v1")
     app.include_router(hooks.router, prefix="/api/v1")
     app.include_router(invocations.router, prefix="/api/v1")
+    app.include_router(credentials.router, prefix="/api/v1")
 
     # A2A hub gateway — public agent endpoints
     app.include_router(a2a_gateway.router)

@@ -65,6 +65,11 @@ class Settings(BaseSettings):
     sandbox_idle_timeout_seconds: int = 600
     sandbox_max_age_seconds: int = 3600
 
+    # Credential vault (Path B: env-injection MVP). Operator pastes a PAT,
+    # we encrypt-at-rest with AES-GCM using a key derived from this
+    # passphrase, then inject as env var when SandboxHand dispatches op:exec.
+    credentials_encryption_key: str = ""
+
     # Dev escape hatch: when KREWHUB_KREW_DEV_FAKE_AUTH=1, skip cookie/JWT
     # checks and resolve all callers as `dev-user-1`. Kept post-merge as a
     # documented dev-only switch; OFF in prod.
