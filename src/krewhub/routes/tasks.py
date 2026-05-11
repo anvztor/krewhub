@@ -102,7 +102,19 @@ async def claim_task(
 
     await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
 
-    return {"task": updated.model_dump(mode="json")}
+    # Inherit bundle.sandbox_id when task.sandbox_id is null. The
+    # daemon merges this response into `task_detail` and passes
+    # `task_detail.get("sandbox_id")` into ExecutionEnvironment, which
+    # becomes the bridge's KREWHUB_SANDBOX_ID env. Without this
+    # fallback, tasks created via the cookrew-beta UI (which doesn't
+    # run /bundles/{id}/ship's sandbox-assignment block) end up with
+    # sandbox_id=None even though the bundle has one — the brain
+    # then sees `no_sandbox_attached` and (per system note) asks the
+    # human. Bug fixed 2026-05-11.
+    payload = updated.model_dump(mode="json")
+    if not payload.get("sandbox_id") and bundle.sandbox_id:
+        payload["sandbox_id"] = bundle.sandbox_id
+    return {"task": payload}
 
 
 @router.post("/tasks/{task_id}/events")

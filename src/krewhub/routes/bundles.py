@@ -148,9 +148,25 @@ async def get_bundle(
 
     return {
         "bundle": bundle.model_dump(mode="json"),
-        "tasks": [t.model_dump(mode="json") for t in tasks],
+        "tasks": [_task_with_sandbox_inherited(t, bundle) for t in tasks],
         "events": [e.model_dump(mode="json") for e in events],
     }
+
+
+def _task_with_sandbox_inherited(task, bundle) -> dict:
+    """Serialize a Task with `sandbox_id` inheriting from the bundle when
+    null. The legacy schema stores `task.sandbox_id` separately from
+    `bundle.sandbox_id`; in the bundle-scoped era they should always be
+    the same. Without inheritance, the daemon's
+    `task_detail.get("sandbox_id")` returns None for tasks that weren't
+    shipped via /bundles/{id}/ship (e.g. tasks created via cookrew-beta
+    UI), the bridge env lacks `KREWHUB_SANDBOX_ID`, and the brain ends
+    up with `no_sandbox_attached` and asks the human — wrong UX. Fixed
+    on 2026-05-11 after the cookrew-beta task surfaced this exact path."""
+    payload = task.model_dump(mode="json")
+    if not payload.get("sandbox_id") and bundle.sandbox_id:
+        payload["sandbox_id"] = bundle.sandbox_id
+    return payload
 
 
 @router.get("/bundles/{bundle_id}/digest")
