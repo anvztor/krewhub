@@ -24,30 +24,26 @@ from krewhub.db.connection import get_db
 
 
 async def _seed_task(db) -> tuple[str, str, str]:
-    """Seed a recipe + bundle + task; return (recipe_id, bundle_id, task_id)."""
+    """Seed a cookbook + bundle + task; return (cookbook_id, bundle_id, task_id).
+
+    Post step-(e) schema: recipes table is gone, bundles point at
+    cookbooks directly.
+    """
     import uuid
     cb_id = f"cb_{uuid.uuid4().hex[:8]}"
-    rec_id = f"rec_{uuid.uuid4().hex[:8]}"
     bundle_id = f"bun_{uuid.uuid4().hex[:8]}"
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     await db.execute(
         "INSERT INTO cookbooks (id, name, owner_id, created_at) "
-        "VALUES (?, 'cb', 'dev-user-1', '2026-05-12T00:00:00')",
+        "VALUES (?, 'cb', 'dev-user-1', '2026-05-13T00:00:00')",
         (cb_id,),
     )
     await db.execute(
-        "INSERT INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) "
-        "VALUES (?, 'r', 'https://github.com/x/y.git', 'main', "
-        "'dev-user-1', '2026-05-12T00:00:00', ?)",
-        (rec_id, cb_id),
-    )
-    await db.execute(
-        "INSERT INTO bundles (id, recipe_id, prompt, status, created_by, "
+        "INSERT INTO bundles (id, cookbook_id, prompt, status, created_by, "
         "created_at, owner_account_id) "
-        "VALUES (?, ?, 'p', 'open', 'dev-user-1', '2026-05-12T00:00:00', "
+        "VALUES (?, ?, 'p', 'open', 'dev-user-1', '2026-05-13T00:00:00', "
         "'dev-user-1')",
-        (bundle_id, rec_id),
+        (bundle_id, cb_id),
     )
     await db.execute(
         "INSERT INTO tasks (id, bundle_id, title, status, depends_on_task_ids, "
@@ -56,7 +52,7 @@ async def _seed_task(db) -> tuple[str, str, str]:
         (task_id, bundle_id),
     )
     await db.commit()
-    return rec_id, bundle_id, task_id
+    return cb_id, bundle_id, task_id
 
 
 async def _wait_for_running(inv_client, inv_id: str) -> None:
@@ -82,7 +78,7 @@ async def test_accept_projects_content_as_human_turn(inv_client, _install_fake_h
 
     app, _ = _install_fake_hand
     db = await get_db()
-    _rec_id, _bundle_id, task_id = await _seed_task(db)
+    _, _, task_id = await _seed_task(db)
 
     # Use a blocking HumanHand so POST /result is what closes the inv.
     block = _asyncio.Event()

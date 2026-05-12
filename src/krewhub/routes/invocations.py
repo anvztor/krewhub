@@ -265,16 +265,18 @@ async def _project_invocation_to_task_tape(
     if await probe.fetchone() is not None:
         return
 
-    # 2. Find the recipe + bundle for this task — events rows need both.
+    # 2. Find the cookbook + bundle for this task — events rows need
+    # both columns populated (step (e) replaced recipe_id with
+    # cookbook_id; followup uses the same shape).
     trow = await db.execute(
-        "SELECT t.bundle_id, b.recipe_id FROM tasks t "
+        "SELECT t.bundle_id, b.cookbook_id FROM tasks t "
         "JOIN bundles b ON b.id = t.bundle_id WHERE t.id = ?",
         (task_id,),
     )
     tr = await trow.fetchone()
     if tr is None:
         return
-    bundle_id, recipe_id = tr[0], tr[1]
+    bundle_id, cookbook_id = tr[0], tr[1]
 
     # 3. Render the envelope as the projected body. `accept` → content
     # text; failure actions → a short reason summary so the brain can
@@ -300,12 +302,12 @@ async def _project_invocation_to_task_tape(
         "action": envelope.action,
     })
     await db.execute(
-        "INSERT INTO events (id, recipe_id, bundle_id, task_id, type, "
+        "INSERT INTO events (id, cookbook_id, bundle_id, task_id, type, "
         "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
         "visibility, created_at) "
         "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, "
         "'[]', '[]', 'user', ?)",
-        (event_id, recipe_id, bundle_id, task_id, actor_id or "system",
+        (event_id, cookbook_id, bundle_id, task_id, actor_id or "system",
          body, payload, seq, now),
     )
     await db.commit()
