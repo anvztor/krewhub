@@ -98,6 +98,45 @@ class Cookbook(BaseModel, frozen=True):
     created_at: datetime
 
 
+class ShareRole(StrEnum):
+    OWNER = "owner"
+    MEMBER = "member"
+    VIEWER = "viewer"
+
+
+class CookbookShare(BaseModel, frozen=True):
+    id: str
+    cookbook_id: str
+    shared_with_account_id: str
+    role: ShareRole
+    shared_by_account_id: str
+    shared_at: datetime
+    revoked_at: datetime | None = None
+
+
+class RepoProvider(StrEnum):
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    BITBUCKET = "bitbucket"
+
+
+class RepoGrant(BaseModel, frozen=True):
+    id: str
+    cookbook_id: str
+    provider: RepoProvider
+    # Scope syntax:
+    #   "owner/repo"   one specific repo
+    #   "owner/*"      all repos under an owner/org
+    #   "owner"        same as "owner/*"
+    scope: str
+    # Reference into the secret store (vault key, KMS arn, etc).
+    # Never the raw token — krewhub does not see plaintext credentials.
+    token_ref: str
+    granted_by_account_id: str
+    granted_at: datetime
+    revoked_at: datetime | None = None
+
+
 class Recipe(BaseModel, frozen=True):
     id: str
     name: str

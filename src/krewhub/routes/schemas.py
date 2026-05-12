@@ -17,6 +17,24 @@ class InviteMemberRequest(BaseModel):
     role: str = "member"
 
 
+# --- Cookbook sharing / repo grants (Phase 12) ---
+
+
+class CreateCookbookShareRequest(BaseModel):
+    shared_with_account_id: str
+    role: str = "member"
+
+
+class UpdateCookbookShareRequest(BaseModel):
+    role: str
+
+
+class CreateRepoGrantRequest(BaseModel):
+    provider: str
+    scope: str
+    token_ref: str
+
+
 class CreateTaskInput(BaseModel):
     model_config = {"populate_by_name": True}
     task_id: str | None = Field(None, alias="id")
