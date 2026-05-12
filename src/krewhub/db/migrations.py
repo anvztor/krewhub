@@ -35,21 +35,20 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
             event_type TEXT NOT NULL CHECK(event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
             resource_version INTEGER NOT NULL,
             payload TEXT NOT NULL DEFAULT '{}',
-            recipe_id TEXT,
             created_at TEXT NOT NULL
         )
     """)
     await _create_index_if_missing(db, "idx_watch_log_type_seq", "watch_log", "(resource_type, seq)")
-    await _create_index_if_missing(db, "idx_watch_log_recipe_seq", "watch_log", "(recipe_id, seq)")
+    # Step (e): idx_watch_log_recipe_seq removed with recipe_id column.
     await _create_index_if_missing(db, "idx_tasks_assigned", "tasks", "(assigned_agent_id)")
 
-    # Phase 2b: cookbook_id columns (added when cookbooks were introduced)
-    await _add_column_if_missing(db, "recipes", "cookbook_id", "TEXT NOT NULL DEFAULT ''")
+    # Step (e): recipes table is dropped; the recipes.cookbook_id /
+    # commit_sha column adds are no-ops. Step (e) drop runs later in
+    # this file. agent_presence.cookbook_id is still relevant.
     await _add_column_if_missing(db, "agent_presence", "cookbook_id", "TEXT NOT NULL DEFAULT ''")
 
     # Phase 3: git-based storage columns
     await _add_column_if_missing(db, "cookbooks", "repo_path", "TEXT")
-    await _add_column_if_missing(db, "recipes", "commit_sha", "TEXT")
 
     # Phase 5: extend events.actor_type CHECK to include 'hook'
     await _migrate_events_actor_type_hook(db)
@@ -1007,11 +1006,16 @@ async def _relax_bundles_recipe_id_nullable(
 ) -> None:
     """Drop NOT NULL on bundles.recipe_id.
 
-    Cookbook-scoped bundles (Phase 12 step c) have no recipe; the
-    column stays for the dual-write window but must allow NULL.
-    Idempotent: no-op if already nullable.
+    Idempotent. No-op if the column is already nullable OR has been
+    dropped entirely (step e). Step e's _drop_recipe_id_columns_and_tables
+    runs after this, so on a post-step-e DB the column is already
+    gone and this function correctly bails.
     """
     if not await _table_exists(db, "bundles"):
+        return
+    # Bail if the column was already dropped (step e).
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    if "recipe_id" not in {r["name"] for r in await cursor.fetchall()}:
         return
     if await _column_is_nullable(db, "bundles", "recipe_id"):
         return
@@ -1065,10 +1069,13 @@ async def _relax_events_recipe_id_nullable(
 ) -> None:
     """Drop NOT NULL on events.recipe_id.
 
-    Cookbook-scoped events have no recipe; stamp cookbook_id instead.
-    Idempotent: no-op if already nullable.
+    Idempotent. No-op if the column is already nullable OR has been
+    dropped (step e).
     """
     if not await _table_exists(db, "events"):
+        return
+    cursor = await db.execute("PRAGMA table_info(events)")
+    if "recipe_id" not in {r["name"] for r in await cursor.fetchall()}:
         return
     if await _column_is_nullable(db, "events", "recipe_id"):
         return
