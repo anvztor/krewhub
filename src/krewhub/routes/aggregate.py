@@ -38,17 +38,19 @@ async def cookbook_detail(
     return result
 
 
-@router.get("/recipes/{recipe_id}/workspace")
-async def recipe_workspace(
-    recipe_id: str,
+@router.get("/cookbooks/{cookbook_id}/workspace")
+async def cookbook_workspace(
+    cookbook_id: str,
     bundle_id: str | None = None,
     db: aiosqlite.Connection = Depends(get_db),
     _caller: CallerContext | None = Depends(optional_cookie_caller),
 ) -> dict:
-    """Get workspace data for a recipe."""
-    result = await aggregate_service.get_workspace_data(db, recipe_id, bundle_id)
+    """Get workspace data for a cookbook."""
+    result = await aggregate_service.get_workspace_data(
+        db, cookbook_id, bundle_id,
+    )
     if result is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
+        raise HTTPException(status_code=404, detail="Cookbook not found")
     return result
 
 

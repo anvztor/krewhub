@@ -400,6 +400,10 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # constraint to the two-value set. Idempotent.
     await _collapse_bundles_status_to_open_closed(db)
 
+    # Phase 12 step (e): recipes are gone. Drop recipe_id columns and
+    # the recipes / recipe_members tables. Idempotent.
+    await _drop_recipe_id_columns_and_tables(db)
+
     await db.commit()
 
 
@@ -613,6 +617,149 @@ async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
                     "Migration: cookbook_id backfill on watch_log skipped: %s",
                     exc,
                 )
+
+
+async def _drop_recipe_id_columns_and_tables(
+    db: aiosqlite.Connection,
+) -> None:
+    """Step (e): drop recipe_id columns from bundles/events/watch_log,
+    then drop the recipes + recipe_members tables.
+
+    Idempotent: detects via PRAGMA + sqlite_master before each step.
+    """
+    if not await _table_exists(db, "bundles"):
+        return
+
+    # Rebuild bundles without recipe_id column (if present).
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    bundle_cols = [r["name"] for r in await cursor.fetchall()]
+    if "recipe_id" in bundle_cols:
+        logger.info("Migration: dropping bundles.recipe_id column")
+        keep = [c for c in bundle_cols if c != "recipe_id"]
+        keep_list = ", ".join(keep)
+        await db.executescript(
+            f"""
+            CREATE TABLE bundles_new (
+                id TEXT PRIMARY KEY,
+                cookbook_id TEXT REFERENCES cookbooks(id),
+                repo_spec TEXT,
+                prompt TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'open'
+                    CHECK(status IN ('open', 'closed')),
+                created_by TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                claimed_at TEXT,
+                cooked_at TEXT,
+                digested_at TEXT,
+                blocked_reason TEXT,
+                graph_code TEXT,
+                graph_mermaid TEXT,
+                resource_version INTEGER NOT NULL DEFAULT 1,
+                generation INTEGER NOT NULL DEFAULT 1,
+                owner_account_id TEXT,
+                default_agent_runtime_id TEXT,
+                sandbox_id TEXT,
+                autoplan_enabled INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO bundles_new ({keep_list})
+                SELECT {keep_list} FROM bundles;
+            DROP TABLE bundles;
+            ALTER TABLE bundles_new RENAME TO bundles;
+            CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
+            CREATE INDEX IF NOT EXISTS idx_bundles_runnable
+                ON bundles(status) WHERE graph_code IS NOT NULL;
+            """
+        )
+
+    # Rebuild events without recipe_id column (if present).
+    if await _table_exists(db, "events"):
+        cursor = await db.execute("PRAGMA table_info(events)")
+        event_cols = [r["name"] for r in await cursor.fetchall()]
+        if "recipe_id" in event_cols:
+            logger.info("Migration: dropping events.recipe_id column")
+            keep = [c for c in event_cols if c != "recipe_id"]
+            keep_list = ", ".join(keep)
+            await db.executescript(
+                f"""
+                CREATE TABLE events_new (
+                    id TEXT PRIMARY KEY,
+                    cookbook_id TEXT REFERENCES cookbooks(id),
+                    bundle_id TEXT REFERENCES bundles(id),
+                    task_id TEXT,
+                    type TEXT NOT NULL
+                        CHECK(type IN (
+                            'prompt', 'plan', 'task_claimed', 'task_working',
+                            'milestone', 'fact_added', 'code_pushed',
+                            'bundle_closed', 'bundle_reopened',
+                            'session_start', 'session_end', 'tool_use', 'tool_result',
+                            'agent_reply', 'thinking'
+                        )),
+                    actor_id TEXT NOT NULL,
+                    actor_type TEXT NOT NULL
+                        CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+                    body TEXT NOT NULL DEFAULT '',
+                    payload TEXT NOT NULL DEFAULT '{{}}',
+                    sequence INTEGER NOT NULL DEFAULT 0,
+                    facts TEXT NOT NULL DEFAULT '[]',
+                    code_refs TEXT NOT NULL DEFAULT '[]',
+                    visibility TEXT NOT NULL DEFAULT 'system',
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT
+                );
+                INSERT INTO events_new ({keep_list})
+                    SELECT {keep_list} FROM events;
+                DROP TABLE events;
+                ALTER TABLE events_new RENAME TO events;
+                CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
+                CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+                CREATE INDEX IF NOT EXISTS idx_events_task_sequence
+                    ON events(task_id, sequence);
+                """
+            )
+
+    # watch_log: just drop the recipe_id column (data is already
+    # backfilled to cookbook_id; no FK or CHECK to worry about).
+    if await _table_exists(db, "watch_log"):
+        cursor = await db.execute("PRAGMA table_info(watch_log)")
+        wl_cols = [r["name"] for r in await cursor.fetchall()]
+        if "recipe_id" in wl_cols:
+            logger.info("Migration: dropping watch_log.recipe_id column")
+            # SQLite 3.35+ supports DROP COLUMN; fallback to rebuild if old.
+            try:
+                await db.execute("ALTER TABLE watch_log DROP COLUMN recipe_id")
+            except aiosqlite.OperationalError:
+                keep = [c for c in wl_cols if c != "recipe_id"]
+                keep_list = ", ".join(keep)
+                await db.executescript(
+                    f"""
+                    CREATE TABLE watch_log_new (
+                        seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                        resource_type TEXT NOT NULL,
+                        resource_id TEXT NOT NULL,
+                        event_type TEXT NOT NULL CHECK(event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
+                        resource_version INTEGER NOT NULL,
+                        payload TEXT NOT NULL DEFAULT '{{}}',
+                        cookbook_id TEXT,
+                        created_at TEXT NOT NULL
+                    );
+                    INSERT INTO watch_log_new ({keep_list})
+                        SELECT {keep_list} FROM watch_log;
+                    DROP TABLE watch_log;
+                    ALTER TABLE watch_log_new RENAME TO watch_log;
+                    CREATE INDEX IF NOT EXISTS idx_watch_log_type_seq
+                        ON watch_log(resource_type, seq);
+                    CREATE INDEX IF NOT EXISTS idx_watch_log_cookbook_seq
+                        ON watch_log(cookbook_id, seq);
+                    """
+                )
+
+    # Drop the recipes and recipe_members tables themselves.
+    if await _table_exists(db, "recipe_members"):
+        logger.info("Migration: dropping recipe_members table")
+        await db.execute("DROP TABLE IF EXISTS recipe_members")
+    if await _table_exists(db, "recipes"):
+        logger.info("Migration: dropping recipes table")
+        await db.execute("DROP TABLE IF EXISTS recipes")
 
 
 async def _collapse_bundles_status_to_open_closed(

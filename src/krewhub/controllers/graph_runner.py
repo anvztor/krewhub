@@ -37,7 +37,6 @@ import httpx
 from krewhub.controllers.base import BaseController
 from krewhub.models import BundleStatus, TaskStatus, WatchEventType
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime import (
     OrchestratorDeps,
@@ -162,18 +161,16 @@ class GraphRunnerController(BaseController):
     async def _execute_bundle(self, bundle_id: str) -> None:
         bundle_repo = BundleRepo(self._db)
         task_repo = TaskRepo(self._db)
-        recipe_repo = RecipeRepo(self._db)
 
         bundle = await bundle_repo.get(bundle_id)
         if bundle is None or bundle.graph_code is None:
             logger.warning("graph runner: bundle %s missing or no graph_code", bundle_id)
             return
 
-        recipe = await recipe_repo.get(bundle.recipe_id) if bundle.recipe_id else None
-        if recipe is None or recipe.cookbook_id is None:
+        if bundle.cookbook_id is None:
             await self._emit_graph_milestone(
                 bundle_id,
-                f"bundle's recipe {bundle.recipe_id} has no cookbook",
+                "bundle has no cookbook_id",
                 success=False,
             )
             return
@@ -201,6 +198,20 @@ class GraphRunnerController(BaseController):
             return
 
         # 3. Construct runtime state + deps.
+        # Step (e): recipe is gone; repo coords now come from bundle.repo_spec.
+        recipe_meta: dict = {}
+        if bundle.repo_spec:
+            spec = bundle.repo_spec
+            owner_p = spec.get("owner", "")
+            repo_p = spec.get("repo", "")
+            ref = spec.get("ref") or spec.get("branch") or "main"
+            if owner_p and repo_p:
+                recipe_meta["repo_url"] = (
+                    f"git@{spec.get('provider', 'github')}.com:"
+                    f"{owner_p}/{repo_p}.git"
+                )
+            recipe_meta["branch"] = ref
+
         state = OrchestratorState(
             prompt=bundle.prompt,
             bundle_id=bundle.id,
@@ -210,13 +221,8 @@ class GraphRunnerController(BaseController):
             http=self._http,
             watch=self._watch,
             task_id_map=task_id_map,
-            cookbook_id=recipe.cookbook_id,
-            recipe_meta={
-                "recipe_id": recipe.id,
-                "recipe_name": recipe.name,
-                "repo_url": recipe.repo_url,
-                "branch": recipe.default_branch,
-            },
+            cookbook_id=bundle.cookbook_id,
+            recipe_meta=recipe_meta,
             poll_interval=self._poll_interval,
             task_timeout=self._task_timeout,
         )

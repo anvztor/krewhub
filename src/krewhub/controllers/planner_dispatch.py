@@ -49,7 +49,6 @@ import httpx
 from krewhub.controllers.base import BaseController
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.services.graph_runtime.agent_picker import pick_agent_for_kind
 from krewhub.watch.service import WatchService
 
@@ -114,25 +113,23 @@ class PlannerDispatchController(BaseController):
         empty_ids = {b.id for b in empty_bundles}
         self._dispatched &= empty_ids
 
-        recipe_repo = RecipeRepo(self._db)
         agent_repo = AgentRepo(self._db)
 
         for bundle in empty_bundles:
             if bundle.id in self._dispatched:
                 continue
 
-            recipe = await recipe_repo.get(bundle.recipe_id)
-            if recipe is None or recipe.cookbook_id is None:
+            if bundle.cookbook_id is None:
                 logger.warning(
-                    "PlannerDispatch: bundle %s has no resolvable cookbook (recipe=%s)",
-                    bundle.id, bundle.recipe_id,
+                    "PlannerDispatch: bundle %s has no cookbook_id",
+                    bundle.id,
                 )
                 continue
 
-            agents = await agent_repo.list_by_cookbook(recipe.cookbook_id)
+            agents = await agent_repo.list_by_cookbook(bundle.cookbook_id)
             logger.info(
                 "PlannerDispatch: bundle %s cookbook %s — %d agents: %s",
-                bundle.id, recipe.cookbook_id, len(agents),
+                bundle.id, bundle.cookbook_id, len(agents),
                 [(a.agent_id, a.status, bool(a.endpoint_url), a.capabilities) for a in agents],
             )
             planner = pick_agent_for_kind(
@@ -146,23 +143,14 @@ class PlannerDispatchController(BaseController):
             }:
                 logger.info(
                     "PlannerDispatch: bundle %s has no online planner agent in cookbook %s (picked=%s caps=%s)",
-                    bundle.id, recipe.cookbook_id,
+                    bundle.id, bundle.cookbook_id,
                     planner.agent_id if planner else None,
                     planner.capabilities if planner else None,
                 )
                 continue
 
-            # Reserve the slot BEFORE the POST. A2A `message/send` is a
-            # long synchronous call — we don't want a second reconcile
-            # cycle to re-dispatch the same bundle while the first POST
-            # is still in flight. `_dispatch` frees the slot below if
-            # the planner is unreachable (connect error); read timeouts
-            # are treated as "still running server-side" and keep the
-            # slot reserved until the bundle row flips out of the
-            # empty-bundle query (purged by `_dispatched &= empty_ids`
-            # on the next reconcile).
             self._dispatched.add(bundle.id)
-            ok = await self._dispatch(bundle, recipe, planner)
+            ok = await self._dispatch(bundle, planner)
             if ok:
                 logger.info(
                     "PlannerDispatch: dispatched bundle %s to planner %s",
@@ -209,18 +197,28 @@ class PlannerDispatchController(BaseController):
     async def _dispatch(
         self,
         bundle: "Bundle",
-        recipe: "Recipe",
         planner: "AgentPresence",
     ) -> bool:
-        """POST an A2A message/send to the planner via the A2A hub gateway.
-
-        Instead of hitting the agent's local endpoint_url (which is behind NAT),
-        route through the hub gateway at /a2a/{owner}/{agent_short_name}.
-        """
+        """POST an A2A message/send to the planner via the A2A hub gateway."""
         owner = planner.owner_username or planner.agent_id.split("@")[-1]
         agent_short = planner.agent_id.split("@")[0]
-        # Route through the local hub gateway (same krewhub process)
         hub_url = f"http://127.0.0.1:8420/a2a/{owner}/{agent_short}"
+
+        # Step (e): bundle.repo_spec drives the planner's git context
+        # (was recipe.repo_url + default_branch). repo_spec is optional
+        # — talk-only bundles have it as None.
+        repo_meta = {}
+        if bundle.repo_spec:
+            spec = bundle.repo_spec
+            owner_p = spec.get("owner", "")
+            repo_p = spec.get("repo", "")
+            ref = spec.get("ref") or spec.get("branch") or "main"
+            if owner_p and repo_p:
+                repo_meta["repo_url"] = (
+                    f"git@{spec.get('provider', 'github')}.com:"
+                    f"{owner_p}/{repo_p}.git"
+                )
+            repo_meta["branch"] = ref
 
         payload = {
             "jsonrpc": "2.0",
@@ -233,11 +231,8 @@ class PlannerDispatchController(BaseController):
                     "parts": [{"kind": "text", "text": bundle.prompt}],
                     "metadata": {
                         "bundle_id": bundle.id,
-                        "cookbook_id": recipe.cookbook_id or "",
-                        "recipe_id": recipe.id,
-                        "recipe_name": recipe.name,
-                        "repo_url": recipe.repo_url,
-                        "branch": recipe.default_branch,
+                        "cookbook_id": bundle.cookbook_id or "",
+                        **repo_meta,
                     },
                 },
                 "configuration": {"returnImmediately": True},

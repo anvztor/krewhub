@@ -53,45 +53,36 @@ class TaskRepo:
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
-    async def list_open_by_recipe(self, recipe_id: str) -> list[Task]:
+    async def list_open_by_cookbook(self, cookbook_id: str) -> list[Task]:
         """Return open tasks eligible for legacy direct dispatch.
 
         Tasks with ``graph_node_id`` set are *excluded* because they are
-        owned by ``GraphRunnerController`` — the graph runner dispatches
-        each step via ``dispatch_cycle`` in its own order, honoring the
-        graph's edges. If the legacy ``TaskDispatchController`` also
-        dispatched them, the root node of a freshly-attached graph could
-        be claimed twice and executed outside the graph's ordering
-        (see the "Stop the legacy task dispatcher from claiming graph
-        tasks" issue).
+        owned by ``GraphRunnerController``.
         """
         cursor = await self._db.execute(
             """SELECT t.* FROM tasks t
                JOIN bundles b ON t.bundle_id = b.id
-               WHERE b.recipe_id = ?
+               WHERE b.cookbook_id = ?
                  AND t.status = 'open'
                  AND t.graph_node_id IS NULL
                ORDER BY t.rowid""",
-            (recipe_id,),
+            (cookbook_id,),
         )
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
     async def list_active_by_agent(
-        self, recipe_id: str | None, agent_id: str,
+        self, cookbook_id: str | None, agent_id: str,
     ) -> list[Task]:
-        """Active tasks an agent already holds in a given recipe.
+        """Active tasks an agent already holds in a given cookbook.
 
         Used by claim_task to enforce single-active-task per agent.
- matches cookbook-scoped bundles (no recipe);
-        the lookup still works on bundle.recipe_id directly.
+        cookbook_id=None matches the agent's active tasks globally.
         """
-        if recipe_id is None:
+        if cookbook_id is None:
             cursor = await self._db.execute(
                 """SELECT t.* FROM tasks t
-                   JOIN bundles b ON t.bundle_id = b.id
-                   WHERE b.recipe_id IS NULL
-                     AND t.claimed_by_agent_id = ?
+                   WHERE t.claimed_by_agent_id = ?
                      AND t.status IN ('claimed', 'working')
                    ORDER BY t.rowid""",
                 (agent_id,),
@@ -100,34 +91,28 @@ class TaskRepo:
             cursor = await self._db.execute(
                 """SELECT t.* FROM tasks t
                    JOIN bundles b ON t.bundle_id = b.id
-                   WHERE b.recipe_id = ?
+                   WHERE b.cookbook_id = ?
                      AND t.claimed_by_agent_id = ?
                      AND t.status IN ('claimed', 'working')
                    ORDER BY t.rowid""",
-                (recipe_id, agent_id),
+                (cookbook_id, agent_id),
             )
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
     async def list_assigned_unclaimed_by_agent(
-        self, recipe_id: str, agent_id: str,
+        self, cookbook_id: str, agent_id: str,
     ) -> list[Task]:
-        """Find tasks assigned to an agent but never claimed.
-
-        These are tasks the scheduler assigned (assigned_agent_id set)
-        but the agent never picked up (status still 'open', no
-        claimed_by_agent_id). Used by PresenceController to release
-        orphaned assignments when an agent goes offline.
-        """
+        """Find tasks assigned to an agent but never claimed."""
         cursor = await self._db.execute(
             """SELECT t.* FROM tasks t
                JOIN bundles b ON t.bundle_id = b.id
-               WHERE b.recipe_id = ?
+               WHERE b.cookbook_id = ?
                  AND t.assigned_agent_id = ?
                  AND t.status = 'open'
                  AND t.claimed_by_agent_id IS NULL
                ORDER BY t.rowid""",
-            (recipe_id, agent_id),
+            (cookbook_id, agent_id),
         )
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]

@@ -7,29 +7,8 @@ CREATE TABLE IF NOT EXISTS cookbooks (
     repo_path TEXT
 );
 
-CREATE TABLE IF NOT EXISTS recipes (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    repo_url TEXT NOT NULL,
-    default_branch TEXT NOT NULL DEFAULT 'main',
-    created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
-    commit_sha TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_recipes_cookbook ON recipes(cookbook_id);
-
-CREATE TABLE IF NOT EXISTS recipe_members (
-    id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
-    actor_id TEXT NOT NULL,
-    actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent')),
-    role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'agent')),
-    joined_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_recipe_members_recipe ON recipe_members(recipe_id);
+-- Phase 12 step (e): recipes and recipe_members tables are gone.
+-- Cookbook → Bundle → Task is the new hierarchy.
 
 CREATE TABLE IF NOT EXISTS agent_presence (
     agent_id TEXT NOT NULL,
@@ -50,12 +29,7 @@ CREATE INDEX IF NOT EXISTS idx_agent_presence_cookbook ON agent_presence(cookboo
 
 CREATE TABLE IF NOT EXISTS bundles (
     id TEXT PRIMARY KEY,
-    -- DEPRECATED — recipe_id stays during dual-write; will drop with the
-    -- recipes table once callers migrate to cookbook_id. Now nullable
-    -- so cookbook-scoped bundles (no recipe) can be created.
-    recipe_id TEXT REFERENCES recipes(id),
-    -- New direct parent: bundles point at their cookbook without going
-    -- through a recipe. Nullable until backfill completes.
+    -- Direct parent. Cookbook-scoped only after step (e).
     cookbook_id TEXT REFERENCES cookbooks(id),
     -- Optional JIT repo hint: { provider, owner, repo, ref } resolved
     -- at task-run time against the cookbook's repo_grants. NULL means
@@ -93,7 +67,6 @@ CREATE TABLE IF NOT EXISTS bundles (
     autoplan_enabled INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_bundles_runnable
     ON bundles(status) WHERE graph_code IS NOT NULL;
@@ -190,10 +163,7 @@ CREATE INDEX IF NOT EXISTS idx_task_usage_task ON task_usage(task_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
-    -- DEPRECATED — kept during dual-write; will drop with recipes.
-    -- Nullable so cookbook-scoped events (no recipe) can be created.
-    recipe_id TEXT REFERENCES recipes(id),
-    -- New direct scope. Nullable until backfill completes.
+    -- Direct scope after step (e).
     cookbook_id TEXT REFERENCES cookbooks(id),
     bundle_id TEXT REFERENCES bundles(id),
     task_id TEXT,
@@ -217,7 +187,6 @@ CREATE TABLE IF NOT EXISTS events (
     expires_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
 CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
@@ -241,13 +210,11 @@ CREATE TABLE IF NOT EXISTS watch_log (
     event_type TEXT NOT NULL CHECK(event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
     resource_version INTEGER NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
-    recipe_id TEXT,
     cookbook_id TEXT,
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_watch_log_type_seq ON watch_log(resource_type, seq);
-CREATE INDEX IF NOT EXISTS idx_watch_log_recipe_seq ON watch_log(recipe_id, seq);
 CREATE INDEX IF NOT EXISTS idx_watch_log_cookbook_seq ON watch_log(cookbook_id, seq);
 
 CREATE TABLE IF NOT EXISTS identities (
