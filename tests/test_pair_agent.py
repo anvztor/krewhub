@@ -23,15 +23,10 @@ async def _seed_bundle(bundle_id: str, owner_account_id: str) -> None:
         ("cb-pair", "cb", "owner-x", now),
     )
     await db.execute(
-        "INSERT OR IGNORE INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r-pair", "r", "x", "main", "owner-x", now, "cb-pair"),
-    )
-    await db.execute(
         "INSERT INTO bundles "
-        "(id, recipe_id, prompt, status, created_by, created_at, "
+        "(id, cookbook_id, prompt, status, created_by, created_at, "
         "owner_account_id) VALUES (?,?,?,?,?,?,?)",
-        (bundle_id, "r-pair", "p", "open", "owner-x", now, owner_account_id),
+        (bundle_id, "cb-pair", "p", "open", "owner-x", now, owner_account_id),
     )
     await db.commit()
 

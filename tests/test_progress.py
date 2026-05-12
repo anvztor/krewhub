@@ -5,28 +5,17 @@ import pytest
 
 
 async def _setup_task(client) -> tuple[str, str]:
-    """Create a cookbook+recipe+bundle+task, return (task_id, bundle_id)."""
+    """Create cookbook+bundle+task, return (task_id, bundle_id)."""
     cb = await client.post("/api/v1/cookbooks", json={
-        "name": "progress-test", "description": "x", "owner_id": "u1",
+        "name": "progress-test", "owner_id": "acc_legacy_apikey",
     })
     cb_id = cb.json()["cookbook"]["id"]
 
-    rec = await client.post("/api/v1/recipes", json={
-        "cookbook_id": cb_id, "name": "r1",
-        "repo_url": "https://example.com/x.git",
-        "created_by": "u1",
-    })
-    rec_id = rec.json()["recipe"]["id"]
-
-    bundle = await client.post(f"/api/v1/recipes/{rec_id}/bundles", json={
-        "prompt": "Do the thing", "requested_by": "u1",
+    bundle = await client.post(f"/api/v1/cookbooks/{cb_id}/bundles", json={
+        "prompt": "Do the thing", "tasks": [{"title": "Run tests"}],
     })
     bundle_id = bundle.json()["bundle"]["id"]
-
-    task = await client.post(f"/api/v1/bundles/{bundle_id}/tasks", json={
-        "title": "Run tests",
-    })
-    task_id = task.json()["task"]["id"]
+    task_id = bundle.json()["tasks"][0]["id"]
     return task_id, bundle_id
 
 

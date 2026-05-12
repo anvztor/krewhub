@@ -6,22 +6,16 @@ import pytest
 
 async def _setup_task(client) -> tuple[str, str, str]:
     cb = await client.post("/api/v1/cookbooks", json={
-        "name": "vis-test", "description": "x", "owner_id": "u1",
+        "name": "vis-test", "owner_id": "acc_legacy_apikey",
     })
     cb_id = cb.json()["cookbook"]["id"]
-    rec = await client.post("/api/v1/recipes", json={
-        "cookbook_id": cb_id, "name": "r",
-        "repo_url": "https://example.com/x.git", "created_by": "u1",
-    })
-    rec_id = rec.json()["recipe"]["id"]
-    bun = await client.post(f"/api/v1/recipes/{rec_id}/bundles", json={
-        "prompt": "p", "requested_by": "u1",
+    bun = await client.post(f"/api/v1/cookbooks/{cb_id}/bundles", json={
+        "prompt": "p", "tasks": [{"title": "t"}],
     })
     bun_id = bun.json()["bundle"]["id"]
-    task = await client.post(f"/api/v1/bundles/{bun_id}/tasks", json={"title": "t"})
-    task_id = task.json()["task"]["id"]
+    task_id = bun.json()["tasks"][0]["id"]
     await client.post(f"/api/v1/tasks/{task_id}/claim", json={"agent_id": "a1"})
-    return rec_id, bun_id, task_id
+    return cb_id, bun_id, task_id
 
 
 class TestDefaultVisibility:

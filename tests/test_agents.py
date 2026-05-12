@@ -11,14 +11,6 @@ async def _create_cookbook(client, name="test-cookbook"):
     return resp.json()["cookbook"]["id"]
 
 
-async def _create_recipe_in_cookbook(client, cookbook_id, name="test/agents"):
-    resp = await client.post("/api/v1/recipes", json={
-        "name": name,
-        "repo_url": f"git@github.com:{name}.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    return resp.json()["recipe"]["id"]
 
 
 @pytest.mark.asyncio
@@ -54,9 +46,8 @@ async def test_heartbeat_busy_when_working(client):
 
 
 @pytest.mark.asyncio
-async def test_agents_visible_in_recipe(client):
+async def test_agents_visible_in_cookbook(client):
     cookbook_id = await _create_cookbook(client, "test-visible")
-    recipe_id = await _create_recipe_in_cookbook(client, cookbook_id, "test/visible")
 
     await client.post("/api/v1/agents/heartbeat", json={
         "agent_id": "agent_gamma",
@@ -65,7 +56,7 @@ async def test_agents_visible_in_recipe(client):
         "capabilities": ["claim"],
     })
 
-    resp = await client.get(f"/api/v1/recipes/{recipe_id}")
+    resp = await client.get(f"/api/v1/cookbooks/{cookbook_id}")
     agents = resp.json()["agents"]
     assert len(agents) == 1
     assert agents[0]["agent_id"] == "agent_gamma"

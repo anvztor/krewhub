@@ -13,22 +13,16 @@ from krewhub.db.connection import get_db
 async def _seed_bundle(bundle_id: str, owner_account_id: str | None) -> None:
     db = await get_db()
     now = datetime.now(timezone.utc).isoformat()
-    # Insert a cookbook + recipe row directly to satisfy FKs
     await db.execute(
         "INSERT OR IGNORE INTO cookbooks (id, name, owner_id, created_at) "
         "VALUES (?,?,?,?)",
         ("cb-test", "cb", "owner-x", now),
     )
     await db.execute(
-        "INSERT OR IGNORE INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r-test", "r", "x", "main", "owner-x", now, "cb-test"),
-    )
-    await db.execute(
         "INSERT INTO bundles "
-        "(id, recipe_id, prompt, status, created_by, created_at, "
+        "(id, cookbook_id, prompt, status, created_by, created_at, "
         "owner_account_id) VALUES (?,?,?,?,?,?,?)",
-        (bundle_id, "r-test", "p", "open", "owner-x", now, owner_account_id),
+        (bundle_id, "cb-test", "p", "open", "owner-x", now, owner_account_id),
     )
     await db.commit()
 
