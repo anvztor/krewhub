@@ -80,7 +80,6 @@ class PresenceController(BaseController):
                     if reopened is not None:
                         await self._watch.record_resource(
                             "task", task.id, WatchEventType.MODIFIED, reopened,
-                            recipe_id=recipe.id,
                         )
                         logger.info(
                             "PresenceController: released task %s from offline agent %s",
@@ -96,7 +95,6 @@ class PresenceController(BaseController):
                     if reopened is not None:
                         await self._watch.record_resource(
                             "task", task.id, WatchEventType.MODIFIED, reopened,
-                            recipe_id=recipe.id,
                         )
                         logger.info(
                             "PresenceController: released orphaned assignment %s "

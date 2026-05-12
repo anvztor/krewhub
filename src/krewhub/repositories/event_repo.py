@@ -27,11 +27,11 @@ class EventRepo:
     async def create(self, event: Event) -> Event:
         await self._db.execute(
             """INSERT INTO events
-               (id, recipe_id, cookbook_id, bundle_id, task_id, type, actor_id,
+               (id, cookbook_id, bundle_id, task_id, type, actor_id,
                 actor_type, body, payload, sequence, facts, code_refs,
                 visibility, created_at, expires_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (event.id, event.recipe_id, event.cookbook_id, event.bundle_id,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (event.id, event.cookbook_id, event.bundle_id,
              event.task_id, event.type, event.actor_id, event.actor_type,
              event.body,
              json.dumps(event.payload) if event.payload is not None else None,
@@ -42,22 +42,13 @@ class EventRepo:
              event.created_at.isoformat(),
              event.expires_at.isoformat() if event.expires_at else None),
         )
-        # TapeManager keys on recipe_id today; cookbook-scoped events
-        # (recipe_id=None) fall through to a cookbook-keyed tape so they
-        # don't lose audit linkage. Once recipes are gone, TapeManager
-        # will switch to keying on cookbook_id directly.
-        tape_key = event.recipe_id or (f"cookbook:{event.cookbook_id}" if event.cookbook_id else "orphan")
+        # Phase 12 step (e): TapeManager keys on cookbook directly.
+        tape_key = (
+            f"cookbook:{event.cookbook_id}" if event.cookbook_id else "orphan"
+        )
         await TapeManager(self._db, tape_key).record_event(event)
         await self._db.commit()
         return event
-
-    async def list_by_recipe(self, recipe_id: str) -> list[Event]:
-        cursor = await self._db.execute(
-            "SELECT * FROM events WHERE recipe_id = ? ORDER BY sequence, created_at",
-            (recipe_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_event(r) for r in rows]
 
     async def list_by_cookbook(self, cookbook_id: str) -> list[Event]:
         """Phase 12: direct cookbook lookup (no recipes join).
@@ -75,10 +66,13 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
-    async def list_by_recipe_type(self, recipe_id: str, event_type: str) -> list[Event]:
+    async def list_by_cookbook_type(
+        self, cookbook_id: str, event_type: str,
+    ) -> list[Event]:
         cursor = await self._db.execute(
-            "SELECT * FROM events WHERE recipe_id = ? AND type = ? ORDER BY sequence, created_at",
-            (recipe_id, event_type),
+            "SELECT * FROM events WHERE cookbook_id = ? AND type = ? "
+            "ORDER BY sequence, created_at",
+            (cookbook_id, event_type),
         )
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
@@ -127,7 +121,6 @@ def _row_to_event(row: aiosqlite.Row) -> Event:
     cookbook_id = row["cookbook_id"] if "cookbook_id" in row_keys else None
     return Event(
         id=row["id"],
-        recipe_id=row["recipe_id"],
         cookbook_id=cookbook_id,
         bundle_id=row["bundle_id"],
         task_id=row["task_id"],

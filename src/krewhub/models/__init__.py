@@ -10,11 +10,11 @@ from krewhub.models.domain import (
     Event,
     EventType,
     FactRef,
-    Recipe,
-    RecipeMember,
+    Recipe,         # DEPRECATED stub — step (e)
+    RecipeMember,   # DEPRECATED stub — step (e)
     RepoGrant,
     RepoProvider,
-    Role,
+    Role,           # DEPRECATED stub — step (e)
     ShareRole,
     Task,
     TaskStatus,
@@ -35,11 +35,8 @@ __all__ = [
     "Event",
     "EventType",
     "FactRef",
-    "Recipe",
-    "RecipeMember",
     "RepoGrant",
     "RepoProvider",
-    "Role",
     "Sandbox",
     "SandboxStatus",
     "ShareRole",

@@ -204,7 +204,6 @@ class GraphRunnerController(BaseController):
         state = OrchestratorState(
             prompt=bundle.prompt,
             bundle_id=bundle.id,
-            recipe_id=bundle.recipe_id,
         )
         deps = OrchestratorDeps(
             db=self._db,
@@ -304,7 +303,6 @@ class GraphRunnerController(BaseController):
         try:
             event = Event(
                 id=f"evt_{uuid.uuid4().hex[:8]}",
-                recipe_id=bundle.recipe_id,
                 cookbook_id=bundle.cookbook_id,
                 bundle_id=bundle_id,
                 type=EventType.MILESTONE,
@@ -323,7 +321,7 @@ class GraphRunnerController(BaseController):
         try:
             await self._watch.record_resource(
                 "bundle", bundle_id, WatchEventType.MODIFIED, bundle,
-                recipe_id=bundle.recipe_id, cookbook_id=bundle.cookbook_id,
+                cookbook_id=bundle.cookbook_id,
             )
         except Exception:
             logger.exception(

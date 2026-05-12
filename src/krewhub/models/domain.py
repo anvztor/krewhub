@@ -7,10 +7,34 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# DEPRECATED: kept as stubs so legacy import chains compile.
+# Recipes are gone in step (e); these classes never represent real data.
+class Recipe(BaseModel):
+    """DEPRECATED stub — recipes table no longer exists."""
+    id: str
+    name: str = ""
+    repo_url: str = ""
+    default_branch: str = "main"
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now())
+    cookbook_id: str | None = None
+
+
 class Role(StrEnum):
+    """DEPRECATED stub — recipe_members table no longer exists."""
     OWNER = "owner"
     MEMBER = "member"
     AGENT = "agent"
+
+
+class RecipeMember(BaseModel):
+    """DEPRECATED stub — recipe_members table no longer exists."""
+    id: str
+    recipe_id: str
+    actor_id: str
+    actor_type: str = "human"
+    role: Role = Role.MEMBER
+    joined_at: datetime = Field(default_factory=lambda: datetime.now())
 
 
 class BundleStatus(StrEnum):
@@ -126,25 +150,6 @@ class RepoGrant(BaseModel, frozen=True):
     revoked_at: datetime | None = None
 
 
-class Recipe(BaseModel, frozen=True):
-    id: str
-    name: str
-    repo_url: str
-    default_branch: str
-    created_by: str
-    created_at: datetime
-    cookbook_id: str | None = None
-
-
-class RecipeMember(BaseModel, frozen=True):
-    id: str
-    recipe_id: str
-    actor_id: str
-    actor_type: Literal["human", "agent"]
-    role: Role
-    joined_at: datetime
-
-
 class AgentPresence(BaseModel, frozen=True):
     agent_id: str
     cookbook_id: str
@@ -164,13 +169,8 @@ class AgentPresence(BaseModel, frozen=True):
 
 class Bundle(BaseModel, frozen=True):
     id: str
-    # DEPRECATED — recipe_id stays for the dual-write window. Once
-    # callers migrate to cookbook_id this field will be dropped along
-    # with the recipes table. Nullable so cookbook-scoped bundles
-    # (created via POST /cookbooks/{id}/bundles) can omit it.
-    recipe_id: str | None = None
-    # Phase 12: direct cookbook parent. Nullable during the dual-write
-    # window; will become required after backfill completes.
+    # Phase 12 step (e): bundles are cookbook-scoped only. recipes
+    # gone, recipe_id column dropped, repo binding moved to repo_spec.
     cookbook_id: str | None = None
     # Phase 12: optional JIT repo hint (JSON serialized in the DB).
     # Shape: {"provider": "github", "owner": "...", "repo": "...", "ref": "main"}
@@ -255,10 +255,7 @@ class CodeRef(BaseModel, frozen=True):
 
 class Event(BaseModel, frozen=True):
     id: str
-    # DEPRECATED — kept for dual-write window. Nullable so cookbook-
-    # scoped events (no recipe) can be created.
-    recipe_id: str | None = None
-    # Phase 12: direct cookbook scope. Nullable during dual-write.
+    # Phase 12 step (e): cookbook-only scope.
     cookbook_id: str | None = None
     bundle_id: str | None = None
     task_id: str | None = None
@@ -285,7 +282,6 @@ class WatchEntry(BaseModel, frozen=True):
     event_type: WatchEventType
     resource_version: int
     payload: dict
-    recipe_id: str | None = None
-    # Phase 12: direct cookbook scope for SSE channel routing.
+    # Phase 12: cookbook scope for SSE channel routing.
     cookbook_id: str | None = None
     created_at: datetime

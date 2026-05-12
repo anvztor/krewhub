@@ -179,7 +179,6 @@ class TaskDispatchController(BaseController):
             if updated is not None:
                 await self._watch.record_resource(
                     "task", task.id, WatchEventType.MODIFIED, updated,
-                    recipe_id=recipe_id,
                 )
                 logger.info(
                     "TaskDispatch: dispatched %s to gateway %s",

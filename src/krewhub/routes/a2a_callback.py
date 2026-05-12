@@ -120,7 +120,7 @@ async def task_callback(
 
     event = Event(
         id=f"evt_{uuid.uuid4().hex[:8]}",
-        recipe_id=task.bundle_id,  # Will be resolved below
+  # Will be resolved below
         bundle_id=task.bundle_id,
         task_id=req.task_id,
         type=EventType.MILESTONE,
@@ -144,7 +144,6 @@ async def task_callback(
         recipe_id = bundle.recipe_id if bundle else ""
         await watch.record_resource(
             "task", req.task_id, WatchEventType.MODIFIED, updated,
-            recipe_id=recipe_id,
         )
 
     # Step (d.1): bundle status is OPEN/CLOSED only; no recompute.

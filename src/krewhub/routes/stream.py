@@ -63,7 +63,6 @@ async def watch_stream(
     channel_prefixes = [c.strip() for c in (channel or "").split(",") if c.strip()]
     options = WatchOptions(
         resource_type=resource_type,
-        recipe_id=recipe_id,
         since=since,
         channel_prefixes=channel_prefixes,
     )

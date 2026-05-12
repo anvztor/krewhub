@@ -88,7 +88,6 @@ async def register_agent(
     for recipe in recipes:
         await watch.record_resource(
             "agent", req.agent_id, WatchEventType.ADDED, updated,
-            recipe_id=recipe.id,
         )
     if not recipes:
         await watch.record_resource(
@@ -200,7 +199,6 @@ async def heartbeat(
     for recipe in recipes:
         await watch.record_resource(
             "agent", req.agent_id, WatchEventType.MODIFIED, updated,
-            recipe_id=recipe.id,
         )
     if not recipes:
         await watch.record_resource(

@@ -14,7 +14,6 @@ from krewhub.config import get_settings
 from krewhub.db.connection import get_db
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.services.deps import get_e2b
@@ -25,7 +24,6 @@ from krewhub.routes.schemas import (
     AddTaskRequest,
     AttachGraphRequest,
     BundleLifecycleRequest,
-    CreateBundleRequest,
     CreateCookbookBundleRequest,
 )
 from krewhub.models import ShareRole
@@ -33,110 +31,7 @@ from krewhub.models import ShareRole
 router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
-@router.post("/recipes/{recipe_id}/bundles")
-async def create_bundle(
-    recipe_id: str,
-    req: CreateBundleRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-    caller: CallerContext = Depends(resolve_caller_or_cookie),
-    e2b: E2bClient = Depends(get_e2b),
-):
-    recipe = await RecipeRepo(db).get(recipe_id)
-    if recipe is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
-
-    # Stamp account_id everywhere so require_bundle_owner's primary check
-    # (owner_account_id == caller.account_id) succeeds. Previously we used
-    # caller.username for created_by, which left owner_account_id NULL and
-    # made require_bundle_owner fall through to the username-vs-account_id
-    # string compare — that always failed, returning "Not your bundle"
-    # right after the bundle was created.
-    created_by = caller.account_id
-
-    svc = BundleService(db, get_watch_service())
-    bundle, tasks = await svc.create_bundle(
-        recipe_id=recipe_id,
-        prompt=req.prompt,
-        created_by=created_by,
-        tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
-        autoplan=req.autoplan,
-    )
-    # Set the canonical owner column directly. The BundleService doesn't
-    # accept owner_account_id yet; doing it here as a follow-up UPDATE keeps
-    # the change small and contained to the route. Bundle is a frozen
-    # Pydantic model so we can't assign — return a copy instead.
-    await db.execute(
-        "UPDATE bundles SET owner_account_id = ? WHERE id = ?",
-        (caller.account_id, bundle.id),
-    )
-
-    # Auto-bind the caller's most recently-seen online runtime as the
-    # bundle's default agent. Without this, POST /bundles/{id}/tasks
-    # immediately returns no_paired_agent, blocking the cookrew-beta
-    # ship flow even when the user has already paired a daemon.
-    runtime_cursor = await db.execute(
-        "SELECT id FROM agent_runtimes "
-        "WHERE account_id = ? AND status = 'online' "
-        "ORDER BY last_seen_at DESC LIMIT 1",
-        (caller.account_id,),
-    )
-    runtime_row = await runtime_cursor.fetchone()
-    default_runtime_id = runtime_row["id"] if runtime_row else None
-    if default_runtime_id:
-        await db.execute(
-            "UPDATE bundles SET default_agent_runtime_id = ? WHERE id = ?",
-            (default_runtime_id, bundle.id),
-        )
-
-    await db.commit()
-
-    # Bundle-level sandbox provisioning. cookrew-beta wants this so the
-    # agent has one persistent working tree (cloned repo, generated
-    # files, edits) for every task in the bundle. Fail-soft: a bad e2b
-    # config shouldn't block bundle creation, the bundle just won't
-    # have a sandbox and the legacy per-task path will provision one
-    # on first ship.
-    settings = get_settings()
-    bundle_sandbox_id: str | None = None
-    try:
-        sandbox = await SandboxService(db, e2b).create_for_bundle(
-            bundle_id=bundle.id,
-            owner_account_id=caller.account_id,
-            template=settings.e2b_default_template,
-        )
-        bundle_sandbox_id = sandbox.id
-        await BundleRepo(db).set_sandbox(bundle.id, sandbox.id)
-    except Exception as exc:
-        logger.warning(
-            "bundle %s: sandbox provision failed: %s — bundle returned "
-            "without a sandbox; tasks will fall back to per-task path",
-            bundle.id, exc,
-        )
-
-    bundle = bundle.model_copy(update={
-        "owner_account_id": caller.account_id,
-        "default_agent_runtime_id": default_runtime_id,
-        "sandbox_id": bundle_sandbox_id,
-    })
-    return {
-        "bundle": bundle.model_dump(mode="json"),
-        "tasks": [t.model_dump(mode="json") for t in tasks],
-    }
-
-
-@router.get("/recipes/{recipe_id}/bundles")
-async def list_bundles(
-    recipe_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    repo = BundleRepo(db)
-    bundles = await repo.list_by_recipe(recipe_id)
-    return {"bundles": [b.model_dump(mode="json") for b in bundles]}
-
-
-# ----------------------------------------------------------------------
-# Phase 12: cookbook-scoped bundles (the new entry point)
-# ----------------------------------------------------------------------
+# Phase 12 step (e): cookbook-scoped bundles are the only entry point.
 
 
 @router.post("/cookbooks/{cookbook_id}/bundles")
@@ -150,16 +45,13 @@ async def create_bundle_under_cookbook(
     """Create a bundle directly under a cookbook (no recipe hop).
 
     RBAC: caller must be at least MEMBER on the cookbook (sharing
-    matrix in cookbook_sharing.py). Sets bundle.cookbook_id; leaves
-    bundle.recipe_id NULL — cookbook-scoped bundles do not bind to a
-    recipe at all. repo_spec optionally drives JIT clone gated by
-    repo_grants on the cookbook.
+    matrix in cookbook_sharing.py). Sets bundle.cookbook_id; repo_spec
+    optionally drives JIT clone gated by repo_grants on the cookbook.
     """
     await _require_role(cookbook_id, caller, db, ShareRole.MEMBER)
 
     svc = BundleService(db, get_watch_service())
     bundle, tasks = await svc.create_bundle(
-        recipe_id=None,  # cookbook-scoped; no recipe binding
         cookbook_id=cookbook_id,
         repo_spec=req.repo_spec,
         prompt=req.prompt,

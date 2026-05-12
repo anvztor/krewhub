@@ -170,7 +170,6 @@ class GraphAttachmentService:
         # 7. Record a PLAN event so cookrew sees the planning step land.
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=bundle.recipe_id,
             bundle_id=bundle_id,
             type=EventType.PLAN,
             actor_id=created_by,
@@ -188,12 +187,10 @@ class GraphAttachmentService:
         # 8. Watch events for cookrew SSE.
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.MODIFIED, updated_bundle,
-            recipe_id=bundle.recipe_id,
         )
         for task in created_tasks:
             await self._watch.record_resource(
                 "task", task.id, WatchEventType.ADDED, task,
-                recipe_id=bundle.recipe_id,
             )
 
         logger.info(

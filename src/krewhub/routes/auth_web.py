@@ -434,7 +434,6 @@ async def init_workspace(
         recipe = await recipe_repo.create(recipe)
         await recipe_repo.add_member(RecipeMember(
             id=f"mem_{uuid.uuid4().hex[:8]}",
-            recipe_id=recipe.id,
             actor_id=caller.account_id,
             actor_type="human",
             role="owner",

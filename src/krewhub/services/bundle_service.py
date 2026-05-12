@@ -19,7 +19,6 @@ from krewhub.models import (
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime import OrchestratorDeps, OrchestratorState, dispatch_cycle
 from krewhub.services.graph_sandbox import (
@@ -64,43 +63,25 @@ class BundleService:
 
     async def create_bundle(
         self,
-        recipe_id: str | None,
+        cookbook_id: str,
         prompt: str,
         created_by: str,
         tasks: list[dict],
         *,
         autoplan: bool = False,
-        cookbook_id: str | None = None,
         repo_spec: dict | None = None,
     ) -> tuple[Bundle, list[Task]]:
-        """Create a bundle.
+        """Create a cookbook-scoped bundle.
 
-        Phase 12 dual-write: cookbook_id is now stamped alongside
-        recipe_id. Either parameter can be None:
-          - recipe_id None → cookbook-scoped bundle (new path)
-          - cookbook_id None → resolved from recipe.cookbook_id
-        At least one must be set; otherwise the bundle has no parent.
+        Phase 12 step (e): recipes are gone. Every bundle is scoped to
+        a cookbook directly.
         """
-        if recipe_id is None and cookbook_id is None:
-            raise ValueError(
-                "create_bundle requires at least one of recipe_id or cookbook_id",
-            )
-
         now = datetime.now(timezone.utc)
         bundle_id = f"bun_{uuid.uuid4().hex[:8]}"
-
-        # Resolve cookbook_id from the recipe when the caller only
-        # supplied recipe_id. Keeps every legacy POST /recipes/{id}/bundles
-        # writing the new column without changing call signatures.
         resolved_cookbook_id = cookbook_id
-        if resolved_cookbook_id is None and recipe_id is not None:
-            recipe = await RecipeRepo(self._bundles._db).get(recipe_id)  # type: ignore[attr-defined]
-            if recipe is not None:
-                resolved_cookbook_id = recipe.cookbook_id
 
         bundle = Bundle(
             id=bundle_id,
-            recipe_id=recipe_id,
             cookbook_id=resolved_cookbook_id,
             repo_spec=repo_spec,
             prompt=prompt,
@@ -131,7 +112,6 @@ class BundleService:
 
         prompt_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=recipe_id,
             cookbook_id=resolved_cookbook_id,
             bundle_id=bundle_id,
             type=EventType.PROMPT,
@@ -153,7 +133,6 @@ class BundleService:
             plan_body = "Created empty bundle; add tasks when ready."
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=recipe_id,
             cookbook_id=resolved_cookbook_id,
             bundle_id=bundle_id,
             type=EventType.PLAN,
@@ -166,12 +145,10 @@ class BundleService:
 
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.ADDED, bundle,
-            recipe_id=recipe_id,
         )
         for task in created_tasks:
             await self._watch.record_resource(
                 "task", task.id, WatchEventType.ADDED, task,
-                recipe_id=recipe_id,
             )
 
         return bundle, created_tasks
@@ -287,7 +264,6 @@ class BundleService:
         # 7. Record a PLAN event so cookrew sees the planning step land.
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=bundle.recipe_id,
             bundle_id=bundle_id,
             type=EventType.PLAN,
             actor_id=created_by,
@@ -305,12 +281,10 @@ class BundleService:
         # 8. Watch events for cookrew SSE.
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.MODIFIED, updated_bundle,
-            recipe_id=bundle.recipe_id,
         )
         for task in created_tasks:
             await self._watch.record_resource(
                 "task", task.id, WatchEventType.ADDED, task,
-                recipe_id=bundle.recipe_id,
             )
 
         logger.info(
@@ -354,7 +328,7 @@ class BundleService:
         )
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-            recipe_id=updated.recipe_id, cookbook_id=updated.cookbook_id,
+            cookbook_id=updated.cookbook_id,
         )
         return updated
 
@@ -384,7 +358,7 @@ class BundleService:
         )
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-            recipe_id=updated.recipe_id, cookbook_id=updated.cookbook_id,
+            cookbook_id=updated.cookbook_id,
         )
         return updated
 
@@ -401,7 +375,6 @@ class BundleService:
         )
         event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=bundle.recipe_id,
             cookbook_id=bundle.cookbook_id,
             bundle_id=bundle.id,
             type=event_type,

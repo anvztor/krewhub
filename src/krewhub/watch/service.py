@@ -36,25 +36,15 @@ class WatchService:
         event_type: WatchEventType,
         resource_version: int,
         payload: dict[str, Any],
-        recipe_id: str | None = None,
         cookbook_id: str | None = None,
     ) -> WatchEvent:
-        """Record a resource mutation and notify subscribers.
-
-        This should be called by repository methods after every
-        create/update/delete operation.
-
-        Phase 12: callers should pass cookbook_id so SSE channels
-        route on the new key. recipe_id stays for the dual-write
-        window.
-        """
+        """Record a resource mutation and notify subscribers."""
         entry = await self._store.append(
             resource_type=resource_type,
             resource_id=resource_id,
             event_type=event_type,
             resource_version=resource_version,
             payload=payload,
-            recipe_id=recipe_id,
             cookbook_id=cookbook_id,
         )
         event = entry_to_watch_event(entry)
@@ -69,7 +59,6 @@ class WatchService:
         resource_id: str,
         event_type: WatchEventType,
         resource: Any,
-        recipe_id: str | None = None,
         cookbook_id: str | None = None,
     ) -> WatchEvent:
         """Record a mutation using a Pydantic model as the payload."""
@@ -81,7 +70,6 @@ class WatchService:
             event_type=event_type,
             resource_version=rv,
             payload=payload,
-            recipe_id=recipe_id,
             cookbook_id=cookbook_id,
         )
 
@@ -104,7 +92,6 @@ class WatchService:
             event_type=event_type,
             resource_version=data.get("resource_version", 0),
             payload={"legacy_event": event_name, **data},
-            recipe_id=recipe_id,
         )
 
     # -- Subscribing --
@@ -126,7 +113,6 @@ class WatchService:
         entries = await self._store.list_since(
             since=opts.since,
             resource_type=opts.resource_type,
-            recipe_id=opts.recipe_id,
         )
         return [entry_to_watch_event(e) for e in entries]
 

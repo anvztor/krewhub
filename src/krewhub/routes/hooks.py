@@ -111,7 +111,6 @@ async def ingest_hook(
     now = datetime.now(timezone.utc)
     event = Event(
         id=f"evt_{uuid.uuid4().hex[:8]}",
-        recipe_id=recipe_id,
         bundle_id=bundle_id,
         task_id=req.task_id,
         type=event_type,
@@ -133,7 +132,6 @@ async def ingest_hook(
         event_type=WatchEventType.ADDED,
         resource_version=1,
         payload=payload_for_sse,
-        recipe_id=recipe_id,
     )
 
     return {"event": event.model_dump(mode="json")}

@@ -117,7 +117,6 @@ class _TapeWriter:
                 "payload": ev.payload,
                 "ts": ev.ts.isoformat(),
             },
-            recipe_id=self._recipe_id,
         )
         return ev
 
@@ -336,7 +335,6 @@ class InvocationService:
     ) -> None:
         tape = _TapeWriter(
             self._events, self._watch, invocation.tape_id,
-            recipe_id=recipe_id,
             invocation_id=invocation.id,
         )
 

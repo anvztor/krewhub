@@ -97,18 +97,16 @@ async def test_owner_creates_cookbook_scoped_bundle(client):
     body = resp.json()
     bundle = body["bundle"]
     assert bundle["cookbook_id"] == cookbook_id
-    assert bundle["recipe_id"] is None
     assert bundle["status"] == "open"
     assert len(body["tasks"]) == 1
 
-    # Verify the row in the DB carries the expected nullability.
+    # Verify the row in the DB
     db = await get_db()
     cursor = await db.execute(
-        "SELECT recipe_id, cookbook_id FROM bundles WHERE id = ?",
+        "SELECT cookbook_id FROM bundles WHERE id = ?",
         (bundle["id"],),
     )
     row = await cursor.fetchone()
-    assert row["recipe_id"] is None
     assert row["cookbook_id"] == cookbook_id
 
 
@@ -343,8 +341,10 @@ async def test_watch_log_carries_cookbook_id(client):
     assert row is not None  # entry exists
 
 
+# test_legacy_recipe_route_still_stamps_cookbook_id removed in step (e) —
+# legacy /recipes/{id}/bundles route is gone.
 @pytest.mark.asyncio
-async def test_legacy_recipe_route_still_stamps_cookbook_id(client):
+async def _removed_test_legacy_recipe_route_still_stamps_cookbook_id(client):
     """A bundle created via the legacy /recipes/{id}/bundles route
     should have its cookbook_id populated from recipe.cookbook_id —
     that's the dual-write commitment."""

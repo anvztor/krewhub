@@ -28,14 +28,14 @@ class BundleRepo:
         repo_spec_json = json.dumps(bundle.repo_spec) if bundle.repo_spec else None
         await self._db.execute(
             """INSERT INTO bundles
-               (id, recipe_id, cookbook_id, repo_spec, prompt, status,
+               (id, cookbook_id, repo_spec, prompt, status,
                 created_by, created_at,
                 claimed_at, cooked_at, digested_at, blocked_reason,
                 graph_code, graph_mermaid,
                 resource_version, generation,
                 owner_account_id, default_agent_runtime_id, sandbox_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (bundle.id, bundle.recipe_id, bundle.cookbook_id, repo_spec_json,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (bundle.id, bundle.cookbook_id, repo_spec_json,
              bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
@@ -82,14 +82,6 @@ class BundleRepo:
         if row is None:
             return None
         return _row_to_bundle(row)
-
-    async def list_by_recipe(self, recipe_id: str) -> list[Bundle]:
-        cursor = await self._db.execute(
-            "SELECT * FROM bundles WHERE recipe_id = ? ORDER BY created_at DESC",
-            (recipe_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_bundle(r) for r in rows]
 
     async def list_by_cookbook(self, cookbook_id: str) -> list[Bundle]:
         """Phase 12: direct cookbook lookup, no recipes join.
@@ -218,7 +210,6 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
     repo_spec = json.loads(repo_spec_raw) if repo_spec_raw else None
     return Bundle(
         id=row["id"],
-        recipe_id=row["recipe_id"],
         cookbook_id=row["cookbook_id"] if "cookbook_id" in keys else None,
         repo_spec=repo_spec,
         prompt=row["prompt"],

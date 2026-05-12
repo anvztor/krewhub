@@ -101,7 +101,6 @@ class TaskService:
 
         claim_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=recipe_id,
             cookbook_id=cookbook_id,
             bundle_id=task.bundle_id,
             task_id=task_id,
@@ -116,7 +115,7 @@ class TaskService:
         if updated is not None:
             await self._watch.record_resource(
                 "task", task_id, WatchEventType.MODIFIED, updated,
-                recipe_id=recipe_id, cookbook_id=cookbook_id,
+                cookbook_id=cookbook_id,
             )
 
         return updated
@@ -150,11 +149,10 @@ class TaskService:
             if updated is not None:
                 await self._watch.record_resource(
                     "task", task_id, WatchEventType.MODIFIED, updated,
-                    recipe_id=recipe_id, cookbook_id=cookbook_id,
+                    cookbook_id=cookbook_id,
                 )
                 working_event = Event(
                     id=f"evt_{uuid.uuid4().hex[:8]}",
-                    recipe_id=recipe_id,
                     cookbook_id=cookbook_id,
                     bundle_id=task.bundle_id,
                     task_id=task_id,
@@ -168,7 +166,7 @@ class TaskService:
                 await self._events.create(working_event)
                 await self._watch.record_resource(
                     "event", working_event.id, WatchEventType.ADDED, working_event,
-                    recipe_id=recipe_id, cookbook_id=cookbook_id,
+                    cookbook_id=cookbook_id,
                 )
 
         sequence = await self._events.next_sequence(task_id)
@@ -176,7 +174,6 @@ class TaskService:
         resolved_visibility = visibility or classify_visibility(str(event_type))
         event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=recipe_id,
             cookbook_id=cookbook_id,
             bundle_id=task.bundle_id,
             task_id=task_id,
@@ -194,7 +191,7 @@ class TaskService:
         await self._events.create(event)
         await self._watch.record_resource(
             "event", event.id, WatchEventType.ADDED, event,
-            recipe_id=recipe_id, cookbook_id=cookbook_id,
+            cookbook_id=cookbook_id,
         )
 
         return event
@@ -228,12 +225,11 @@ class TaskService:
             if updated is not None:
                 await self._watch.record_resource(
                     "task", task_id, WatchEventType.MODIFIED, updated,
-                    recipe_id=recipe_id, cookbook_id=cookbook_id,
+                    cookbook_id=cookbook_id,
                 )
                 first = events[0]
                 working_event = Event(
                     id=f"evt_{uuid.uuid4().hex[:8]}",
-                    recipe_id=recipe_id,
                     cookbook_id=cookbook_id,
                     bundle_id=task.bundle_id,
                     task_id=task_id,
@@ -246,7 +242,7 @@ class TaskService:
                 await self._events.create(working_event)
                 await self._watch.record_resource(
                     "event", working_event.id, WatchEventType.ADDED, working_event,
-                    recipe_id=recipe_id, cookbook_id=cookbook_id,
+                    cookbook_id=cookbook_id,
                 )
 
         from krewhub.services.event_visibility import classify_visibility
@@ -261,7 +257,6 @@ class TaskService:
             vis = spec.get("visibility") or classify_visibility(evt_type)
             event = Event(
                 id=f"evt_{uuid.uuid4().hex[:8]}",
-                recipe_id=recipe_id,
                 cookbook_id=cookbook_id,
                 bundle_id=task.bundle_id,
                 task_id=task_id,
@@ -279,7 +274,7 @@ class TaskService:
             await self._events.create(event)
             await self._watch.record_resource(
                 "event", event.id, WatchEventType.ADDED, event,
-                recipe_id=recipe_id, cookbook_id=cookbook_id,
+                cookbook_id=cookbook_id,
             )
             created.append(event)
 
@@ -361,7 +356,6 @@ class TaskService:
         if bundle is not None:
             await self._watch.record_resource(
                 "task", created.id, WatchEventType.ADDED, created,
-                recipe_id=bundle.recipe_id,
                 cookbook_id=bundle.cookbook_id,
             )
 
@@ -398,7 +392,6 @@ class TaskService:
                 "task", task_id, WatchEventType.DELETED,
                 resource_version=task.resource_version,
                 payload=task.model_dump(mode="json"),
-                recipe_id=recipe_id,
                 cookbook_id=cookbook_id,
             )
         return deleted
@@ -409,6 +402,5 @@ class TaskService:
             return
         await self._watch.record_resource(
             "task", task.id, WatchEventType.MODIFIED, task,
-            recipe_id=bundle.recipe_id,
             cookbook_id=bundle.cookbook_id,
         )

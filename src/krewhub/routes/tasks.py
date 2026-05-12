@@ -333,7 +333,6 @@ async def post_task_event(
     try:
         event = await svc.post_event(
             task_id=task_id,
-            recipe_id=bundle.recipe_id,
             event_type=EventType(req.type),
             actor_id=req.actor_id,
             actor_type=ActorType(req.actor_type),
@@ -385,7 +384,6 @@ async def post_task_events_batch(
     try:
         created = await svc.post_events_batch(
             task_id=task_id,
-            recipe_id=bundle.recipe_id,
             events=redacted_events,
             session_token=req.session_token,
         )
@@ -634,7 +632,6 @@ async def post_task_hitl_answer(
     if recipe_id:
         await svc.post_event(
             task_id,
-            recipe_id=recipe_id,
             event_type=EventType.PROMPT,
             actor_id=caller.account_id,
             actor_type=ActorType.HUMAN,
@@ -654,7 +651,7 @@ async def post_task_hitl_answer(
     )
     if updated is not None and recipe_id:
         await get_watch_service().record_resource(
-            "task", task_id, WatchEventType.MODIFIED, updated, recipe_id=recipe_id,
+            "task", task_id, WatchEventType.MODIFIED, updated,
         )
 
     return {"task": updated.model_dump(mode="json") if updated else None}
@@ -714,7 +711,6 @@ async def post_task_progress(
             event_type=WatchEventType.MODIFIED,
             resource_version=updated.resource_version,
             payload=task_dump,
-            recipe_id=None,
         )
 
     return {"task_id": task_id, "progress": progress}

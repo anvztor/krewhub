@@ -5,7 +5,6 @@ import logging
 from krewhub.controllers.base import BaseController
 from krewhub.models import AgentStatus, TaskStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 
 logger = logging.getLogger(__name__)
@@ -14,18 +13,15 @@ logger = logging.getLogger(__name__)
 class TaskSchedulerController(BaseController):
     """Assigns open tasks to available agents.
 
-    Agents register at cookbook level. The scheduler finds cookbooks with
-    online agents, then schedules tasks per recipe within those cookbooks.
-
-    Level-triggered: safe to restart. Examines current state each cycle.
+    Agents register at cookbook level. Step (e): scheduler iterates
+    cookbooks directly (recipes are gone) and assigns tasks across
+    bundles in each cookbook.
     """
 
     async def reconcile(self) -> None:
         agent_repo = AgentRepo(self._db)
         task_repo = TaskRepo(self._db)
-        recipe_repo = RecipeRepo(self._db)
 
-        # Get all cookbooks with online agents
         cursor = await self._db.execute(
             """SELECT DISTINCT cookbook_id FROM agent_presence
                WHERE status IN ('online', 'busy')"""
@@ -34,41 +30,34 @@ class TaskSchedulerController(BaseController):
 
         for cookbook_row in cookbook_rows:
             cookbook_id = cookbook_row["cookbook_id"]
-            # Get all recipes in this cookbook
-            recipes = await recipe_repo.list_by_cookbook(cookbook_id)
-            # Get all agents available for this cookbook
             agents = await agent_repo.list_by_cookbook(cookbook_id)
             online_agents = [
                 a for a in agents if a.status in (AgentStatus.ONLINE, AgentStatus.BUSY)
             ]
             if not online_agents:
                 continue
+            await self._schedule_for_cookbook(
+                cookbook_id, online_agents, task_repo,
+            )
 
-            for recipe in recipes:
-                await self._schedule_for_recipe(
-                    recipe.id, online_agents, task_repo,
-                )
-
-    async def _schedule_for_recipe(
+    async def _schedule_for_cookbook(
         self,
-        recipe_id: str,
+        cookbook_id: str,
         online_agents: list,
         task_repo: TaskRepo,
     ) -> None:
-        # Get open, unassigned tasks
-        open_tasks = await task_repo.list_open_by_recipe(recipe_id)
+        open_tasks = await task_repo.list_open_by_cookbook(cookbook_id)
         unassigned = [t for t in open_tasks if t.assigned_agent_id is None]
         if not unassigned:
             return
 
-        # Build agent capacity map: how many more tasks each can take
-        # Count both claimed tasks AND assigned-but-unclaimed tasks
-        # to avoid over-assigning when an agent is slow to claim
         capacity: dict[str, int] = {}
         for agent in online_agents:
-            active = await task_repo.list_active_by_agent(recipe_id, agent.agent_id)
+            active = await task_repo.list_active_by_agent(
+                None, agent.agent_id, cookbook_id=cookbook_id,
+            )
             pending = await task_repo.list_assigned_unclaimed_by_agent(
-                recipe_id, agent.agent_id,
+                cookbook_id, agent.agent_id,
             )
             remaining = agent.max_concurrent_tasks - len(active) - len(pending)
             if remaining > 0:
@@ -99,7 +88,6 @@ class TaskSchedulerController(BaseController):
             if updated is not None:
                 await self._watch.record_resource(
                     "task", task.id, WatchEventType.MODIFIED, updated,
-                    recipe_id=recipe_id,
                 )
                 logger.info(
                     "TaskScheduler: assigned %s to agent %s",

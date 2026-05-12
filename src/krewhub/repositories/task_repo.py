@@ -83,7 +83,7 @@ class TaskRepo:
         """Active tasks an agent already holds in a given recipe.
 
         Used by claim_task to enforce single-active-task per agent.
-        recipe_id=None matches cookbook-scoped bundles (no recipe);
+ matches cookbook-scoped bundles (no recipe);
         the lookup still works on bundle.recipe_id directly.
         """
         if recipe_id is None:
