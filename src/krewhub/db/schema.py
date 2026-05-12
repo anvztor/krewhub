@@ -63,7 +63,15 @@ CREATE TABLE IF NOT EXISTS bundles (
     repo_spec TEXT,
     prompt TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open'
-        CHECK(status IN ('open', 'claimed', 'cooked', 'blocked', 'cancelled', 'digested', 'rejected')),
+        -- Phase 12 step (d): the canonical statuses are now just
+        -- 'open' and 'closed'. Legacy values stay in the CHECK so
+        -- existing rows don't blow up before backfill — they're
+        -- treated as 'open' by code and will collapse on next
+        -- migration pass.
+        CHECK(status IN (
+            'open', 'closed',
+            'claimed', 'cooked', 'blocked', 'cancelled', 'digested', 'rejected'
+        )),
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     claimed_at TEXT,
@@ -198,8 +206,8 @@ CREATE TABLE IF NOT EXISTS events (
     type TEXT NOT NULL
         CHECK(type IN (
             'prompt', 'plan', 'task_claimed', 'task_working', 'milestone',
-            'fact_added', 'code_pushed', 'digest_submitted',
-            'digest_approved', 'digest_rejected',
+            'fact_added', 'code_pushed',
+            'bundle_closed', 'bundle_reopened',
             'session_start', 'session_end', 'tool_use', 'tool_result',
             'agent_reply', 'thinking'
         )),
@@ -220,26 +228,6 @@ CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
 CREATE INDEX IF NOT EXISTS idx_events_task_sequence ON events(task_id, sequence);
-
-CREATE TABLE IF NOT EXISTS digests (
-    id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
-    bundle_id TEXT NOT NULL UNIQUE REFERENCES bundles(id),
-    summary TEXT NOT NULL,
-    task_results TEXT NOT NULL DEFAULT '[]',
-    facts TEXT NOT NULL DEFAULT '[]',
-    code_refs TEXT NOT NULL DEFAULT '[]',
-    submitted_by TEXT NOT NULL,
-    submitted_at TEXT NOT NULL,
-    decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending', 'approved', 'rejected')),
-    decided_by TEXT,
-    decided_at TEXT,
-    resource_version INTEGER NOT NULL DEFAULT 1,
-    generation INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE INDEX IF NOT EXISTS idx_digests_recipe ON digests(recipe_id);
-CREATE INDEX IF NOT EXISTS idx_digests_bundle ON digests(bundle_id);
 
 CREATE TABLE IF NOT EXISTS tape_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,

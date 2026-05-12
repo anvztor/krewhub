@@ -12,24 +12,21 @@ from krewhub.watch.globals import get_watch_service
 from krewhub.auth import CallerContext, require_bundle_owner, resolve_caller_or_cookie
 from krewhub.config import get_settings
 from krewhub.db.connection import get_db
-from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.services.deps import get_e2b
-from krewhub.services.digest_service import DigestService
 from krewhub.services.e2b_client import E2bClient
 from krewhub.services.sandbox_service import SandboxService
 from krewhub.routes.cookbook_sharing import _require_role
 from krewhub.routes.schemas import (
     AddTaskRequest,
     AttachGraphRequest,
+    BundleLifecycleRequest,
     CreateBundleRequest,
     CreateCookbookBundleRequest,
-    DecisionRequest,
-    SubmitDigestRequest,
 )
 from krewhub.models import ShareRole
 
@@ -275,22 +272,6 @@ def _task_with_sandbox_inherited(task, bundle) -> dict:
     return payload
 
 
-# DEPRECATED — bundle no longer carries approve/reject. Removal target
-# alongside services/digest_service.py.
-@router.get("/bundles/{bundle_id}/digest", deprecated=True)
-async def get_bundle_digest(
-    bundle_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    from krewhub.repositories.digest_repo import DigestRepo
-
-    digest = await DigestRepo(db).get_by_bundle(bundle_id)
-    if digest is None:
-        raise HTTPException(status_code=404, detail="Digest not found")
-
-    return {"digest": digest.model_dump(mode="json")}
-
-
 @router.get("/bundles/{bundle_id}/usage")
 async def get_bundle_usage(
     bundle_id: str,
@@ -318,36 +299,50 @@ async def get_bundle_usage(
     return {"usage": usage_list, "totals": totals}
 
 
-# DEPRECATED — cancel maps to the legacy CANCELLED terminal state.
-# Under the OPEN/CLOSED model this should become a generic "close bundle"
-# action (status → CLOSED) with no task cascade. Kept until callers
-# migrate.
-@router.patch("/bundles/{bundle_id}", deprecated=True)
-async def cancel_bundle(
+# Phase 12 step (d): one verb for OPEN ↔ CLOSED. Replaces the
+# deprecated PATCH /bundles/{id} (cancel) + POST /bundles/{id}/rerun
+# + digest decision flow. Idempotent + symmetric.
+@router.patch("/cookbooks/{cookbook_id}/bundles/{bundle_id}")
+async def set_bundle_status(
+    cookbook_id: str,
     bundle_id: str,
+    req: BundleLifecycleRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
-    svc = BundleService(db, get_watch_service())
-    updated = await svc.cancel_bundle(bundle_id, "system")
-    if updated is None:
-        raise HTTPException(status_code=400, detail="Cannot cancel this bundle")
-    return {"bundle": updated.model_dump(mode="json")}
+    """Close or reopen a bundle.
 
+    RBAC: caller must be at least MEMBER on the cookbook. The route
+    is cookbook-scoped so the RBAC check has a clean attachment
+    point; the bundle must belong to that cookbook (enforced by the
+    path).
+    """
+    await _require_role(cookbook_id, caller, db, ShareRole.MEMBER)
 
-# DEPRECATED — relies on bundle-level BLOCKED state. Removal target
-# alongside services/bundle_service.py::rerun_blocked_tasks.
-@router.post("/bundles/{bundle_id}/rerun", deprecated=True)
-async def rerun_blocked_bundle(
-    bundle_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None or bundle.cookbook_id != cookbook_id:
+        raise HTTPException(
+            status_code=404, detail="Bundle not found in this cookbook",
+        )
+
+    desired = req.status.lower().strip()
     svc = BundleService(db, get_watch_service())
-    updated = await svc.rerun_blocked_tasks(bundle_id)
-    if updated is None:
+    if desired == "closed":
+        updated = await svc.close_bundle(
+            bundle_id, caller.account_id, reason=req.reason,
+        )
+    elif desired == "open":
+        updated = await svc.reopen_bundle(
+            bundle_id, caller.account_id, reason=req.reason,
+        )
+    else:
         raise HTTPException(
             status_code=400,
-            detail="No blocked tasks are available to rerun.",
+            detail=f"Invalid status {desired!r}; expected 'open' or 'closed'",
         )
+
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Bundle update failed")
     return {"bundle": updated.model_dump(mode="json")}
 
 
@@ -482,56 +477,3 @@ async def add_task_to_bundle(
     }
 
 
-# DEPRECATED — submit-digest is part of the legacy approve/reject
-# flow. Removal target with services/digest_service.py.
-@router.post("/bundles/{bundle_id}/digest", deprecated=True)
-async def submit_digest(
-    bundle_id: str,
-    req: SubmitDigestRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    svc = DigestService(db, get_watch_service())
-    digest = await svc.submit_digest(
-        bundle_id=bundle_id,
-        submitted_by=req.submitted_by,
-        summary=req.summary,
-        task_results=req.task_results,
-        facts=req.facts,
-        code_refs=req.code_refs,
-    )
-    if digest is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot submit digest. Ensure all tasks are done/blocked and no digest exists.",
-        )
-    return {"digest": digest.model_dump(mode="json")}
-
-
-# DEPRECATED — approve/reject decision endpoint. Removal target
-# with the digest flow.
-@router.post("/bundles/{bundle_id}/decision", deprecated=True)
-async def decide_digest(
-    bundle_id: str,
-    req: DecisionRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    svc = DigestService(db, get_watch_service())
-    decision = DigestDecision(req.decision)
-    digest = await svc.decide(bundle_id, decision, req.decided_by, req.note)
-    if digest is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot decide. No pending digest found.",
-        )
-    return {"digest": digest.model_dump(mode="json")}
-
-
-# DEPRECATED — list approved digests. Removal target with the digest flow.
-@router.get("/recipes/{recipe_id}/digests", deprecated=True)
-async def list_approved_digests(
-    recipe_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    from krewhub.repositories.digest_repo import DigestRepo
-    digests = await DigestRepo(db).list_approved_by_recipe(recipe_id)
-    return {"digests": [d.model_dump(mode="json") for d in digests]}

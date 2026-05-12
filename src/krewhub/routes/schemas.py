@@ -35,6 +35,16 @@ class CreateRepoGrantRequest(BaseModel):
     token_ref: str
 
 
+class BundleLifecycleRequest(BaseModel):
+    """Phase 12 step (d): one verb for OPEN ↔ CLOSED.
+
+    Idempotent and symmetric. Replaces the old cancel + rerun +
+    decision endpoints.
+    """
+    status: str  # "open" or "closed"
+    reason: str | None = None
+
+
 class CreateTaskInput(BaseModel):
     model_config = {"populate_by_name": True}
     task_id: str | None = Field(None, alias="id")

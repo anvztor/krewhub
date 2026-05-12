@@ -51,9 +51,9 @@ class EventType(StrEnum):
     MILESTONE = "milestone"
     FACT_ADDED = "fact_added"
     CODE_PUSHED = "code_pushed"
-    DIGEST_SUBMITTED = "digest_submitted"
-    DIGEST_APPROVED = "digest_approved"
-    DIGEST_REJECTED = "digest_rejected"
+    # Bundle lifecycle (Phase 12 step d).
+    BUNDLE_CLOSED = "bundle_closed"
+    BUNDLE_REOPENED = "bundle_reopened"
     # Agent-level events (streamed from local CLI agents)
     SESSION_START = "session_start"
     SESSION_END = "session_end"
@@ -74,12 +74,6 @@ class ActorType(StrEnum):
     AGENT = "agent"
     SYSTEM = "system"
     HOOK = "hook"
-
-
-class DigestDecision(StrEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
 
 
 class WatchEventType(StrEnum):
@@ -287,28 +281,6 @@ class Event(BaseModel, frozen=True):
     visibility: str = "system"
     created_at: datetime
     expires_at: datetime | None = None
-
-
-class DigestTaskResult(BaseModel, frozen=True):
-    task_id: str
-    outcome: str
-
-
-class Digest(BaseModel, frozen=True):
-    id: str
-    recipe_id: str
-    bundle_id: str
-    summary: str
-    task_results: list[DigestTaskResult] = Field(default_factory=list)
-    facts: list[FactRef] = Field(default_factory=list)
-    code_refs: list[CodeRef] = Field(default_factory=list)
-    submitted_by: str
-    submitted_at: datetime
-    decision: DigestDecision = DigestDecision.PENDING
-    decided_by: str | None = None
-    decided_at: datetime | None = None
-    resource_version: int = 1
-    generation: int = 1
 
 
 class WatchEntry(BaseModel, frozen=True):

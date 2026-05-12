@@ -75,20 +75,9 @@ async def test_get_bundle_detail(client):
     assert len(data["events"]) >= 2  # prompt + plan events
 
 
-@pytest.mark.asyncio
-async def test_cancel_bundle(client):
-    recipe_id = await _create_recipe(client)
-
-    create = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-        "prompt": "Cancel me",
-        "requested_by": "human_1",
-        "tasks": [{"title": "Will be cancelled"}],
-    })
-    bundle_id = create.json()["bundle"]["id"]
-
-    resp = await client.patch(f"/api/v1/bundles/{bundle_id}")
-    assert resp.status_code == 200
-    assert resp.json()["bundle"]["status"] == "cancelled"
+# test_cancel_bundle removed in step (d) — cancel route deleted in
+# favor of PATCH /cookbooks/{cb}/bundles/{id}. New close-bundle
+# coverage lives in tests/test_cookbook_bundle_lifecycle.py.
 
 
 @pytest.mark.asyncio

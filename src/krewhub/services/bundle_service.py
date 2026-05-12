@@ -329,160 +329,95 @@ class BundleService:
         )
         return updated_bundle, created_tasks
 
-    # DEPRECATED — relies on the CANCELLED terminal state and cascades
-    # task cancellation. Under the new OPEN/CLOSED bundle model this
-    # should collapse into a simple "close bundle" action with no
-    # cascade; the bundle is not the authority over its tasks.
-    # Removal target after callers (routes/bundles.py PATCH endpoint,
-    # tests/test_controllers.py) migrate.
-    async def cancel_bundle(self, bundle_id: str, actor_id: str) -> Bundle | None:
+    # ----------------------------------------------------------------------
+    # OPEN ↔ CLOSED (step d)
+    # ----------------------------------------------------------------------
+
+    async def close_bundle(
+        self, bundle_id: str, actor_id: str, reason: str | None = None,
+    ) -> Bundle | None:
+        """Close a bundle. Idempotent.
+
+        Bundle is a dumb container — closing flips a flag and records an
+        audit event. It does NOT cascade to tasks; running work
+        continues. Resource cleanup (sandboxes, working trees) is the
+        responsibility of separate reapers that observe the close signal.
+
+        Returns the (possibly already-closed) bundle, or None if the
+        bundle doesn't exist.
+        """
         bundle = await self._bundles.get(bundle_id)
         if bundle is None:
             return None
-        if bundle.status not in (BundleStatus.OPEN, BundleStatus.BLOCKED, BundleStatus.CLAIMED):
+        # Idempotent: re-closing a closed bundle is a no-op.
+        if bundle.status == BundleStatus.CLOSED:
+            return bundle
+
+        updated = await self._bundles.update_status(
+            bundle_id, BundleStatus.CLOSED,
+        )
+        if updated is None:
             return None
 
-        updated = await self._bundles.update_status(bundle_id, BundleStatus.CANCELLED)
-
-        # Cascade cancel to tasks and emit watch events so the agent
-        # can pick up the cancellation via SSE.
-        tasks = await self._tasks.list_by_bundle(bundle_id)
-        for task in tasks:
-            if task.status not in (TaskStatus.DONE, TaskStatus.CANCELLED):
-                cancelled_task = await self._tasks.update(task.id, status=TaskStatus.CANCELLED)
-                if cancelled_task is not None:
-                    await self._watch.record_resource(
-                        "task", task.id, WatchEventType.MODIFIED, cancelled_task,
-                        recipe_id=bundle.recipe_id,
-                    )
-
-        if updated is not None:
-            await self._watch.record_resource(
-                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-                recipe_id=bundle.recipe_id,
-            )
-
+        await self._emit_lifecycle_event(
+            updated, EventType.BUNDLE_CLOSED, actor_id, reason,
+        )
+        await self._watch.record_resource(
+            "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+            recipe_id=updated.recipe_id, cookbook_id=updated.cookbook_id,
+        )
         return updated
 
-    # DEPRECATED — folds task aggregate (DONE/BLOCKED/CLAIMED/WORKING)
-    # into bundle status CLAIMED/COOKED/BLOCKED/OPEN. Under the new
-    # OPEN/CLOSED model the bundle has no derived state; it is just a
-    # container. Remove this function and every call site once
-    # controllers/bundle_controller.py and graph_runner.py stop
-    # consulting middle states.
-    async def recompute_bundle_status(self, bundle_id: str) -> Bundle | None:
-        tasks = await self._tasks.list_by_bundle(bundle_id)
-        if not tasks:
-            return await self._bundles.get(bundle_id)
+    async def reopen_bundle(
+        self, bundle_id: str, actor_id: str, reason: str | None = None,
+    ) -> Bundle | None:
+        """Reopen a closed bundle. Idempotent.
 
-        now = datetime.now(timezone.utc)
-        all_done = all(t.status == TaskStatus.DONE for t in tasks)
-        any_blocked = any(t.status == TaskStatus.BLOCKED for t in tasks)
-        any_claimed = any(t.status in (TaskStatus.CLAIMED, TaskStatus.WORKING) for t in tasks)
-
-        if all_done:
-            updated = await self._bundles.update_status(
-                bundle_id, BundleStatus.COOKED, cooked_at=now
-            )
-        elif any_blocked:
-            blocked_reasons = [t.blocked_reason for t in tasks if t.blocked_reason]
-            updated = await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason="; ".join(blocked_reasons) if blocked_reasons else "Task blocked",
-            )
-        elif any_claimed:
-            updated = await self._bundles.update_status(
-                bundle_id, BundleStatus.CLAIMED, claimed_at=now
-            )
-        else:
-            updated = await self._bundles.update_status(bundle_id, BundleStatus.OPEN)
-
-        if updated is not None:
-            await self._watch.record_resource(
-                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-                recipe_id=updated.recipe_id,
-            )
-
-        return updated
-
-    # DEPRECATED — predicated on bundle-level BLOCKED. The new model
-    # has no BLOCKED bundle status, so rerun decisions belong on
-    # individual tasks (TaskRepo.reopen_for_rerun). Removal target
-    # alongside routes/bundles.py::rerun_blocked_bundle.
-    async def rerun_blocked_tasks(self, bundle_id: str) -> Bundle | None:
-        """Reopen a bundle for another graph-runner pass.
-
-        Two shapes are supported:
-          * Per-task rerun — at least one task is in ``BLOCKED``. We
-            reopen every blocked task and clear the bundle's blocked
-            state so GraphRunnerController picks it up again.
-          * Whole-bundle rerun — the bundle itself is ``BLOCKED`` but
-            every task is still ``OPEN``. This happens when the graph
-            runner failed the bundle before a single dispatch touched
-            any task row (e.g. ``dispatch_cycle`` couldn't find an
-            eligible gateway for any step on the first pass). Without
-            this branch the caller has no way to unstick the bundle
-            short of deleting and recreating it: the old code returned
-            ``None`` because no task had ``status == BLOCKED`` yet.
-
-        Returns the reopened bundle, or ``None`` if the bundle is in a
-        non-recoverable terminal state (cancelled/digested), missing,
-        or already running cleanly.
+        Symmetric to close_bundle. CLOSED is a soft state — reopening
+        is cheap and reversible. Used both for "I closed by mistake"
+        and "I want to add more work to this bundle."
         """
         bundle = await self._bundles.get(bundle_id)
-        if bundle is None or bundle.status in (BundleStatus.CANCELLED, BundleStatus.DIGESTED):
+        if bundle is None:
+            return None
+        if bundle.status == BundleStatus.OPEN:
+            return bundle
+
+        updated = await self._bundles.update_status(
+            bundle_id, BundleStatus.OPEN,
+        )
+        if updated is None:
             return None
 
-        tasks = await self._tasks.list_by_bundle(bundle_id)
-        blocked_tasks = [task for task in tasks if task.status == TaskStatus.BLOCKED]
+        await self._emit_lifecycle_event(
+            updated, EventType.BUNDLE_REOPENED, actor_id, reason,
+        )
+        await self._watch.record_resource(
+            "bundle", bundle_id, WatchEventType.MODIFIED, updated,
+            recipe_id=updated.recipe_id, cookbook_id=updated.cookbook_id,
+        )
+        return updated
 
-        # Whole-bundle recovery: if the bundle as a whole is BLOCKED
-        # but no individual task is, the runner failed before touching
-        # anything (typically "no eligible gateway"). Reopen the
-        # bundle so GraphRunnerController's next reconcile re-runs the
-        # graph from the top. Tasks are already OPEN — no reset needed.
-        if not blocked_tasks and bundle.status != BundleStatus.BLOCKED:
-            return None
-
-        for task in blocked_tasks:
-            reopened = await self._tasks.reopen_for_rerun(task.id)
-            if reopened is not None:
-                await self._watch.record_resource(
-                    "task", task.id, WatchEventType.MODIFIED, reopened,
-                    recipe_id=bundle.recipe_id,
-                )
-
-        updated_bundle = await self._bundles.reopen_for_rerun(bundle_id)
-        if updated_bundle is None:
-            return None
-
-        now = datetime.now(timezone.utc)
-        if blocked_tasks:
-            body = (
-                f"Re-run requested for {len(blocked_tasks)} blocked task"
-                f"{'' if len(blocked_tasks) == 1 else 's'}. "
-                "Tasks reopened for reassignment."
-            )
-        else:
-            body = (
-                "Re-run requested for blocked bundle. "
-                "Bundle reopened; graph runner will retry from the top."
-            )
-        rerun_event = Event(
+    async def _emit_lifecycle_event(
+        self,
+        bundle: Bundle,
+        event_type: EventType,
+        actor_id: str,
+        reason: str | None,
+    ) -> None:
+        body = (
+            f"Bundle {event_type.value}"
+            + (f": {reason}" if reason else "")
+        )
+        event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=bundle.recipe_id,
-            bundle_id=bundle_id,
-            type=EventType.PLAN,
-            actor_id="system",
-            actor_type=ActorType.SYSTEM,
+            cookbook_id=bundle.cookbook_id,
+            bundle_id=bundle.id,
+            type=event_type,
+            actor_id=actor_id,
+            actor_type=ActorType.HUMAN,
             body=body,
-            created_at=now,
+            created_at=datetime.now(timezone.utc),
         )
-        await self._events.create(rerun_event)
-
-        await self._watch.record_resource(
-            "bundle", bundle_id, WatchEventType.MODIFIED, updated_bundle,
-            recipe_id=bundle.recipe_id,
-        )
-
-        return updated_bundle
+        await self._events.create(event)

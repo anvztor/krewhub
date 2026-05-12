@@ -52,28 +52,7 @@ async def recipe_workspace(
     return result
 
 
-@router.get("/recipes/{recipe_id}/digest-review/{bundle_id}")
-async def digest_review(
-    recipe_id: str,
-    bundle_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-    _caller: CallerContext | None = Depends(optional_cookie_caller),
-) -> dict:
-    """Get recipe + bundle details for digest review."""
-    result = await aggregate_service.get_digest_review_data(db, recipe_id, bundle_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Recipe or bundle not found")
-    return result
-
-
-@router.get("/recipes/{recipe_id}/history-data")
-async def history_data(
-    recipe_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-    _caller: CallerContext | None = Depends(optional_cookie_caller),
-) -> dict:
-    """Get recipe history with approved digests and metrics."""
-    result = await aggregate_service.get_history_data(db, recipe_id)
-    if result is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
-    return result
+# Digest review + history endpoints removed in step (d) along with
+# the rest of the digest layer. Bundles now collapse to OPEN|CLOSED
+# without an approve/reject artifact; close events live in the
+# event log if a historical view is needed later.

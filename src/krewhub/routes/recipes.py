@@ -12,7 +12,6 @@ from krewhub.db.connection import get_db
 from krewhub.models import ActorType, CodeRef, EventType, FactRef, Recipe, RecipeMember, Role, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.digest_repo import DigestRepo
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import CreateRecipeRequest, InviteMemberRequest, PostRecipeEventRequest
@@ -74,14 +73,12 @@ async def get_recipe(recipe_id: str, db: aiosqlite.Connection = Depends(get_db))
     members = await recipe_repo.list_members(recipe_id)
     agents = await AgentRepo(db).list_by_recipe(recipe_id)  # via cookbook join
     bundles = await BundleRepo(db).list_by_recipe(recipe_id)
-    digests = await DigestRepo(db).list_approved_by_recipe(recipe_id)
 
     return {
         "recipe": recipe.model_dump(mode="json"),
         "members": [m.model_dump(mode="json") for m in members],
         "agents": [a.model_dump(mode="json") for a in agents],
         "bundles": [b.model_dump(mode="json") for b in bundles],
-        "digests": [d.model_dump(mode="json") for d in digests],
     }
 
 

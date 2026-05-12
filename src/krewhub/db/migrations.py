@@ -387,6 +387,13 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _relax_bundles_recipe_id_nullable(db)
     await _relax_events_recipe_id_nullable(db)
 
+    # Phase 12 step (d): digest layer is gone. Drop the table and
+    # add the new bundle-lifecycle event types to the events CHECK
+    # constraint. Idempotent.
+    await _drop_digests_table(db)
+    await _migrate_events_add_bundle_lifecycle_types(db)
+    await _migrate_bundles_add_closed_status(db)
+
     await db.commit()
 
 
@@ -600,6 +607,157 @@ async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
                     "Migration: cookbook_id backfill on watch_log skipped: %s",
                     exc,
                 )
+
+
+async def _migrate_bundles_add_closed_status(
+    db: aiosqlite.Connection,
+) -> None:
+    """Step (d): widen bundles.status CHECK to include 'closed'.
+
+    Idempotent: detects via the current CREATE TABLE statement.
+    """
+    if not await _table_exists(db, "bundles"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='bundles'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    sql = (row["sql"] or "")
+    if "'closed'" in sql:
+        return  # Already widened.
+
+    logger.info("Migration: rebuilding bundles.status CHECK to include 'closed'")
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    cols = [r["name"] for r in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        CREATE TABLE bundles_new (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT REFERENCES recipes(id),
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            repo_spec TEXT,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN (
+                    'open', 'closed',
+                    'claimed', 'cooked', 'blocked', 'cancelled',
+                    'digested', 'rejected'
+                )),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            cooked_at TEXT,
+            digested_at TEXT,
+            blocked_reason TEXT,
+            graph_code TEXT,
+            graph_mermaid TEXT,
+            resource_version INTEGER NOT NULL DEFAULT 1,
+            generation INTEGER NOT NULL DEFAULT 1,
+            owner_account_id TEXT,
+            default_agent_runtime_id TEXT,
+            sandbox_id TEXT,
+            autoplan_enabled INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO bundles_new ({col_list})
+            SELECT {col_list} FROM bundles;
+        DROP TABLE bundles;
+        ALTER TABLE bundles_new RENAME TO bundles;
+        CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_runnable
+            ON bundles(status) WHERE graph_code IS NOT NULL;
+        """
+    )
+
+
+async def _drop_digests_table(db: aiosqlite.Connection) -> None:
+    """Step (d): drop the digests table.
+
+    Idempotent — no-op if table is already gone. Issues a DROP TABLE
+    rather than a column rebuild because nothing depends on the rows.
+    """
+    if not await _table_exists(db, "digests"):
+        return
+    logger.info("Migration: dropping digests table")
+    await db.execute("DROP TABLE IF EXISTS digests")
+
+
+async def _migrate_events_add_bundle_lifecycle_types(
+    db: aiosqlite.Connection,
+) -> None:
+    """Step (d): replace digest_* event types with bundle_closed/reopened
+    in events.type CHECK constraint.
+
+    Idempotent: detects via the current CREATE TABLE statement.
+    """
+    if not await _table_exists(db, "events"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    sql = (row["sql"] or "")
+    if "bundle_closed" in sql and "digest_submitted" not in sql:
+        # Already on the new shape.
+        return
+
+    logger.info("Migration: rebuilding events.type CHECK for bundle lifecycle")
+    # Capture column list from the live table so we keep every column
+    # (including any added later by Phase 12).
+    cursor = await db.execute("PRAGMA table_info(events)")
+    cols = [r["name"] for r in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        CREATE TABLE events_new (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT REFERENCES recipes(id),
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            bundle_id TEXT REFERENCES bundles(id),
+            task_id TEXT,
+            type TEXT NOT NULL
+                CHECK(type IN (
+                    'prompt', 'plan', 'task_claimed', 'task_working',
+                    'milestone', 'fact_added', 'code_pushed',
+                    'bundle_closed', 'bundle_reopened',
+                    'session_start', 'session_end', 'tool_use', 'tool_result',
+                    'agent_reply', 'thinking',
+                    -- Tolerate legacy rows still using digest_* until they
+                    -- expire/are deleted; new writes use the new vocabulary.
+                    'digest_submitted', 'digest_approved', 'digest_rejected'
+                )),
+            actor_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL
+                CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+            body TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{{}}',
+            sequence INTEGER NOT NULL DEFAULT 0,
+            facts TEXT NOT NULL DEFAULT '[]',
+            code_refs TEXT NOT NULL DEFAULT '[]',
+            visibility TEXT NOT NULL DEFAULT 'system',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        INSERT INTO events_new ({col_list})
+            SELECT {col_list} FROM events;
+        DROP TABLE events;
+        ALTER TABLE events_new RENAME TO events;
+        CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_events_task_sequence
+            ON events(task_id, sequence);
+        """
+    )
 
 
 async def _column_is_nullable(
