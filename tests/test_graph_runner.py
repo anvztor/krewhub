@@ -116,22 +116,13 @@ async def _seed_runnable_bundle(
     )
     await db.commit()
 
-    recipe_repo = RecipeRepo(db)
     bundle_repo = BundleRepo(db)
     task_repo = TaskRepo(db)
     agent_repo = AgentRepo(db)
 
-    recipe = await recipe_repo.create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human", created_at=_now(),
-            cookbook_id=f"cb-{suffix}",
-        )
-    )
     bundle = await bundle_repo.create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe.id, prompt="run graph",
+            id=f"b-{suffix}", cookbook_id=f"cb-{suffix}", prompt="run graph",
             status=BundleStatus.OPEN, created_by="human",
             created_at=_now(),
             graph_code=graph_code, graph_mermaid="flowchart TD",
@@ -357,16 +348,9 @@ class TestRunnerExecution:
             (f"cb-{suffix}", "x", "h", _now().isoformat()),
         )
         await db.commit()
-        recipe = await RecipeRepo(db).create(
-            Recipe(
-                id=f"r-{suffix}", name=f"t/{suffix}", repo_url="g@x:e.git",
-                default_branch="main", created_by="h",
-                created_at=_now(), cookbook_id=f"cb-{suffix}",
-            )
-        )
         bundle = await BundleRepo(db).create(
             Bundle(
-                id=f"b-{suffix}", recipe_id=recipe.id, prompt="x",
+                id=f"b-{suffix}", cookbook_id=f"cb-{suffix}", prompt="x",
                 status=BundleStatus.OPEN, created_by="h",
                 created_at=_now(),
                 graph_code=GOOD_GRAPH_CODE, graph_mermaid="x",

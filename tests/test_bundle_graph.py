@@ -97,7 +97,7 @@ def _mock_post_response(*, status_code: int = 200, state: str = "submitted") -> 
 
 
 async def _seed_empty_bundle(suffix: str | None = None) -> tuple[str, str, str]:
-    """Create a bundle with no graph_code yet. Returns (bundle_id, recipe_id, cookbook_id)."""
+    """Create a cookbook-scoped bundle. Returns (bundle_id, "", cookbook_id)."""
     suffix = suffix or _next_suffix()
     db = await get_db()
     await db.execute(
@@ -106,22 +106,14 @@ async def _seed_empty_bundle(suffix: str | None = None) -> tuple[str, str, str]:
     )
     await db.commit()
 
-    recipe = await RecipeRepo(db).create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human", created_at=_now(),
-            cookbook_id=f"cb-{suffix}",
-        )
-    )
     bundle = await BundleRepo(db).create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe.id, prompt="run something",
+            id=f"b-{suffix}", cookbook_id=f"cb-{suffix}", prompt="run something",
             status=BundleStatus.OPEN, created_by="human",
             created_at=_now(),
         )
     )
-    return bundle.id, recipe.id, f"cb-{suffix}"
+    return bundle.id, "", f"cb-{suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -260,20 +252,12 @@ graph = g.build()
 class TestAttachRoute:
     @pytest.mark.asyncio
     async def test_post_attaches_and_returns_bundle_plus_tasks(self, client):
-        # Create cookbook + recipe + bundle via the API to mirror real usage
         resp = await client.post("/api/v1/cookbooks", json={
-            "name": "graph-route-cb", "owner_id": "human",
+            "name": "graph-route-cb", "owner_id": "acc_legacy_apikey",
         })
         cookbook_id = resp.json()["cookbook"]["id"]
-
-        resp = await client.post("/api/v1/recipes", json={
-            "name": "test/route", "repo_url": "git@x:r.git",
-            "created_by": "human", "cookbook_id": cookbook_id,
-        })
-        recipe_id = resp.json()["recipe"]["id"]
-
-        resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-            "prompt": "do work", "requested_by": "human", "tasks": [],
+        resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
+            "prompt": "do work", "tasks": [],
         })
         bundle_id = resp.json()["bundle"]["id"]
 
@@ -299,16 +283,11 @@ class TestAttachRoute:
     @pytest.mark.asyncio
     async def test_post_422_on_bad_code(self, client):
         resp = await client.post("/api/v1/cookbooks", json={
-            "name": "bad-cb", "owner_id": "human",
+            "name": "bad-cb", "owner_id": "acc_legacy_apikey",
         })
         cookbook_id = resp.json()["cookbook"]["id"]
-        resp = await client.post("/api/v1/recipes", json={
-            "name": "test/bad", "repo_url": "git@x:b.git",
-            "created_by": "human", "cookbook_id": cookbook_id,
-        })
-        recipe_id = resp.json()["recipe"]["id"]
-        resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-            "prompt": "x", "requested_by": "human", "tasks": [],
+        resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
+            "prompt": "x", "tasks": [],
         })
         bundle_id = resp.json()["bundle"]["id"]
 
