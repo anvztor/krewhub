@@ -470,13 +470,17 @@ CREATE TABLE IF NOT EXISTS cookbook_shares (
     role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'viewer')),
     shared_by_account_id TEXT NOT NULL REFERENCES accounts(id),
     shared_at TEXT NOT NULL,
-    revoked_at TEXT,
-    UNIQUE(cookbook_id, shared_with_account_id)
+    revoked_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cookbook_shares_cookbook
     ON cookbook_shares(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_cookbook_shares_account
     ON cookbook_shares(shared_with_account_id);
+-- Partial unique: only one ACTIVE share per (cookbook, account).
+-- Revoked rows kept for audit; reshare goes via new INSERT.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cookbook_shares_unique_active
+    ON cookbook_shares(cookbook_id, shared_with_account_id)
+    WHERE revoked_at IS NULL;
 
 CREATE TABLE IF NOT EXISTS repo_grants (
     id TEXT PRIMARY KEY,

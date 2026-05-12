@@ -334,16 +334,27 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
             role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'viewer')),
             shared_by_account_id TEXT NOT NULL REFERENCES accounts(id),
             shared_at TEXT NOT NULL,
-            revoked_at TEXT,
-            UNIQUE(cookbook_id, shared_with_account_id)
+            revoked_at TEXT
         )
     """)
+    # Idempotent rebuild for any DB created with the old table-level
+    # UNIQUE(cookbook_id, shared_with_account_id) — that constraint
+    # blocked reshare-after-revoke. The current shape uses a partial
+    # unique index instead (below).
+    await _drop_table_level_unique_on_cookbook_shares(db)
     await _create_index_if_missing(
         db, "idx_cookbook_shares_cookbook", "cookbook_shares", "(cookbook_id)",
     )
     await _create_index_if_missing(
         db, "idx_cookbook_shares_account", "cookbook_shares",
         "(shared_with_account_id)",
+    )
+    # Partial unique: only one ACTIVE share per (cookbook, account).
+    # Revoked rows don't block re-sharing — they keep audit history.
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_cookbook_shares_unique_active "
+        "ON cookbook_shares(cookbook_id, shared_with_account_id) "
+        "WHERE revoked_at IS NULL"
     )
 
     await _create_table_if_missing(db, "repo_grants", """
@@ -583,6 +594,61 @@ async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
                     "Migration: cookbook_id backfill on watch_log skipped: %s",
                     exc,
                 )
+
+
+async def _drop_table_level_unique_on_cookbook_shares(
+    db: aiosqlite.Connection,
+) -> None:
+    """Rebuild cookbook_shares without the table-level UNIQUE constraint.
+
+    The original Phase 12 DDL had
+        UNIQUE(cookbook_id, shared_with_account_id)
+    baked into the table. That blocked reshare-after-revoke: a
+    re-INSERT failed even when the previous row was soft-deleted via
+    revoked_at. The current shape uses a partial unique index
+    (revoked_at IS NULL) instead. This function detects the old
+    constraint and rebuilds the table in place.
+
+    Idempotent: no-op if (a) table doesn't exist, (b) constraint
+    already removed.
+    """
+    if not await _table_exists(db, "cookbook_shares"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='cookbook_shares'",
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    existing_sql = (row["sql"] or "").lower()
+    # Only rebuild if the table-level UNIQUE is present. The partial
+    # index lives in sqlite_master separately as type='index'.
+    if "unique(cookbook_id" not in existing_sql:
+        return
+
+    logger.info("Migration: rebuilding cookbook_shares to drop table-level UNIQUE")
+    await db.executescript(
+        """
+        CREATE TABLE cookbook_shares_new (
+            id TEXT PRIMARY KEY,
+            cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+            shared_with_account_id TEXT NOT NULL REFERENCES accounts(id),
+            role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'viewer')),
+            shared_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+            shared_at TEXT NOT NULL,
+            revoked_at TEXT
+        );
+        INSERT INTO cookbook_shares_new
+            (id, cookbook_id, shared_with_account_id, role,
+             shared_by_account_id, shared_at, revoked_at)
+            SELECT id, cookbook_id, shared_with_account_id, role,
+                   shared_by_account_id, shared_at, revoked_at
+            FROM cookbook_shares;
+        DROP TABLE cookbook_shares;
+        ALTER TABLE cookbook_shares_new RENAME TO cookbook_shares;
+        """
+    )
 
 
 async def _backfill_bundle_owner_from_created_by(db: aiosqlite.Connection) -> None:

@@ -72,14 +72,21 @@ class RepoGrantRepo:
         owner: str,
         repo: str,
     ) -> RepoGrant | None:
-        """Return an active grant on this cookbook that covers
-        provider:owner/repo. Used by the JIT repo materialization
-        path. Scope matching:
-            "owner/repo" — exact match
-            "owner/*"    — any repo under owner
-            "owner"      — same as "owner/*"
-        First active match wins; ordered by granted_at so the earliest
-        grant takes precedence (callers can revoke + regrant to change).
+        """Return the most-specific active grant covering provider:owner/repo.
+
+        Scope syntax + priority (most specific wins, regardless of
+        granted_at order):
+            1. "owner/repo" — exact match
+            2. "owner/*"    — any repo under owner
+            3. "owner"      — shorthand for "owner/*"
+
+        Tie-breaker within the same specificity tier: earliest
+        granted_at (so revoking + regranting at the same tier doesn't
+        shift behavior unexpectedly).
+
+        Used by the JIT repo materialization path. Callers should
+        treat the result as authoritative: if it's None, the cookbook
+        is not authorized to clone this repo.
         """
         cursor = await self._db.execute(
             """SELECT * FROM repo_grants
@@ -90,11 +97,19 @@ class RepoGrantRepo:
         rows = await cursor.fetchall()
         target_exact = f"{owner}/{repo}"
         target_wild = f"{owner}/*"
+
+        exact: RepoGrant | None = None
+        wildcard: RepoGrant | None = None
+        owner_shorthand: RepoGrant | None = None
         for row in rows:
             scope = row["scope"]
-            if scope in (target_exact, target_wild, owner):
-                return _row_to_grant(row)
-        return None
+            if scope == target_exact and exact is None:
+                exact = _row_to_grant(row)
+            elif scope == target_wild and wildcard is None:
+                wildcard = _row_to_grant(row)
+            elif scope == owner and owner_shorthand is None:
+                owner_shorthand = _row_to_grant(row)
+        return exact or wildcard or owner_shorthand
 
 
 def _row_to_grant(row: aiosqlite.Row) -> RepoGrant:

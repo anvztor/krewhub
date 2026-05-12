@@ -172,6 +172,43 @@ async def test_cannot_share_with_owner(client):
 
 
 @pytest.mark.asyncio
+async def test_reshare_after_revoke_succeeds(client, guest_client):
+    """Revoking + re-sharing should work — the partial unique index
+    only blocks duplicate ACTIVE rows. Revoked rows stay for audit."""
+    cookbook_id = await _seed_accounts_and_cookbook()
+
+    # 1) Original share
+    first = await client.post(
+        f"/api/v1/cookbooks/{cookbook_id}/shares",
+        json={"shared_with_account_id": GUEST_ACCOUNT, "role": "viewer"},
+    )
+    assert first.status_code == 200
+    first_id = first.json()["share"]["id"]
+
+    # 2) Revoke
+    revoke = await client.delete(
+        f"/api/v1/cookbooks/{cookbook_id}/shares/{first_id}",
+    )
+    assert revoke.status_code == 200
+
+    # 3) Re-share — must succeed with a new row, not 409
+    second = await client.post(
+        f"/api/v1/cookbooks/{cookbook_id}/shares",
+        json={"shared_with_account_id": GUEST_ACCOUNT, "role": "member"},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["share"]["id"] != first_id
+    assert second.json()["share"]["role"] == "member"
+
+    # Audit history: list shouldn't show revoked, only the new active row
+    listing = await client.get(f"/api/v1/cookbooks/{cookbook_id}/shares")
+    assert listing.status_code == 200
+    shares = listing.json()["shares"]
+    assert len(shares) == 1
+    assert shares[0]["id"] == second.json()["share"]["id"]
+
+
+@pytest.mark.asyncio
 async def test_revoke_share(client, guest_client):
     cookbook_id = await _seed_accounts_and_cookbook()
     create = await client.post(
@@ -347,6 +384,54 @@ async def test_grant_validation_rejects_empty_scope(client):
 
 
 @pytest.mark.asyncio
+async def test_grant_find_covering_prefers_exact_over_wildcard():
+    """Specificity wins regardless of grant order — even when the
+    wildcard was granted first."""
+    from krewhub.models import RepoGrant, RepoProvider
+    from krewhub.repositories.repo_grant_repo import RepoGrantRepo
+
+    await _seed_accounts_and_cookbook()
+    db = await get_db()
+    repo = RepoGrantRepo(db)
+
+    now = datetime.now(timezone.utc)
+    # Wildcard granted first
+    await repo.create(RepoGrant(
+        id="grt_wild_first", cookbook_id="cb_test_1",
+        provider=RepoProvider.GITHUB, scope="alice/*",
+        token_ref="vault:wild",
+        granted_by_account_id=OWNER_ACCOUNT, granted_at=now,
+    ))
+    # Owner-shorthand also granted first (older than exact)
+    await repo.create(RepoGrant(
+        id="grt_owner_first", cookbook_id="cb_test_1",
+        provider=RepoProvider.GITHUB, scope="alice",
+        token_ref="vault:owner",
+        granted_by_account_id=OWNER_ACCOUNT, granted_at=now,
+    ))
+    # Exact granted later
+    later = datetime.now(timezone.utc)
+    await repo.create(RepoGrant(
+        id="grt_exact_late", cookbook_id="cb_test_1",
+        provider=RepoProvider.GITHUB, scope="alice/foo",
+        token_ref="vault:exact",
+        granted_by_account_id=OWNER_ACCOUNT, granted_at=later,
+    ))
+
+    # Exact must win even though it was granted last
+    g = await repo.find_covering(
+        "cb_test_1", RepoProvider.GITHUB, "alice", "foo",
+    )
+    assert g and g.id == "grt_exact_late"
+
+    # For a repo not covered by the exact, wildcard wins over shorthand
+    g = await repo.find_covering(
+        "cb_test_1", RepoProvider.GITHUB, "alice", "bar",
+    )
+    assert g and g.id == "grt_wild_first"
+
+
+@pytest.mark.asyncio
 async def test_grant_find_covering_scope_matching():
     """Direct repo test for the scope-matching logic — covers wildcard
     + owner-only patterns that the JIT clone path will use."""
@@ -401,12 +486,154 @@ async def test_grant_find_covering_scope_matching():
     assert g is None
 
 
+# --------------------------------------------------------------------------
+# Legacy owner_id tolerance
+# --------------------------------------------------------------------------
+
+
+async def _seed_wallet_owned_cookbook(wallet: str, account: str) -> str:
+    """Seed a cookbook whose owner_id is a wallet address linked to
+    `account`. Models legacy data from the wallet-only era."""
+    db = await get_db()
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        "INSERT OR IGNORE INTO accounts (id, display_name, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?)",
+        (account, account, now, now),
+    )
+    # identities row required by wallet_links FK
+    await db.execute(
+        "INSERT OR IGNORE INTO identities (wallet_address, display_name, created_at) "
+        "VALUES (?, ?, ?)",
+        (wallet, account, now),
+    )
+    await db.execute(
+        "INSERT OR IGNORE INTO wallet_links "
+        "(wallet_address, account_id, chain_id, is_primary, linked_at) "
+        "VALUES (?, ?, 48816, 1, ?)",
+        (wallet, account, now),
+    )
+    await db.execute(
+        "INSERT INTO cookbooks (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)",
+        ("cb_legacy_1", "Legacy Cookbook", wallet, now),
+    )
+    await db.commit()
+    return "cb_legacy_1"
+
+
+@pytest_asyncio.fixture
+async def wallet_owner_client(_setup_db):
+    """Cookie-authed client whose JWT carries wallet_address — models
+    a user who logged in via SIWE and whose cookbook predates the
+    account-id era."""
+    wallet = "0xABCDEFabcdef000000000000000000000000ABCD"
+    account = "acc_wallet_owner_1"
+    settings = get_settings()
+    token = jwt.encode(
+        {
+            "sub": account,
+            "username": "alice",
+            "wallet": wallet,
+            "method": "siwe",
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"krew_session": token},
+    ) as ac:
+        # Stash for the tests
+        ac.__wallet = wallet  # type: ignore[attr-defined]
+        ac.__account = account  # type: ignore[attr-defined]
+        yield ac
+
+
+@pytest.mark.asyncio
+async def test_owner_with_wallet_id_recognized_via_wallet_links(wallet_owner_client):
+    """Cookbook.owner_id is a wallet address; caller's JWT has
+    wallet=that address. Owner check must succeed via direct match
+    (caller.wallet_address branch)."""
+    cookbook_id = await _seed_wallet_owned_cookbook(
+        wallet_owner_client.__wallet,
+        wallet_owner_client.__account,
+    )
+    resp = await wallet_owner_client.get(
+        f"/api/v1/cookbooks/{cookbook_id}/shares",
+    )
+    assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_owner_with_wallet_id_recognized_via_account_graph(wallet_owner_client):
+    """Cookbook.owner_id is a wallet but caller authenticated via a
+    DIFFERENT path (no wallet on JWT). The wallet→account graph walk
+    must still resolve ownership."""
+    # Build the cookbook against wallet_owner_client's wallet+account
+    cookbook_id = await _seed_wallet_owned_cookbook(
+        wallet_owner_client.__wallet,
+        wallet_owner_client.__account,
+    )
+
+    # Now connect with a JWT that has the same account_id but NO wallet
+    settings = get_settings()
+    token = jwt.encode(
+        {
+            "sub": wallet_owner_client.__account,
+            "username": "alice",
+            "method": "passkey",
+        },
+        settings.jwt_secret,
+        algorithm="HS256",
+    )
+    app = create_app()
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(
+        transport=transport,
+        base_url="http://test",
+        cookies={"krew_session": token},
+    ) as passkey_client:
+        resp = await passkey_client.get(
+            f"/api/v1/cookbooks/{cookbook_id}/shares",
+        )
+        assert resp.status_code == 200, resp.text
+
+
+@pytest.mark.asyncio
+async def test_self_share_rejected_for_wallet_owner(wallet_owner_client):
+    """Self-share check resolves wallet→account before comparing, so
+    sharing with the linked account_id is correctly rejected."""
+    cookbook_id = await _seed_wallet_owned_cookbook(
+        wallet_owner_client.__wallet,
+        wallet_owner_client.__account,
+    )
+    resp = await wallet_owner_client.post(
+        f"/api/v1/cookbooks/{cookbook_id}/shares",
+        json={
+            "shared_with_account_id": wallet_owner_client.__account,
+            "role": "member",
+        },
+    )
+    assert resp.status_code == 400
+
+
 @pytest.mark.asyncio
 async def test_404_for_unknown_cookbook(client):
+    """Missing cookbook -> 404, not 403. Cookbook IDs aren't sensitive
+    enough to warrant existence-hiding; account IDs are."""
     resp = await client.post(
         "/api/v1/cookbooks/cb_nope/shares",
         json={"shared_with_account_id": GUEST_ACCOUNT, "role": "member"},
     )
-    # Owner check fails first → 403 (no role on a missing cookbook).
-    # That's the correct behavior: we don't leak existence to non-members.
+    assert resp.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_403_for_known_cookbook_no_access(stranger_client):
+    """Cookbook exists, caller has no role -> 403."""
+    cookbook_id = await _seed_accounts_and_cookbook()
+    resp = await stranger_client.get(f"/api/v1/cookbooks/{cookbook_id}/shares")
     assert resp.status_code == 403

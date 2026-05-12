@@ -53,23 +53,94 @@ _RANK = {
 }
 
 
-async def _resolve_caller_role(
-    cookbook_id: str, caller: CallerContext, db: aiosqlite.Connection,
+async def _canonical_owner_account_id(
+    cookbook,
+    db: aiosqlite.Connection,
+) -> str | None:
+    """Resolve a cookbook's owner to a canonical account_id, walking
+    the wallet→account graph when owner_id is wallet-flavored. Returns
+    None if no resolution is possible.
+
+    Used for checks that need the account-id form of the owner (e.g.
+    self-share rejection), independent of who's calling.
+    """
+    owner_id = cookbook.owner_id
+    if owner_id.startswith("acc_"):
+        return owner_id
+    if owner_id.startswith("0x"):
+        cursor = await db.execute(
+            "SELECT account_id FROM wallet_links WHERE wallet_address = ?",
+            (owner_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None:
+            return row["account_id"]
+    return None
+
+
+async def _is_caller_cookbook_owner(
+    cookbook,
+    caller: CallerContext,
+    db: aiosqlite.Connection,
+) -> bool:
+    """Decide whether the caller owns this cookbook.
+
+    Cookbook.owner_id is historically not a canonical type — it can be:
+      * an account_id ("acc_..."), the new convention
+      * a wallet address ("0x..."), legacy from the wallet-only era
+      * a free-form username, even earlier legacy
+
+    To stay correct across that history, we accept ownership if any of
+    the following match:
+      1. owner_id == caller.account_id                  — new flow
+      2. owner_id == caller.wallet_address              — wallet legacy,
+                                                         caller has wallet
+                                                         on the JWT
+      3. owner_id == caller.username                    — username legacy
+      4. wallet_links[owner_id].account_id == caller    — wallet legacy,
+                                                         caller arrived
+                                                         via a different
+                                                         auth path
+    Step (c) will backfill cookbook.owner_id to a canonical account_id
+    so most of this fallback chain becomes dead code; until then,
+    keep it tolerant.
+    """
+    owner_id = cookbook.owner_id
+    if owner_id == caller.account_id:
+        return True
+    if caller.wallet_address and owner_id == caller.wallet_address:
+        return True
+    if caller.username and owner_id == caller.username:
+        return True
+    # Wallet → account graph: a cookbook owned by 0xABC belongs to
+    # whichever account has that wallet linked.
+    if owner_id.startswith("0x"):
+        cursor = await db.execute(
+            "SELECT account_id FROM wallet_links WHERE wallet_address = ?",
+            (owner_id,),
+        )
+        row = await cursor.fetchone()
+        if row is not None and row["account_id"] == caller.account_id:
+            return True
+    return False
+
+
+async def _role_for_existing_cookbook(
+    cookbook,
+    caller: CallerContext,
+    db: aiosqlite.Connection,
 ) -> ShareRole | None:
-    """Return the caller's effective role on this cookbook, or None.
+    """Compute caller's role on an already-loaded cookbook row.
 
     Order:
-      1. caller is the cookbook owner (owner_id) → ShareRole.OWNER
+      1. caller is the cookbook owner (legacy-tolerant) → ShareRole.OWNER
       2. caller has an active cookbook_share → that share's role
       3. neither → None (no access)
     """
-    cookbook = await CookbookRepo(db).get(cookbook_id)
-    if cookbook is None:
-        return None
-    if cookbook.owner_id == caller.account_id:
+    if await _is_caller_cookbook_owner(cookbook, caller, db):
         return ShareRole.OWNER
     share = await CookbookShareRepo(db).get_active_for(
-        cookbook_id, caller.account_id,
+        cookbook.id, caller.account_id,
     )
     return share.role if share else None
 
@@ -80,13 +151,22 @@ async def _require_role(
     db: aiosqlite.Connection,
     minimum: ShareRole,
 ) -> ShareRole:
-    """Raise 403 unless the caller has at least `minimum` on this cookbook.
+    """Enforce: caller has at least `minimum` on this cookbook.
+
+    Raises:
+      404 — cookbook doesn't exist (we don't existence-hide cookbook
+            IDs; they're not sensitive)
+      403 — cookbook exists but caller lacks the required role
 
     Returns the caller's actual role on success — handy for handlers
     that branch on it (e.g. members can read but only owners can
     mutate).
     """
-    role = await _resolve_caller_role(cookbook_id, caller, db)
+    cookbook = await CookbookRepo(db).get(cookbook_id)
+    if cookbook is None:
+        raise HTTPException(status_code=404, detail="Cookbook not found")
+
+    role = await _role_for_existing_cookbook(cookbook, caller, db)
     if role is None or _RANK[role] < _RANK[minimum]:
         raise HTTPException(
             status_code=403,
@@ -124,10 +204,15 @@ async def create_share(
         )
 
     # Reject self-share (would just duplicate the implicit owner row).
+    # _require_role above already verified the cookbook exists.
     cookbook = await CookbookRepo(db).get(cookbook_id)
-    if cookbook is None:
-        raise HTTPException(status_code=404, detail="Cookbook not found")
-    if req.shared_with_account_id == cookbook.owner_id:
+    assert cookbook is not None  # _require_role would have 404'd
+
+    # Resolve owner_id to a canonical account_id via the same graph
+    # walk used in _is_caller_cookbook_owner, so a wallet-flavored
+    # owner_id doesn't trick the self-share check.
+    owner_account_id = await _canonical_owner_account_id(cookbook, db)
+    if req.shared_with_account_id == owner_account_id:
         raise HTTPException(
             status_code=400,
             detail="Cookbook owner already has OWNER access implicitly",
@@ -135,9 +220,10 @@ async def create_share(
 
     share_repo = CookbookShareRepo(db)
 
-    # If a share already exists (active or revoked), surface a conflict
-    # rather than silently double-inserting (UNIQUE constraint would
-    # raise an opaque IntegrityError otherwise).
+    # An ACTIVE share (revoked_at IS NULL) blocks reshare with 409.
+    # A REVOKED share is fine to shadow with a fresh row — the partial
+    # unique index only covers active rows. Revoked entries stay for
+    # audit history.
     existing = await share_repo.get_active_for(
         cookbook_id, req.shared_with_account_id,
     )
@@ -157,13 +243,14 @@ async def create_share(
     )
     try:
         share = await share_repo.create(share)
-    except aiosqlite.IntegrityError:
-        # Race: a revoked row with the same (cookbook, account) pair
-        # blocks INSERT under UNIQUE. Surface as conflict instead of 500.
+    except aiosqlite.IntegrityError as exc:
+        # Race: another request inserted an active share for the same
+        # (cookbook, account) between our get_active_for + create. The
+        # partial unique index catches it; surface as 409.
         raise HTTPException(
             status_code=409,
-            detail="Share already exists (possibly revoked) — un-revoke instead",
-        )
+            detail=f"Account {req.shared_with_account_id} already has access",
+        ) from exc
 
     return {"share": share.model_dump(mode="json")}
 
