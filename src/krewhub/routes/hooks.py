@@ -62,7 +62,7 @@ class HookIngestRequest(BaseModel):
     hook_event_name: str = Field(..., description="e.g. PreToolUse, Stop")
     task_id: str | None = None
     bundle_id: str | None = None
-    recipe_id: str | None = None
+    cookbook_id: str | None = None
     agent_id: str = "spawned-agent"
     session_id: str | None = None
     cwd: str | None = None
@@ -77,22 +77,22 @@ async def ingest_hook(
     """Persist a hook event and broadcast it via SSE."""
     event_type = _HOOK_NAME_TO_TYPE.get(req.hook_event_name, EventType.TOOL_USE)
 
-    # Resolve recipe / bundle from task_id when needed.
-    recipe_id = req.recipe_id
+    # Resolve cookbook / bundle from task_id when needed.
+    cookbook_id = req.cookbook_id
     bundle_id = req.bundle_id
-    if req.task_id and (not recipe_id or not bundle_id):
+    if req.task_id and (not cookbook_id or not bundle_id):
         task = await TaskRepo(db).get(req.task_id)
         if task is not None:
             bundle_id = bundle_id or task.bundle_id
-            if not recipe_id:
+            if not cookbook_id:
                 bundle = await BundleRepo(db).get(task.bundle_id)
                 if bundle is not None:
-                    recipe_id = bundle.recipe_id
+                    cookbook_id = bundle.cookbook_id
 
-    if not recipe_id:
+    if not cookbook_id:
         raise HTTPException(
             status_code=400,
-            detail="Cannot resolve recipe_id (provide recipe_id, bundle_id, or task_id)",
+            detail="Cannot resolve cookbook_id (provide cookbook_id, bundle_id, or task_id)",
         )
 
     redacted_payload = redact_value(req.payload)
@@ -111,6 +111,7 @@ async def ingest_hook(
     now = datetime.now(timezone.utc)
     event = Event(
         id=f"evt_{uuid.uuid4().hex[:8]}",
+        cookbook_id=cookbook_id,
         bundle_id=bundle_id,
         task_id=req.task_id,
         type=event_type,

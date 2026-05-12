@@ -24,12 +24,10 @@ from krewhub.models import (
     AgentStatus,
     Bundle,
     BundleStatus,
-    Recipe,
     TaskStatus,
 )
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.watch.globals import get_watch_service

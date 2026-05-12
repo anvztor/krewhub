@@ -26,7 +26,7 @@ from krewhub.auth import (
 from krewhub.config import Settings, get_settings
 from krewhub.db.connection import get_db
 from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
-from krewhub.models import Cookbook, Recipe, RecipeMember
+from krewhub.models import Cookbook
 from krewhub.repositories.cookbook_repo import CookbookRepo
 
 logger = logging.getLogger(__name__)

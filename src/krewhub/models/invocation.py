@@ -134,11 +134,6 @@ class InvocationRequest(BaseModel):
     parent_tape_id: str | None = None
     parent_fork_point: int | None = None
     idempotency_key: str | None = None
-    # Optional recipe scoping — when set, invocation events fan out
-    # through the recipe SSE stream so the cookrew operator sees HITL
-    # elicits without polling. Not persisted on the invocation row in
-    # v1; only used as a watch-event tag.
-    recipe_id: str | None = None
     # Optional bundle scoping — required when `target == "sandbox"`
     # (bare). The route resolves bare sandbox to the bundle's current
     # ready sandbox via SandboxService.ensure_sandbox_for_bundle,
