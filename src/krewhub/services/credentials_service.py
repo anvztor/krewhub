@@ -27,6 +27,28 @@ import aiosqlite
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 
+# Per-host env-var aliases. When the operator stores a credential under
+# one canonical name (e.g. GITHUB_TOKEN), get_envs also exposes it under
+# common synonyms tools in the wild actually read. This is the difference
+# between "OAuth worked end-to-end" and "OAuth worked but mcp__github
+# still says Bad credentials because it reads a different env var."
+_ENV_VAR_ALIASES: dict[str, tuple[str, ...]] = {
+    "api.github.com": (
+        "GITHUB_TOKEN",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",  # what mcp__github reads
+        "GH_TOKEN",                       # what gh CLI prefers
+    ),
+    "github.com": (
+        "GITHUB_TOKEN",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "GH_TOKEN",
+    ),
+    "api.openai.com": ("OPENAI_API_KEY",),
+    "api.anthropic.com": ("ANTHROPIC_API_KEY",),
+    "mcp.slack.com": ("SLACK_BOT_TOKEN",),
+}
+
+
 @dataclass(frozen=True)
 class CredentialRow:
     """Non-secret view of a credential. Plaintext is NOT included."""
@@ -140,17 +162,26 @@ class CredentialsService:
     async def get_envs(self, account_id: str) -> dict[str, str]:
         """Return {env_var_name: plaintext, ...} for SandboxHand to inject.
 
+        Expands aliases per upstream host (e.g. a credential stored as
+        GITHUB_TOKEN for api.github.com is also returned under
+        GITHUB_PERSONAL_ACCESS_TOKEN and GH_TOKEN, because different
+        github-touching tools read different variable names — git itself
+        reads neither, mcp__github reads GITHUB_PERSONAL_ACCESS_TOKEN,
+        gh CLI prefers GH_TOKEN, GitHub Actions sets GITHUB_TOKEN). The
+        operator stored a single credential; we shouldn't make them
+        guess which name the brain's MCP server uses.
+
         The single seam where plaintext leaves this module. The caller
         MUST pass the result into a subprocess's env dict and NEVER log it.
         """
         cursor = await self._db.execute(
-            "SELECT env_var_name, ciphertext, nonce FROM credentials "
+            "SELECT host, env_var_name, ciphertext, nonce FROM credentials "
             "WHERE account_id = ? AND archived_at IS NULL",
             (account_id,),
         )
         rows = await cursor.fetchall()
         envs: dict[str, str] = {}
-        for env_var, ct, nonce in rows:
+        for host, env_var, ct, nonce in rows:
             try:
                 plain = self._aes.decrypt(nonce, ct, None).decode()
             except Exception:
@@ -158,6 +189,11 @@ class CredentialsService:
                 # whole bundle. Caller proceeds without that credential.
                 continue
             envs[env_var] = plain
+            # Apply host-based aliases so the operator doesn't have to
+            # know which specific env var their tool expects.
+            for alias in _ENV_VAR_ALIASES.get(host, ()):
+                if alias not in envs:
+                    envs[alias] = plain
         return envs
 
     # ---- internals -----------------------------------------------------

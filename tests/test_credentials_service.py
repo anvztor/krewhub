@@ -30,7 +30,12 @@ async def test_put_then_get_envs_returns_plaintext(_setup_db):
         plaintext="ghp_top_secret",
     )
     envs = await svc.get_envs("acc_alice")
-    assert envs == {"GITHUB_TOKEN": "ghp_top_secret"}
+    # Aliased: github credentials are exposed under three common names so
+    # mcp__github (GITHUB_PERSONAL_ACCESS_TOKEN), gh CLI (GH_TOKEN), and
+    # GitHub Actions (GITHUB_TOKEN) all pick them up.
+    assert envs["GITHUB_TOKEN"] == "ghp_top_secret"
+    assert envs["GITHUB_PERSONAL_ACCESS_TOKEN"] == "ghp_top_secret"
+    assert envs["GH_TOKEN"] == "ghp_top_secret"
 
 
 @pytest.mark.asyncio
@@ -45,8 +50,14 @@ async def test_get_envs_is_account_scoped(_setup_db):
         account_id="acc_bob", host="api.github.com",
         env_var_name="GITHUB_TOKEN", plaintext="bob_token",
     )
-    assert (await svc.get_envs("acc_alice")) == {"GITHUB_TOKEN": "alice_token"}
-    assert (await svc.get_envs("acc_bob")) == {"GITHUB_TOKEN": "bob_token"}
+    alice_envs = await svc.get_envs("acc_alice")
+    assert alice_envs["GITHUB_TOKEN"] == "alice_token"
+    assert alice_envs["GITHUB_PERSONAL_ACCESS_TOKEN"] == "alice_token"
+    bob_envs = await svc.get_envs("acc_bob")
+    assert bob_envs["GITHUB_TOKEN"] == "bob_token"
+    assert bob_envs["GITHUB_PERSONAL_ACCESS_TOKEN"] == "bob_token"
+    # Cross-account isolation holds — bob_token never appears under alice
+    assert "bob_token" not in alice_envs.values()
     assert (await svc.get_envs("acc_nobody")) == {}
 
 
@@ -75,7 +86,7 @@ async def test_update_rotates_nonce_and_value(_setup_db):
     row2 = await cur.fetchone()
     assert row1[0] != row2[0], "ciphertext should rotate"
     assert row1[1] != row2[1], "nonce should rotate"
-    assert (await svc.get_envs("acc_alice")) == {"GITHUB_TOKEN": "new_token"}
+    assert (await svc.get_envs("acc_alice"))["GITHUB_TOKEN"] == "new_token"
 
 
 @pytest.mark.asyncio
@@ -155,8 +166,11 @@ async def test_corrupt_row_does_not_poison_other_envs(_setup_db):
     )
     await db.commit()
     envs = await svc.get_envs("acc_alice")
-    assert envs == {"GITHUB_TOKEN": "real_token"}, (
+    assert envs["GITHUB_TOKEN"] == "real_token", (
         "valid env survives corrupt-sibling poisoning"
+    )
+    assert "OPENAI_API_KEY" not in envs, (
+        "corrupt sibling row should not contribute envs"
     )
 
 
