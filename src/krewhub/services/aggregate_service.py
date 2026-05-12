@@ -21,11 +21,8 @@ from krewhub.repositories.task_repo import TaskRepo
 from krewhub.tape.manager import TapeManager
 from krewhub.tape.store import entry_to_dict
 
-# After step (d): bundle FSM collapses to OPEN | CLOSED. While the
-# enum still carries the legacy middle states, treat them all as
-# non-terminal for the "is this bundle active" check used by the
-# bundle picker.
-_NON_TERMINAL_STATUSES = frozenset({"open", "claimed", "cooked", "blocked"})
+# Step (d.1): bundles are OPEN | CLOSED. "Active" means open.
+_NON_TERMINAL_STATUSES = frozenset({"open"})
 
 
 def _model_to_dict(obj: Any) -> dict:

@@ -1,8 +1,8 @@
 """Classify event types as user-visible or system-only.
 
 Used to split the firehose of agent execution events (tool_use,
-thinking, agent_reply) from human-visible milestones (digest decisions,
-fact_added, code_pushed).
+thinking, agent_reply) from human-visible milestones (bundle close
+events, fact_added, code_pushed).
 
 This enables the frontend to show a clean "activity log" by filtering
 on ?visibility=user, while keeping the full trace available for
@@ -22,9 +22,9 @@ _USER_VISIBLE_TYPES = frozenset({
     "milestone",     # human-authored or agent-summarized milestone
     "fact_added",
     "code_pushed",
-    "digest_submitted",
-    "digest_approved",
-    "digest_rejected",
+    # Phase 12 step (d): bundle lifecycle replaces the digest decisions.
+    "bundle_closed",
+    "bundle_reopened",
 })
 
 # Verbose execution telemetry — hidden by default in the "activity log"

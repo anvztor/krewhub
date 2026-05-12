@@ -287,7 +287,9 @@ async def claim_task(
             detail="Cannot claim task. Check status and dependencies.",
         )
 
-    await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): bundle status is no longer derived from task aggregate.
+    # Bundle stays OPEN until explicitly closed via PATCH
+    # /cookbooks/{cb}/bundles/{id}.
 
     # Inherit bundle.sandbox_id when task.sandbox_id is null. The
     # daemon merges this response into `task_detail` and passes
@@ -412,9 +414,7 @@ async def update_task_status(
     if updated is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = await TaskRepo(db).get(task_id)
-    if task:
-        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): no bundle-status recompute — bundle is dumb container.
 
     return {"task": updated.model_dump(mode="json")}
 

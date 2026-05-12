@@ -224,14 +224,9 @@ class BundleService:
                 dispatch_cycle=dispatch_cycle,
             )
         except (GraphValidationError, GraphExecError) as exc:
-            # DEPRECATED — writing BundleStatus.BLOCKED on graph
-            # validation failure. Under OPEN/CLOSED this should raise
-            # without touching bundle status; the failure belongs in
-            # an event/log, not the bundle FSM.
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason=f"graph artifact rejected: {exc}"[:500],
-            )
+            # Under OPEN/CLOSED, sandbox failures don't move the
+            # bundle status. The 422 surfaces the issue to the caller;
+            # the bundle stays OPEN and can accept a fixed retry.
             logger.warning(
                 "attach_graph_artifact: bundle %s sandbox rejected: %s", bundle_id, exc,
             )
@@ -240,12 +235,7 @@ class BundleService:
         # 2. Structure + mermaid
         node_ids, edges = extract_graph_structure(graph)
         if not node_ids:
-            # DEPRECATED — same as above; do not move bundle to BLOCKED
-            # when migrated to the two-state model.
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason="graph artifact has no user-step nodes",
-            )
+            # Same policy — surface as 422, don't touch bundle FSM.
             raise GraphArtifactError(422, "graph contains no executable steps")
 
         rendered = render_graph(graph, direction="LR")

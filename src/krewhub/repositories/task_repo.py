@@ -77,16 +77,35 @@ class TaskRepo:
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 
-    async def list_active_by_agent(self, recipe_id: str, agent_id: str) -> list[Task]:
-        cursor = await self._db.execute(
-            """SELECT t.* FROM tasks t
-               JOIN bundles b ON t.bundle_id = b.id
-               WHERE b.recipe_id = ?
-                 AND t.claimed_by_agent_id = ?
-                 AND t.status IN ('claimed', 'working')
-               ORDER BY t.rowid""",
-            (recipe_id, agent_id),
-        )
+    async def list_active_by_agent(
+        self, recipe_id: str | None, agent_id: str,
+    ) -> list[Task]:
+        """Active tasks an agent already holds in a given recipe.
+
+        Used by claim_task to enforce single-active-task per agent.
+        recipe_id=None matches cookbook-scoped bundles (no recipe);
+        the lookup still works on bundle.recipe_id directly.
+        """
+        if recipe_id is None:
+            cursor = await self._db.execute(
+                """SELECT t.* FROM tasks t
+                   JOIN bundles b ON t.bundle_id = b.id
+                   WHERE b.recipe_id IS NULL
+                     AND t.claimed_by_agent_id = ?
+                     AND t.status IN ('claimed', 'working')
+                   ORDER BY t.rowid""",
+                (agent_id,),
+            )
+        else:
+            cursor = await self._db.execute(
+                """SELECT t.* FROM tasks t
+                   JOIN bundles b ON t.bundle_id = b.id
+                   WHERE b.recipe_id = ?
+                     AND t.claimed_by_agent_id = ?
+                     AND t.status IN ('claimed', 'working')
+                   ORDER BY t.rowid""",
+                (recipe_id, agent_id),
+            )
         rows = await cursor.fetchall()
         return [_row_to_task(r) for r in rows]
 

@@ -5,7 +5,6 @@ import logging
 import aiosqlite
 
 from krewhub.controllers.base import BaseController
-from krewhub.controllers.bundle_controller import BundleController
 from krewhub.controllers.graph_runner import GraphRunnerController
 from krewhub.controllers.planner_dispatch import PlannerDispatchController
 from krewhub.controllers.presence_controller import PresenceController
@@ -29,8 +28,10 @@ class ControllerManager:
         *,
         heartbeat_timeout: float = 30.0,
     ) -> None:
+        # Phase 12 step (d.1): BundleController removed. Bundle FSM is
+        # now OPEN ↔ CLOSED and not derived from tasks, so the
+        # reconciler has nothing to do.
         self._controllers: list[BaseController] = [
-            BundleController(db, watch, interval=2.0),
             TaskDispatchController(db, watch, interval=2.0),
             PlannerDispatchController(db, watch, interval=2.0),
             GraphRunnerController(db, watch, interval=2.0, max_concurrent=4),

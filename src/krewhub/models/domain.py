@@ -14,24 +14,19 @@ class Role(StrEnum):
 
 
 class BundleStatus(StrEnum):
-    # New model: bundles are dumb containers with only OPEN/CLOSED.
-    # Task-level status remains authoritative; the bundle does not
-    # approve or reject task work. All middle/derived states below
-    # are DEPRECATED and slated for removal once callers (controllers,
-    # routes, tests, schema, watch channels) are migrated.
+    """Phase 12 step (d.1): collapsed FSM.
+
+    Bundle is a dumb container. Task-level FSM is authoritative; the
+    bundle does not derive from task aggregate, does not approve or
+    reject task work, and does not have BLOCKED / CANCELLED terminal
+    states. Lifecycle is just open ↔ closed (idempotent, reversible).
+
+    Migration backfilled legacy rows:
+        CLAIMED / COOKED / BLOCKED → OPEN
+        CANCELLED / DIGESTED / REJECTED → CLOSED
+    """
     OPEN = "open"
     CLOSED = "closed"
-
-    # DEPRECATED — derived from task aggregate. Removal target after
-    # bundle_controller._compute_bundle_phase + graph_runner are migrated.
-    CLAIMED = "claimed"
-    COOKED = "cooked"
-    BLOCKED = "blocked"
-
-    # DEPRECATED — set by cancel_bundle()/digest_service. Will fold into CLOSED.
-    CANCELLED = "cancelled"
-    DIGESTED = "digested"
-    REJECTED = "rejected"
 
 
 class TaskStatus(StrEnum):

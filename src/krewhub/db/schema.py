@@ -63,15 +63,9 @@ CREATE TABLE IF NOT EXISTS bundles (
     repo_spec TEXT,
     prompt TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open'
-        -- Phase 12 step (d): the canonical statuses are now just
-        -- 'open' and 'closed'. Legacy values stay in the CHECK so
-        -- existing rows don't blow up before backfill — they're
-        -- treated as 'open' by code and will collapse on next
-        -- migration pass.
-        CHECK(status IN (
-            'open', 'closed',
-            'claimed', 'cooked', 'blocked', 'cancelled', 'digested', 'rejected'
-        )),
+        -- Phase 12 step (d.1): collapsed to OPEN/CLOSED. Middle
+        -- states were folded by migration (_collapse_bundles_status).
+        CHECK(status IN ('open', 'closed')),
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     claimed_at TEXT,

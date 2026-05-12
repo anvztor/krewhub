@@ -109,10 +109,8 @@ class GraphAttachmentService:
                 dispatch_cycle=dispatch_cycle,
             )
         except (GraphValidationError, GraphExecError) as exc:
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason=f"graph artifact rejected: {exc}"[:500],
-            )
+            # Step (d.1): sandbox failures don't move the bundle FSM.
+            # Surface as 422; caller can retry with corrected code.
             logger.warning(
                 "attach_graph_artifact: bundle %s sandbox rejected: %s", bundle_id, exc,
             )
@@ -121,10 +119,6 @@ class GraphAttachmentService:
         # 2. Structure + mermaid
         node_ids, edges = extract_graph_structure(graph)
         if not node_ids:
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason="graph artifact has no user-step nodes",
-            )
             raise GraphArtifactError(422, "graph contains no executable steps")
 
         rendered = render_graph(graph, direction="LR")

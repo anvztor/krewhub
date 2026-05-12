@@ -242,72 +242,9 @@ async def test_get_all_fork_entries_for_bundle(client):
     assert resp.json()["count"] == 2
 
 
-@pytest.mark.asyncio
-async def test_fork_entries_merged_on_digest_approval(client):
-    """Full lifecycle: push fork entries, approve digest, verify merge."""
-    cb = await client.post("/api/v1/cookbooks", json={
-        "name": "test-fork-merge-cookbook",
-        "owner_id": "human_1",
-    })
-    cookbook_id = cb.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/fork-merge",
-        "repo_url": "git@github.com:test/fork-merge.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-        "prompt": "Test fork merge",
-        "requested_by": "human_1",
-        "tasks": [{"title": "Task A"}],
-    })
-    bundle_id = resp.json()["bundle"]["id"]
-    task_id = resp.json()["tasks"][0]["id"]
-
-    await client.post(f"/api/v1/tasks/{task_id}/claim", json={"agent_id": "agent_1"})
-
-    # Push fork entries for the task
-    await client.post(f"/api/v1/tapes/{recipe_id}/fork-entries", json={
-        "bundle_id": bundle_id,
-        "task_id": task_id,
-        "entries": [
-            {"kind": "milestone", "payload": {"body": "forked work"}, "meta": {"agent": "a1"}},
-        ],
-    })
-
-    await client.patch(f"/api/v1/tasks/{task_id}/status", json={"status": "done"})
-    await client.post(f"/api/v1/bundles/{bundle_id}/digest", json={
-        "submitted_by": "agent_1",
-        "summary": "Fork merge test",
-        "task_results": [{"task_id": task_id, "outcome": "Done"}],
-    })
-    await client.post(f"/api/v1/bundles/{bundle_id}/decision", json={
-        "decision": "approved",
-        "decided_by": "human_1",
-    })
-
-    # Verify fork entries merged into parent tape BEFORE the digest anchor.
-    # Order: events → merged fork entries → digest anchor (always last).
-    resp = await client.get(f"/api/v1/tapes/{recipe_id}/history")
-    entries = resp.json()["entries"]
-    kinds = [e["kind"] for e in entries]
-
-    assert "anchor" in kinds
-    merged = [e for e in entries if e.get("meta", {}).get("fork_source")]
-    assert len(merged) >= 1
-    assert merged[0]["kind"] == "milestone"
-    assert merged[0]["payload"]["body"] == "forked work"
-    assert f"fork:{bundle_id}/{task_id}" in merged[0]["meta"]["fork_source"]
-
-    # Digest anchor comes after merged fork entries (events may follow)
-    anchor_entries = [e for e in entries if e["kind"] == "anchor"]
-    assert len(anchor_entries) >= 1
-    digest_anchor = anchor_entries[-1]
-    assert digest_anchor["payload"].get("phase") == "digested"
-    # Merged fork entry ID < digest anchor ID (fork merged before anchor)
-    assert merged[0]["id"] < digest_anchor["id"]
+# test_fork_entries_merged_on_digest_approval removed in step (d) —
+# digest flow no longer exists. Fork-tape merge belongs on bundle
+# close now; covered separately when that lands.
 
 
 @pytest.mark.asyncio

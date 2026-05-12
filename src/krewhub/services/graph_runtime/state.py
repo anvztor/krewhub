@@ -85,7 +85,10 @@ class OrchestratorState:
 
     prompt: str
     bundle_id: str
-    recipe_id: str
+    # Phase 12: recipe_id is now optional; cookbook-scoped bundles
+    # don't have a recipe. The graph runtime is generally indifferent
+    # to recipe_id — it's passed for back-compat in event payloads.
+    recipe_id: str | None = None
     iteration: int = 0  # global tick counter, advanced by Orchestrator if used
     task_results: dict[str, TaskNodeResult] = field(default_factory=dict)
     # Agents that have already been dispatched to *any* task in this bundle.

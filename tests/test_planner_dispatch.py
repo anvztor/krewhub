@@ -193,7 +193,7 @@ class TestEligibility:
         await BundleRepo(db).create(
             Bundle(
                 id=f"b-{suffix}", recipe_id=recipe_id, prompt="x",
-                status=BundleStatus.CANCELLED, created_by="h",
+                status=BundleStatus.CLOSED, created_by="h",
                 created_at=_now(),
             )
         )

@@ -155,7 +155,7 @@ class GraphRunnerController(BaseController):
             # Last-resort safety net: any unhandled exception inside the
             # runner must mark the bundle BLOCKED so it doesn't loop.
             logger.exception("graph runner: unhandled error for bundle %s", bundle_id)
-            await self._mark_blocked(bundle_id, f"runner crash: {exc}")
+            await self._emit_graph_milestone(bundle_id, f"runner crash: {exc}", success=False)
         finally:
             self._in_flight.discard(bundle_id)
 
@@ -169,11 +169,12 @@ class GraphRunnerController(BaseController):
             logger.warning("graph runner: bundle %s missing or no graph_code", bundle_id)
             return
 
-        recipe = await recipe_repo.get(bundle.recipe_id)
+        recipe = await recipe_repo.get(bundle.recipe_id) if bundle.recipe_id else None
         if recipe is None or recipe.cookbook_id is None:
-            await self._mark_blocked(
+            await self._emit_graph_milestone(
                 bundle_id,
                 f"bundle's recipe {bundle.recipe_id} has no cookbook",
+                success=False,
             )
             return
 
@@ -186,15 +187,16 @@ class GraphRunnerController(BaseController):
                 dispatch_cycle=dispatch_cycle,
             )
         except (GraphValidationError, GraphExecError) as exc:
-            await self._mark_blocked(bundle_id, f"graph compile failed: {exc}")
+            await self._emit_graph_milestone(bundle_id, f"graph compile failed: {exc}", success=False)
             return
 
         # 2. Build the node_id → task_id map from the bundle's tasks.
         task_id_map = await task_repo.build_node_id_map(bundle_id)
         if not task_id_map:
-            await self._mark_blocked(
+            await self._emit_graph_milestone(
                 bundle_id,
                 "no graph-bound tasks found for bundle (graph_node_id is NULL on all rows)",
+                success=False,
             )
             return
 
@@ -233,7 +235,7 @@ class GraphRunnerController(BaseController):
                     # dispatch_cycle's task row updates; nothing more to do here.
                     pass
         except Exception as exc:
-            await self._mark_blocked(bundle_id, f"graph.iter failed: {exc}")
+            await self._emit_graph_milestone(bundle_id, f"graph.iter failed: {exc}", success=False)
             return
 
         # 5. Aggregate results and finalize the bundle row.
@@ -241,48 +243,32 @@ class GraphRunnerController(BaseController):
             r.success for r in state.task_results.values()
         )
         if all_success:
-            # Before declaring the bundle COOKED, re-verify every task row
-            # is in a terminal state. graph.iter() returning doesn't prove
-            # this — an async branch could have recorded success in state
-            # while the task row is still WORKING (race against a sibling
-            # dispatch_cycle that's still polling). Submitting a digest
-            # against a working bundle causes the "done → open again" flap.
+            # Re-verify every task row is in a terminal state. graph.iter()
+            # returning doesn't prove this — an async branch could have
+            # recorded success in state while the task row is still WORKING
+            # (race against a sibling dispatch_cycle still polling).
             bundle_tasks = await task_repo.list_by_bundle(bundle_id)
             _TERMINAL = (TaskStatus.DONE, TaskStatus.BLOCKED, TaskStatus.CANCELLED)
             non_terminal = [t for t in bundle_tasks if t.status not in _TERMINAL]
             if non_terminal:
-                await self._mark_blocked(
+                await self._emit_graph_milestone(
                     bundle_id,
                     "graph finished but {n} task(s) non-terminal: {ids}".format(
                         n=len(non_terminal),
                         ids=", ".join(f"{t.id}={t.status}" for t in non_terminal[:5]),
                     ),
-                )
-                return
-
-            updated = await bundle_repo.update_status(
-                bundle_id,
-                BundleStatus.COOKED,
-                cooked_at=datetime.now(timezone.utc),
-            )
-            if updated is None:
-                # Bundle was mutated out from under us (e.g. cancelled);
-                # don't submit a digest against unknown state.
-                logger.warning(
-                    "graph runner: bundle %s COOKED transition returned None; "
-                    "skipping digest auto-submit",
-                    bundle_id,
+                    success=False,
                 )
                 return
 
             logger.info(
-                "graph runner: bundle %s COOKED (%d nodes)",
+                "graph runner: bundle %s graph completed (%d nodes)",
                 bundle_id, len(state.task_results),
             )
-            await self._watch.record_resource(
-                "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-                recipe_id=updated.recipe_id,
-                cookbook_id=updated.cookbook_id,
+            await self._emit_graph_milestone(
+                bundle_id,
+                f"Graph completed: {len(state.task_results)} nodes succeeded",
+                success=True,
             )
         else:
             failures = [
@@ -291,67 +277,55 @@ class GraphRunnerController(BaseController):
                 if not r.success
             ]
             reason = "; ".join(failures) or "no task results recorded"
-            await self._mark_blocked(bundle_id, reason)
+            await self._emit_graph_milestone(bundle_id, reason, success=False)
 
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
 
-    async def _mark_blocked(self, bundle_id: str, reason: str) -> None:
-        """Mark a bundle BLOCKED and surface the change over the watch bus.
+    async def _emit_graph_milestone(
+        self, bundle_id: str, body: str, *, success: bool,
+    ) -> None:
+        """Step (d.1): graph completion no longer writes bundle status.
 
-        Emitting a MODIFIED watch event is the only way cookrew's SSE
-        feed learns the bundle flipped — without it the UI keeps
-        showing the last-loaded status (usually ``open``) and the user
-        has no visible signal that the graph run ended, nor access to
-        the Re-Run affordance that's gated on ``bundle.status``.
+        Bundle is a dumb container — we just emit a MILESTONE event and
+        let downstream observers (UI, reapers, caller's close logic)
+        decide what to do. Tape entry preserves the trace for replay.
         """
+        bundle = await BundleRepo(self._db).get(bundle_id)
+        if bundle is None:
+            return
+
+        from krewhub.repositories.event_repo import EventRepo
+        from krewhub.models import ActorType, EventType, Event
+        import uuid
+
+        evt_body = body[:500]
         try:
-            updated = await BundleRepo(self._db).update_status(
-                bundle_id,
-                BundleStatus.BLOCKED,
-                blocked_reason=reason[:500],
+            event = Event(
+                id=f"evt_{uuid.uuid4().hex[:8]}",
+                recipe_id=bundle.recipe_id,
+                cookbook_id=bundle.cookbook_id,
+                bundle_id=bundle_id,
+                type=EventType.MILESTONE,
+                actor_id="graph-runner",
+                actor_type=ActorType.SYSTEM,
+                body=evt_body,
+                payload={"graph_success": success},
+                created_at=datetime.now(timezone.utc),
+            )
+            await EventRepo(self._db).create(event)
+        except Exception:
+            logger.exception(
+                "graph runner: failed to emit milestone event for %s", bundle_id,
+            )
+
+        try:
+            await self._watch.record_resource(
+                "bundle", bundle_id, WatchEventType.MODIFIED, bundle,
+                recipe_id=bundle.recipe_id, cookbook_id=bundle.cookbook_id,
             )
         except Exception:
             logger.exception(
-                "graph runner: failed to mark bundle %s blocked", bundle_id,
+                "graph runner: failed to emit watch event for %s", bundle_id,
             )
-            return
-
-        logger.info(
-            "graph runner: bundle %s BLOCKED — %s", bundle_id, reason,
-        )
-
-        if updated is not None:
-            try:
-                await self._watch.record_resource(
-                    "bundle", bundle_id, WatchEventType.MODIFIED, updated,
-                    recipe_id=updated.recipe_id,
-                )
-            except Exception:
-                # A watch-bus failure must not mask the DB update;
-                # the runner already owns the terminal state.
-                logger.exception(
-                    "graph runner: failed to emit watch event for blocked "
-                    "bundle %s", bundle_id,
-                )
-            # Write error to tape so the blocked reason is part of the
-            # tape history — without this, graph failures leave no trace.
-            try:
-                from krewhub.tape.manager import TapeManager
-                from republic import TapeEntry
-                tape = TapeManager(self._db, updated.recipe_id)
-                await tape._store.append(
-                    tape._tape_name,
-                    TapeEntry(
-                        id=0, kind="event",
-                        payload={
-                            "bundle_id": bundle_id,
-                            "body": f"Graph blocked: {reason[:400]}",
-                            "phase": "blocked",
-                        },
-                        meta={"actor_type": "system", "event_type": "graph_blocked"},
-                    ),
-                )
-            except Exception:
-                logger.debug("graph runner: failed to write tape entry for %s", bundle_id)

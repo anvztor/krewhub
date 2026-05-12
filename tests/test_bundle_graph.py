@@ -219,7 +219,10 @@ class TestAttachRejection:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_422_on_invalid_code_marks_bundle_blocked(self):
+    async def test_422_on_invalid_code_leaves_bundle_open(self):
+        """Step (d.1): graph rejection raises 422 but bundle stays
+        OPEN. The failure belongs in the caller's response, not the
+        bundle FSM."""
         bundle_id, _r, _c = await _seed_empty_bundle()
         db = await get_db()
         svc = BundleService(db, get_watch_service())
@@ -231,9 +234,7 @@ class TestAttachRejection:
 
         bundle = await BundleRepo(db).get(bundle_id)
         assert bundle is not None
-        assert bundle.status == BundleStatus.BLOCKED
-        assert bundle.blocked_reason is not None
-        assert "rejected" in bundle.blocked_reason
+        assert bundle.status == BundleStatus.OPEN
 
     @pytest.mark.asyncio
     async def test_422_when_graph_has_no_user_steps(self):

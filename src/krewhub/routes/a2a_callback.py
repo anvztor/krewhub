@@ -147,10 +147,7 @@ async def task_callback(
             recipe_id=recipe_id,
         )
 
-    # Recompute bundle status (may transition to cooked/blocked)
-    if bundle is not None:
-        from krewhub.services.bundle_service import BundleService
-        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): bundle status is OPEN/CLOSED only; no recompute.
 
     return {
         "task": updated.model_dump(mode="json") if updated else None,

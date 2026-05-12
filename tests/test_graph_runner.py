@@ -284,8 +284,15 @@ class TestRunnerExecution:
 
             bundle = await BundleRepo(db).get(bundle_id)
             assert bundle is not None
-            assert bundle.status == BundleStatus.COOKED
-            assert bundle.cooked_at is not None
+            # Step (d.1): bundle stays OPEN. Success surfaces as a
+            # MILESTONE event, not a status flip.
+            assert bundle.status == BundleStatus.OPEN
+            cursor = await db.execute(
+                "SELECT body FROM events WHERE bundle_id = ? AND type = 'milestone'",
+                (bundle_id,),
+            )
+            milestones = await cursor.fetchall()
+            assert any("completed" in (m["body"] or "") for m in milestones)
 
             # Both tasks should have been dispatched
             assert runner._http.post.await_count >= 2
@@ -293,7 +300,9 @@ class TestRunnerExecution:
             await runner.stop()
 
     @pytest.mark.asyncio
-    async def test_marks_blocked_when_step_fails(self):
+    async def test_emits_failure_milestone_when_step_fails(self):
+        """Step (d.1): on failure, graph runner emits a MILESTONE event
+        instead of marking the bundle BLOCKED. Bundle stays OPEN."""
         bundle_id, _task_ids = await _seed_runnable_bundle()
         db = await get_db()
 
@@ -301,7 +310,6 @@ class TestRunnerExecution:
             db, get_watch_service(),
             poll_interval=0.01, task_timeout=0.2,
         )
-        # Gateway always rejects → cycle exhausts → bundle BLOCKED
         runner._http = AsyncMock(spec=httpx.AsyncClient)
         runner._http.post.return_value = _mock_post_response(status_code=500)
         runner._http.aclose = AsyncMock()
@@ -310,14 +318,22 @@ class TestRunnerExecution:
             await runner._execute_bundle(bundle_id)
             bundle = await BundleRepo(db).get(bundle_id)
             assert bundle is not None
-            assert bundle.status == BundleStatus.BLOCKED
-            assert bundle.blocked_reason
-            assert "step_a" in bundle.blocked_reason or "exhausted" in bundle.blocked_reason
+            # Bundle stays OPEN — no BLOCKED transition.
+            assert bundle.status == BundleStatus.OPEN
+            # A failure milestone event was emitted.
+            cursor = await db.execute(
+                "SELECT body, payload FROM events "
+                "WHERE bundle_id = ? AND type = 'milestone'",
+                (bundle_id,),
+            )
+            rows = await cursor.fetchall()
+            assert len(rows) >= 1
         finally:
             await runner.stop()
 
     @pytest.mark.asyncio
-    async def test_invalid_graph_code_marks_blocked(self):
+    async def test_invalid_graph_code_keeps_bundle_open(self):
+        """Step (d.1): graph compile failure no longer writes BLOCKED."""
         bad_code = "import os\ngraph = None"
         bundle_id, _task_ids = await _seed_runnable_bundle(graph_code=bad_code)
         db = await get_db()
@@ -327,14 +343,13 @@ class TestRunnerExecution:
             await runner._execute_bundle(bundle_id)
             bundle = await BundleRepo(db).get(bundle_id)
             assert bundle is not None
-            assert bundle.status == BundleStatus.BLOCKED
-            assert bundle.blocked_reason is not None
-            assert "graph compile failed" in bundle.blocked_reason
+            assert bundle.status == BundleStatus.OPEN
         finally:
             await runner.stop()
 
     @pytest.mark.asyncio
-    async def test_bundle_with_no_graph_node_tasks_marks_blocked(self):
+    async def test_bundle_with_no_graph_node_tasks_keeps_open(self):
+        """Step (d.1): orphan tasks don't flip the bundle to BLOCKED."""
         suffix = _next_suffix()
         db = await get_db()
         await db.execute(
@@ -357,7 +372,6 @@ class TestRunnerExecution:
                 graph_code=GOOD_GRAPH_CODE, graph_mermaid="x",
             )
         )
-        # Create a task WITHOUT graph_node_id
         await TaskRepo(db).create(
             Task(
                 id=f"t-{suffix}", bundle_id=bundle.id, title="orphan",
@@ -370,9 +384,7 @@ class TestRunnerExecution:
             await runner._execute_bundle(bundle.id)
             updated = await BundleRepo(db).get(bundle.id)
             assert updated is not None
-            assert updated.status == BundleStatus.BLOCKED
-            assert updated.blocked_reason is not None
-            assert "graph_node_id" in updated.blocked_reason
+            assert updated.status == BundleStatus.OPEN
         finally:
             await runner.stop()
 
@@ -411,9 +423,21 @@ class TestReconcileSpawning:
         try:
             await runner.reconcile()
             assert bundle_id in runner._in_flight
-            # Wait for the spawned task to complete
-            await _wait_for_bundle_status(bundle_id, BundleStatus.COOKED, timeout=5.0)
+            # Wait for the spawned task to complete. Bundle stays OPEN
+            # under step (d.1); we wait for the milestone event instead.
             await flip_task
+            db = await get_db()
+            deadline = asyncio.get_event_loop().time() + 5.0
+            while asyncio.get_event_loop().time() < deadline:
+                cursor = await db.execute(
+                    "SELECT 1 FROM events WHERE bundle_id = ? AND type = 'milestone'",
+                    (bundle_id,),
+                )
+                if await cursor.fetchone():
+                    break
+                await asyncio.sleep(0.05)
+            else:
+                pytest.fail("graph runner did not emit milestone event")
         finally:
             await runner.stop()
 

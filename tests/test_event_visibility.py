@@ -58,11 +58,11 @@ class TestDefaultVisibility:
         assert resp.json()["event"]["visibility"] == "system"
 
     @pytest.mark.asyncio
-    async def test_digest_events_are_user_visible(self, client):
+    async def test_bundle_lifecycle_events_are_user_visible(self, client):
         _, _, task_id = await _setup_task(client)
         resp = await client.post(f"/api/v1/tasks/{task_id}/events", json={
-            "type": "digest_approved", "actor_id": "u1", "actor_type": "human",
-            "body": "Approved",
+            "type": "bundle_closed", "actor_id": "u1", "actor_type": "human",
+            "body": "Closed",
         })
         assert resp.status_code == 200
         assert resp.json()["event"]["visibility"] == "user"
@@ -85,7 +85,7 @@ class TestVisibilityClassifier:
 
     def test_user_visible_types(self):
         from krewhub.services.event_visibility import classify_visibility
-        for t in ("milestone", "digest_submitted", "digest_approved", "digest_rejected",
+        for t in ("milestone", "bundle_closed", "bundle_reopened",
                   "fact_added", "code_pushed", "prompt", "plan", "task_claimed"):
             assert classify_visibility(t) == "user", f"{t} should be user-visible"
 

@@ -394,6 +394,12 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _migrate_events_add_bundle_lifecycle_types(db)
     await _migrate_bundles_add_closed_status(db)
 
+    # Phase 12 step (d.1): collapse bundles.status to OPEN | CLOSED.
+    # Folds legacy middle states (claimed/cooked/blocked → open;
+    # cancelled/digested/rejected → closed) and tightens the CHECK
+    # constraint to the two-value set. Idempotent.
+    await _collapse_bundles_status_to_open_closed(db)
+
     await db.commit()
 
 
@@ -607,6 +613,84 @@ async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
                     "Migration: cookbook_id backfill on watch_log skipped: %s",
                     exc,
                 )
+
+
+async def _collapse_bundles_status_to_open_closed(
+    db: aiosqlite.Connection,
+) -> None:
+    """Step (d.1): collapse the BundleStatus FSM to OPEN | CLOSED.
+
+    Two-step idempotent migration:
+      1. UPDATE existing rows to fold middle states (skipped rows that
+         are already canonical):
+           CLAIMED / COOKED / BLOCKED         → OPEN
+           CANCELLED / DIGESTED / REJECTED    → CLOSED
+      2. Rebuild the table to tighten the CHECK constraint to just
+         ('open', 'closed'). Skipped if already tight.
+    """
+    if not await _table_exists(db, "bundles"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='bundles'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    sql = (row["sql"] or "")
+    # If CHECK already tight, nothing to do.
+    if "'claimed'" not in sql and "'cooked'" not in sql:
+        return
+
+    logger.info("Migration: collapsing bundles.status middle states to open/closed")
+    await db.execute(
+        "UPDATE bundles SET status = 'open' "
+        "WHERE status IN ('claimed', 'cooked', 'blocked')"
+    )
+    await db.execute(
+        "UPDATE bundles SET status = 'closed' "
+        "WHERE status IN ('cancelled', 'digested', 'rejected')"
+    )
+
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    cols = [r["name"] for r in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        CREATE TABLE bundles_new (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT REFERENCES recipes(id),
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            repo_spec TEXT,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN ('open', 'closed')),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            cooked_at TEXT,
+            digested_at TEXT,
+            blocked_reason TEXT,
+            graph_code TEXT,
+            graph_mermaid TEXT,
+            resource_version INTEGER NOT NULL DEFAULT 1,
+            generation INTEGER NOT NULL DEFAULT 1,
+            owner_account_id TEXT,
+            default_agent_runtime_id TEXT,
+            sandbox_id TEXT,
+            autoplan_enabled INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO bundles_new ({col_list})
+            SELECT {col_list} FROM bundles;
+        DROP TABLE bundles;
+        ALTER TABLE bundles_new RENAME TO bundles;
+        CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_runnable
+            ON bundles(status) WHERE graph_code IS NOT NULL;
+        """
+    )
 
 
 async def _migrate_bundles_add_closed_status(
