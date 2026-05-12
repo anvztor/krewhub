@@ -6,24 +6,15 @@ import pytest
 
 
 async def _setup_claimed_task(client) -> tuple[str, str, str]:
-    """Create a cookbook/recipe/bundle/task and claim it, returning IDs."""
+    """Create cookbook/bundle/task and claim it; returns (cookbook_id, bundle_id, task_id)."""
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "session-iso-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
 
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/session-iso",
-        "repo_url": "git@github.com:test/session-iso.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Session isolation test",
-        "requested_by": "human_1",
         "tasks": [{"title": "Guarded task"}],
     })
     bundle_id = resp.json()["bundle"]["id"]
@@ -32,7 +23,7 @@ async def _setup_claimed_task(client) -> tuple[str, str, str]:
     await client.post(f"/api/v1/tasks/{task_id}/claim", json={
         "agent_id": "agent_alpha",
     })
-    return recipe_id, bundle_id, task_id
+    return cookbook_id, bundle_id, task_id
 
 
 def _event_payload(session_token: str | None = None) -> dict:

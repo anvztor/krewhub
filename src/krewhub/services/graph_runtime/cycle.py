@@ -445,7 +445,12 @@ async def _assemble_upstream_context(
     tid_to_nid = {v: k for k, v in deps.task_id_map.items()}
 
     sections: list[str] = []
-    tape = TapeManager(deps.db, state.recipe_id)
+    # Phase 12: cookbook-scoped tape; legacy recipe_id is None for new bundles.
+    tape_name = (
+        f"recipe:{state.recipe_id}" if state.recipe_id
+        else f"cookbook:{deps.cookbook_id}"
+    )
+    tape = TapeManager(deps.db, tape_name)
 
     for task_id in upstream_task_ids:
         node_id = tid_to_nid.get(task_id, task_id)

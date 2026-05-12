@@ -352,8 +352,17 @@ class TestAttachThenRun:
             await runner._execute_bundle(bundle_id)
             await flip_task
 
+            # Step (d.1): bundle is a dumb container — runner emits a
+            # MILESTONE event instead of flipping to COOKED. Bundle stays OPEN.
             bundle = await BundleRepo(db).get(bundle_id)
             assert bundle is not None
-            assert bundle.status == BundleStatus.COOKED, bundle.blocked_reason
+            assert bundle.status == BundleStatus.OPEN
+            cur = await db.execute(
+                "SELECT type, payload FROM events "
+                "WHERE bundle_id = ? AND type = 'milestone'",
+                (bundle_id,),
+            )
+            milestones = await cur.fetchall()
+            assert len(milestones) >= 1
         finally:
             await runner.stop()

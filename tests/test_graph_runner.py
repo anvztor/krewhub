@@ -388,6 +388,7 @@ class TestReconcileSpawning:
             db, get_watch_service(),
             poll_interval=0.01, task_timeout=2.0,
         )
+        runner._startup_grace = 0  # bypass agent-heartbeat warmup
         runner._http = AsyncMock(spec=httpx.AsyncClient)
         runner._http.post.return_value = _mock_post_response(state="working")
         runner._http.aclose = AsyncMock()

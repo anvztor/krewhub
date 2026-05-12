@@ -17,11 +17,21 @@ from krewhub.tape.store import SqliteTapeStore
 
 
 class TapeManager:
-    """Manages tape operations for a recipe."""
+    """Manages tape operations for a tape namespace.
 
-    def __init__(self, db: aiosqlite.Connection, recipe_id: str) -> None:
+    Phase 12 step (e): callers pass a fully-qualified tape name —
+    e.g. ``cookbook:{cookbook_id}`` or ``recipe:{recipe_id}`` — and
+    the manager stores entries under that exact key. Previously the
+    constructor implicitly prefixed with ``recipe:``; that hard-coded
+    coupling was retired when recipes were collapsed away.
+    """
+
+    def __init__(self, db: aiosqlite.Connection, tape_name: str) -> None:
         self._store = SqliteTapeStore(db)
-        self._tape_name = f"recipe:{recipe_id}"
+        if ":" not in tape_name:
+            # Back-compat: a bare id (legacy call sites) means recipe-scoped.
+            tape_name = f"recipe:{tape_name}"
+        self._tape_name = tape_name
 
     async def record_event(self, event: Event) -> TapeEntry:
         payload: dict[str, Any] = {

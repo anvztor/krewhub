@@ -626,10 +626,10 @@ async def post_task_hitl_answer(
     # 2. Drop a HITL event onto the bundle stream.
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
-    recipe_id = bundle.recipe_id if bundle else None
+    cookbook_id = bundle.cookbook_id if bundle else None
 
     svc = TaskService(db, get_watch_service())
-    if recipe_id:
+    if cookbook_id:
         await svc.post_event(
             task_id,
             event_type=EventType.PROMPT,
@@ -649,7 +649,7 @@ async def post_task_hitl_answer(
         clear_claim=True,
         clear_blocked_reason=True,
     )
-    if updated is not None and recipe_id:
+    if updated is not None and cookbook_id:
         await get_watch_service().record_resource(
             "task", task_id, WatchEventType.MODIFIED, updated,
         )

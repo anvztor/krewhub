@@ -13,17 +13,17 @@ from httpx import AsyncClient
 
 
 async def _seed_recipe(client: AsyncClient) -> str:
-    """Use init-workspace to create cookbook + recipe under the cookie account."""
+    """Use init-workspace to create the user's cookbook. Returns cookbook_id."""
     r = await client.post("/api/v1/me/init-workspace")
     assert r.status_code == 200, r.text
-    return r.json()["recipe"]["id"]
+    return r.json()["cookbook"]["id"]
 
 
 @pytest.mark.asyncio
 async def test_default_bundle_creation_is_inert(cookie_client: AsyncClient):
-    recipe_id = await _seed_recipe(cookie_client)
+    cookbook_id = await _seed_recipe(cookie_client)
     r = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
         json={"prompt": "", "requested_by": "tester", "tasks": []},
     )
     assert r.status_code == 200, r.text
@@ -52,9 +52,9 @@ async def test_default_bundle_creation_is_inert(cookie_client: AsyncClient):
 
 @pytest.mark.asyncio
 async def test_autoplan_true_persists_flag(cookie_client: AsyncClient):
-    recipe_id = await _seed_recipe(cookie_client)
+    cookbook_id = await _seed_recipe(cookie_client)
     r = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
         json={
             "prompt": "build a hello-world endpoint",
             "requested_by": "tester",
@@ -82,14 +82,14 @@ async def test_planner_controller_skips_inert_bundles(cookie_client: AsyncClient
     from krewhub.db.connection import get_db
     from krewhub.watch.service import WatchService
 
-    recipe_id = await _seed_recipe(cookie_client)
+    cookbook_id = await _seed_recipe(cookie_client)
     inert = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
-        json={"prompt": "", "requested_by": "t", "tasks": []},
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
+        json={"prompt": "", "tasks": []},
     )
     enabled = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
-        json={"prompt": "p", "requested_by": "t", "tasks": [], "autoplan": True},
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
+        json={"prompt": "p", "tasks": [], "autoplan": True},
     )
     inert_id = inert.json()["bundle"]["id"]
     enabled_id = enabled.json()["bundle"]["id"]

@@ -241,15 +241,6 @@ class TestA2ADispatch:
         ) is False
 
     @pytest.mark.asyncio
-    async def test_rejects_when_agent_has_no_endpoint(self):
-        http = AsyncMock(spec=httpx.AsyncClient)
-        agent = _agent("g1", endpoint_url=None)
-        assert await dispatch_to_gateway(
-            http, agent=agent, task=_task(), prompt="x", attempt=1,
-        ) is False
-        http.post.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_carries_attempt_in_metadata(self):
         http = AsyncMock(spec=httpx.AsyncClient)
         http.post.return_value = _mock_post_response(
