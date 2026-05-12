@@ -644,6 +644,8 @@ async def _drop_recipe_id_columns_and_tables(
         keep_list = ", ".join(keep)
         await db.executescript(
             f"""
+            PRAGMA foreign_keys = OFF;
+            DROP TABLE IF EXISTS bundles_new;
             CREATE TABLE bundles_new (
                 id TEXT PRIMARY KEY,
                 cookbook_id TEXT REFERENCES cookbooks(id),
@@ -673,6 +675,7 @@ async def _drop_recipe_id_columns_and_tables(
             CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
             CREATE INDEX IF NOT EXISTS idx_bundles_runnable
                 ON bundles(status) WHERE graph_code IS NOT NULL;
+            PRAGMA foreign_keys = ON;
             """
         )
 
@@ -686,6 +689,8 @@ async def _drop_recipe_id_columns_and_tables(
             keep_list = ", ".join(keep)
             await db.executescript(
                 f"""
+                PRAGMA foreign_keys = OFF;
+                DROP TABLE IF EXISTS events_new;
                 CREATE TABLE events_new (
                     id TEXT PRIMARY KEY,
                     cookbook_id TEXT REFERENCES cookbooks(id),
@@ -697,7 +702,12 @@ async def _drop_recipe_id_columns_and_tables(
                             'milestone', 'fact_added', 'code_pushed',
                             'bundle_closed', 'bundle_reopened',
                             'session_start', 'session_end', 'tool_use', 'tool_result',
-                            'agent_reply', 'thinking'
+                            'agent_reply', 'thinking',
+                            -- Tolerate legacy rows still using digest_* until
+                            -- they expire/are deleted; new writes use the new
+                            -- vocabulary. (Mirrors the wider CHECK in the
+                            -- _relax_events_recipe_id_nullable rebuild.)
+                            'digest_submitted', 'digest_approved', 'digest_rejected'
                         )),
                     actor_id TEXT NOT NULL,
                     actor_type TEXT NOT NULL
@@ -719,6 +729,7 @@ async def _drop_recipe_id_columns_and_tables(
                 CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
                 CREATE INDEX IF NOT EXISTS idx_events_task_sequence
                     ON events(task_id, sequence);
+                PRAGMA foreign_keys = ON;
                 """
             )
 
@@ -808,8 +819,13 @@ async def _collapse_bundles_status_to_open_closed(
     cols = [r["name"] for r in await cursor.fetchall()]
     col_list = ", ".join(cols)
 
+    # Suspend FK enforcement (DROP TABLE bundles otherwise fails on
+    # tasks/events/sandboxes refs) and DROP bundles_new IF EXISTS so
+    # a prior half-completed rebuild can't wedge subsequent boots.
     await db.executescript(
         f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS bundles_new;
         CREATE TABLE bundles_new (
             id TEXT PRIMARY KEY,
             recipe_id TEXT REFERENCES recipes(id),
@@ -841,6 +857,7 @@ async def _collapse_bundles_status_to_open_closed(
         CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
         CREATE INDEX IF NOT EXISTS idx_bundles_runnable
             ON bundles(status) WHERE graph_code IS NOT NULL;
+        PRAGMA foreign_keys = ON;
         """
     )
 
@@ -870,8 +887,14 @@ async def _migrate_bundles_add_closed_status(
     cols = [r["name"] for r in await cursor.fetchall()]
     col_list = ", ".join(cols)
 
+    # FK enforcement is ON globally (see connection.py). Suspend it for
+    # the rebuild so DROP TABLE bundles can drop without falling foul of
+    # tasks/events/sandboxes FK refs. DROP TABLE IF EXISTS at the top
+    # so a prior crash-mid-script can't wedge subsequent boots.
     await db.executescript(
         f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS bundles_new;
         CREATE TABLE bundles_new (
             id TEXT PRIMARY KEY,
             recipe_id TEXT REFERENCES recipes(id),
@@ -907,6 +930,7 @@ async def _migrate_bundles_add_closed_status(
         CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
         CREATE INDEX IF NOT EXISTS idx_bundles_runnable
             ON bundles(status) WHERE graph_code IS NOT NULL;
+        PRAGMA foreign_keys = ON;
         """
     )
 
@@ -952,8 +976,11 @@ async def _migrate_events_add_bundle_lifecycle_types(
     cols = [r["name"] for r in await cursor.fetchall()]
     col_list = ", ".join(cols)
 
+    # Idempotency + FK guards (see other bundle rebuilds for rationale).
     await db.executescript(
         f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS events_new;
         CREATE TABLE events_new (
             id TEXT PRIMARY KEY,
             recipe_id TEXT REFERENCES recipes(id),
@@ -992,6 +1019,7 @@ async def _migrate_events_add_bundle_lifecycle_types(
         CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
         CREATE INDEX IF NOT EXISTS idx_events_task_sequence
             ON events(task_id, sequence);
+        PRAGMA foreign_keys = ON;
         """
     )
 
@@ -1032,8 +1060,16 @@ async def _relax_bundles_recipe_id_nullable(
     cols = [row["name"] for row in await cursor.fetchall()]
     col_list = ", ".join(cols)
 
+    # The connection has PRAGMA foreign_keys=ON, which makes
+    # DROP TABLE bundles fail because tasks/events/sandboxes hold FK
+    # references to it. Suspend FK enforcement for the rebuild
+    # (SQLite's documented idiom) and re-enable on the way out.
+    # Also DROP TABLE IF EXISTS bundles_new at the top so a prior
+    # half-completed run can't wedge subsequent boots.
     await db.executescript(
         f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS bundles_new;
         CREATE TABLE bundles_new (
             id TEXT PRIMARY KEY,
             recipe_id TEXT REFERENCES recipes(id),
@@ -1066,6 +1102,7 @@ async def _relax_bundles_recipe_id_nullable(
         CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
         CREATE INDEX IF NOT EXISTS idx_bundles_runnable
             ON bundles(status) WHERE graph_code IS NOT NULL;
+        PRAGMA foreign_keys = ON;
         """
     )
 
