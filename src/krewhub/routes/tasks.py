@@ -13,8 +13,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
 import aiosqlite
@@ -71,6 +74,120 @@ async def get_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
     return {"task": task.model_dump(mode="json")}
+
+
+class FollowUpRequest(BaseModel):
+    prompt: str
+
+
+@router.post("/tasks/{task_id}/followup")
+async def append_task_followup(
+    task_id: str,
+    req: FollowUpRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+):
+    """Append an operator-typed prompt to the task's existing session.
+
+    Used by cookrew-beta when the operator hits SEND in the PLS_REVIEW
+    or event-feed Reply composer. We deliberately do NOT spawn a new
+    task — the prompt lands on the same task's tape so the conversation
+    stays threaded.
+
+    Behavior:
+      1. Validate prompt non-empty + bundle ownership.
+      2. Write a `human_followup` event into the events table with
+         actor_type='human' so the event feed renders it as the
+         operator's voice.
+      3. If the task is in a terminal state (done / cooked), flip it
+         back to 'open' and clear the claim so the daemon re-picks it
+         up. Working / open / blocked tasks stay in their current
+         status — the event lands on the live tape and the brain may
+         or may not pick it up depending on its loop.
+
+    Returns the updated task.
+    """
+    prompt = (req.prompt or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="empty_prompt")
+
+    repo = TaskRepo(db)
+    task = await repo.get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="task_not_found")
+
+    # ABAC — caller must own the bundle this task lives on.
+    from krewhub.repositories.bundle_repo import BundleRepo
+    bundle = await BundleRepo(db).get(task.bundle_id)
+    if bundle is None:
+        raise HTTPException(status_code=404, detail="bundle_not_found")
+    if (
+        bundle.owner_account_id is not None
+        and caller.account_id != bundle.owner_account_id
+        and caller.auth_method != "api_key"
+    ):
+        raise HTTPException(status_code=403, detail="not_bundle_owner")
+
+    now = datetime.now(timezone.utc).isoformat()
+    event_id = f"evt_{uuid4().hex[:12]}"
+
+    # Write the followup event. We use type='human_followup' so the
+    # event feed can render it distinctly from brain agent_reply events
+    # AND so the daemon's brain-spawn enrichment (when added) can find
+    # the latest operator instruction.
+    cur = await db.execute(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
+        (task_id,),
+    )
+    row = await cur.fetchone()
+    next_seq = int(row[0]) if row else 1
+
+    # The events.type CHECK doesn't include a dedicated 'human_followup'
+    # value (would require a heavy SQLite ALTER-rebuild migration), so we
+    # piggy-back on 'agent_reply' with actor_type='human'. Discrimination
+    # for UI/brain happens via actor_type — the cookrew-beta event feed
+    # and the brain's tape-reader both already key on actor_type.
+    await db.execute(
+        "INSERT INTO events (id, recipe_id, bundle_id, task_id, type, "
+        "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
+        "visibility, created_at) "
+        "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, '[]', '[]', 'user', ?)",
+        (
+            event_id,
+            bundle.recipe_id,
+            task.bundle_id,
+            task_id,
+            caller.account_id,
+            prompt,
+            json.dumps({"text": prompt, "kind": "human_followup"}),
+            next_seq,
+            now,
+        ),
+    )
+
+    # Reopen for the daemon if the task already finished. ('cooked' is a
+    # bundle-level state, not task-level — task.status only goes up to
+    # 'done'. Bundle re-cooking is operator-driven through a separate
+    # endpoint.)
+    status_flipped = False
+    if task.status == "done":
+        await db.execute(
+            "UPDATE tasks SET status = 'open', claimed_by_agent_id = NULL, "
+            "completed_at = NULL, resource_version = resource_version + 1, "
+            "generation = generation + 1 "
+            "WHERE id = ?",
+            (task_id,),
+        )
+        status_flipped = True
+
+    await db.commit()
+
+    fresh = await repo.get(task_id)
+    return {
+        "task": fresh.model_dump(mode="json") if fresh else None,
+        "event_id": event_id,
+        "status_flipped": status_flipped,
+    }
 
 
 @router.get("/tasks/{task_id}/last-reply")
@@ -457,9 +574,6 @@ async def get_task_cancel_status(
 # ---------------------------------------------------------------------------
 # HITL — human-in-the-loop answer to a blocked task
 # ---------------------------------------------------------------------------
-
-
-from pydantic import BaseModel  # noqa: E402 — keep route-local schema close to handler
 
 
 class TaskHitlAnswerRequest(BaseModel):
