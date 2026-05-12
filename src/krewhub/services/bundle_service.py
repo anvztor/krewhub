@@ -195,6 +195,10 @@ class BundleService:
                 dispatch_cycle=dispatch_cycle,
             )
         except (GraphValidationError, GraphExecError) as exc:
+            # DEPRECATED — writing BundleStatus.BLOCKED on graph
+            # validation failure. Under OPEN/CLOSED this should raise
+            # without touching bundle status; the failure belongs in
+            # an event/log, not the bundle FSM.
             await self._bundles.update_status(
                 bundle_id, BundleStatus.BLOCKED,
                 blocked_reason=f"graph artifact rejected: {exc}"[:500],
@@ -207,6 +211,8 @@ class BundleService:
         # 2. Structure + mermaid
         node_ids, edges = extract_graph_structure(graph)
         if not node_ids:
+            # DEPRECATED — same as above; do not move bundle to BLOCKED
+            # when migrated to the two-state model.
             await self._bundles.update_status(
                 bundle_id, BundleStatus.BLOCKED,
                 blocked_reason="graph artifact has no user-step nodes",
@@ -294,6 +300,12 @@ class BundleService:
         )
         return updated_bundle, created_tasks
 
+    # DEPRECATED — relies on the CANCELLED terminal state and cascades
+    # task cancellation. Under the new OPEN/CLOSED bundle model this
+    # should collapse into a simple "close bundle" action with no
+    # cascade; the bundle is not the authority over its tasks.
+    # Removal target after callers (routes/bundles.py PATCH endpoint,
+    # tests/test_controllers.py) migrate.
     async def cancel_bundle(self, bundle_id: str, actor_id: str) -> Bundle | None:
         bundle = await self._bundles.get(bundle_id)
         if bundle is None:
@@ -323,6 +335,12 @@ class BundleService:
 
         return updated
 
+    # DEPRECATED — folds task aggregate (DONE/BLOCKED/CLAIMED/WORKING)
+    # into bundle status CLAIMED/COOKED/BLOCKED/OPEN. Under the new
+    # OPEN/CLOSED model the bundle has no derived state; it is just a
+    # container. Remove this function and every call site once
+    # controllers/bundle_controller.py and graph_runner.py stop
+    # consulting middle states.
     async def recompute_bundle_status(self, bundle_id: str) -> Bundle | None:
         tasks = await self._tasks.list_by_bundle(bundle_id)
         if not tasks:
@@ -358,6 +376,10 @@ class BundleService:
 
         return updated
 
+    # DEPRECATED — predicated on bundle-level BLOCKED. The new model
+    # has no BLOCKED bundle status, so rerun decisions belong on
+    # individual tasks (TaskRepo.reopen_for_rerun). Removal target
+    # alongside routes/bundles.py::rerun_blocked_bundle.
     async def rerun_blocked_tasks(self, bundle_id: str) -> Bundle | None:
         """Reopen a bundle for another graph-runner pass.
 

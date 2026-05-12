@@ -12,15 +12,18 @@ logger = logging.getLogger(__name__)
 
 
 class BundleController(BaseController):
-    """Reconciles bundle.status from aggregate task states.
+    """DEPRECATED — reconciles bundle.status from aggregate task states.
 
-    This is the K8s-style controller that replaces the inline
+    Bundles are migrating to a two-state OPEN/CLOSED model with no
+    derived middle states. Once that lands, the bundle phase no
+    longer needs reconciliation — this whole controller should be
+    removed. Do not extend.
+
+    Legacy behavior (kept until migration completes):
+    K8s-style controller that replaces the inline
     recompute_bundle_status() calls scattered across route handlers.
     Every interval, it scans all non-terminal bundles and recomputes
     their phase from their tasks' current states.
-
-    Level-triggered: if krewhub restarts, the first reconcile pass
-    catches up all bundles to their correct state.
     """
 
     async def reconcile(self) -> None:
@@ -74,6 +77,10 @@ class BundleController(BaseController):
                 )
 
 
+# DEPRECATED — derives bundle phase from task aggregate. Under the
+# new OPEN/CLOSED bundle model the bundle has no derived state; this
+# function (and the controller that calls it) should be removed once
+# the routes/UI/tests stop consulting middle states.
 def _compute_bundle_phase(tasks: list) -> BundleStatus:
     """Pure function: compute the correct bundle phase from task states."""
     all_done = all(t.status == TaskStatus.DONE for t in tasks)

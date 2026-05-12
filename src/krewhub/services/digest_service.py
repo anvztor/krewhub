@@ -1,3 +1,14 @@
+"""DEPRECATED — digest aggregation, approve/reject, terminal DIGESTED/REJECTED.
+
+Bundles no longer hold approve/reject authority over the tasks they
+contain. The whole digest flow (submit → decide → DIGESTED|REJECTED)
+is slated for removal. Do not extend; do not call from new code.
+
+Removal target: once all callers (routes/bundles.py digest endpoints,
+graph_runner trigger, digest_helpers, digest_repo) are migrated to the
+two-state OPEN/CLOSED bundle model.
+"""
+
 from __future__ import annotations
 
 import logging

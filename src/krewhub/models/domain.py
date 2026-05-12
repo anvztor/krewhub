@@ -14,10 +14,21 @@ class Role(StrEnum):
 
 
 class BundleStatus(StrEnum):
+    # New model: bundles are dumb containers with only OPEN/CLOSED.
+    # Task-level status remains authoritative; the bundle does not
+    # approve or reject task work. All middle/derived states below
+    # are DEPRECATED and slated for removal once callers (controllers,
+    # routes, tests, schema, watch channels) are migrated.
     OPEN = "open"
+    CLOSED = "closed"
+
+    # DEPRECATED — derived from task aggregate. Removal target after
+    # bundle_controller._compute_bundle_phase + graph_runner are migrated.
     CLAIMED = "claimed"
     COOKED = "cooked"
     BLOCKED = "blocked"
+
+    # DEPRECATED — set by cancel_bundle()/digest_service. Will fold into CLOSED.
     CANCELLED = "cancelled"
     DIGESTED = "digested"
     REJECTED = "rejected"

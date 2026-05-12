@@ -1,3 +1,10 @@
+"""DEPRECATED — digest persistence.
+
+Slated for removal alongside services/digest_service.py and the
+digest endpoints in routes/bundles.py. Bundles no longer carry an
+approve/reject step. Do not extend.
+"""
+
 from __future__ import annotations
 
 import json

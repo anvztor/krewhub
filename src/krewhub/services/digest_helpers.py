@@ -1,8 +1,15 @@
-"""Digest aggregation helpers — pure data transformations + submit.
+"""DEPRECATED — digest aggregation helpers.
 
-Extracted from GraphRunnerController to keep the controller focused
-on graph execution. These functions aggregate facts and code_refs
-collected by dispatch_cycle across graph nodes and submit a digest.
+Bundles are moving to a two-state OPEN/CLOSED model with no
+approve/reject step. This module exists to support the legacy
+digest_service, which is itself deprecated. Do not extend.
+
+Removal target: once GraphRunnerController stops calling these and
+the digest flow is deleted.
+
+Originally extracted from GraphRunnerController to aggregate facts +
+code_refs collected by dispatch_cycle across graph nodes and submit a
+digest.
 """
 
 from __future__ import annotations

@@ -169,7 +169,9 @@ def _task_with_sandbox_inherited(task, bundle) -> dict:
     return payload
 
 
-@router.get("/bundles/{bundle_id}/digest")
+# DEPRECATED — bundle no longer carries approve/reject. Removal target
+# alongside services/digest_service.py.
+@router.get("/bundles/{bundle_id}/digest", deprecated=True)
 async def get_bundle_digest(
     bundle_id: str,
     db: aiosqlite.Connection = Depends(get_db),
@@ -210,7 +212,11 @@ async def get_bundle_usage(
     return {"usage": usage_list, "totals": totals}
 
 
-@router.patch("/bundles/{bundle_id}")
+# DEPRECATED — cancel maps to the legacy CANCELLED terminal state.
+# Under the OPEN/CLOSED model this should become a generic "close bundle"
+# action (status → CLOSED) with no task cascade. Kept until callers
+# migrate.
+@router.patch("/bundles/{bundle_id}", deprecated=True)
 async def cancel_bundle(
     bundle_id: str,
     db: aiosqlite.Connection = Depends(get_db),
@@ -222,7 +228,9 @@ async def cancel_bundle(
     return {"bundle": updated.model_dump(mode="json")}
 
 
-@router.post("/bundles/{bundle_id}/rerun")
+# DEPRECATED — relies on bundle-level BLOCKED state. Removal target
+# alongside services/bundle_service.py::rerun_blocked_tasks.
+@router.post("/bundles/{bundle_id}/rerun", deprecated=True)
 async def rerun_blocked_bundle(
     bundle_id: str,
     db: aiosqlite.Connection = Depends(get_db),
@@ -368,7 +376,9 @@ async def add_task_to_bundle(
     }
 
 
-@router.post("/bundles/{bundle_id}/digest")
+# DEPRECATED — submit-digest is part of the legacy approve/reject
+# flow. Removal target with services/digest_service.py.
+@router.post("/bundles/{bundle_id}/digest", deprecated=True)
 async def submit_digest(
     bundle_id: str,
     req: SubmitDigestRequest,
@@ -391,7 +401,9 @@ async def submit_digest(
     return {"digest": digest.model_dump(mode="json")}
 
 
-@router.post("/bundles/{bundle_id}/decision")
+# DEPRECATED — approve/reject decision endpoint. Removal target
+# with the digest flow.
+@router.post("/bundles/{bundle_id}/decision", deprecated=True)
 async def decide_digest(
     bundle_id: str,
     req: DecisionRequest,
@@ -408,7 +420,8 @@ async def decide_digest(
     return {"digest": digest.model_dump(mode="json")}
 
 
-@router.get("/recipes/{recipe_id}/digests")
+# DEPRECATED — list approved digests. Removal target with the digest flow.
+@router.get("/recipes/{recipe_id}/digests", deprecated=True)
 async def list_approved_digests(
     recipe_id: str,
     db: aiosqlite.Connection = Depends(get_db),
