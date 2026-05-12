@@ -139,7 +139,10 @@ class TaskDispatchController(BaseController):
                 "TaskDispatch: attempting dispatch of task %s (%s)",
                 task.id, task.title,
             )
-            dispatched = await self._try_dispatch(task, recipe, gateways, capacity)
+            # Step (e): recipes are gone. Bundle.repo_spec drives the
+            # repo coords in the dispatch payload now; for the legacy
+            # "no recipe context" case we just pass None.
+            dispatched = await self._try_dispatch(task, None, gateways, capacity)
             if not dispatched:
                 continue
 
