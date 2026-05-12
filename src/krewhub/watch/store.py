@@ -129,6 +129,7 @@ def entry_to_watch_event(entry: WatchEntry) -> WatchEvent:
         resource_id=entry.resource_id,
         resource_version=entry.resource_version,
         object=entry.payload,
+        cookbook_id=entry.cookbook_id,
         seq=entry.seq,
         channel=channel,
     )

@@ -22,7 +22,7 @@ async def test_watch_log_store_append_and_list():
         event_type=WatchEventType.ADDED,
         resource_version=1,
         payload={"id": "bun_1", "status": "open"},
-        recipe_id="rec_1",
+        cookbook_id="rec_1",
     )
     assert entry1.seq > 0
     assert entry1.resource_type == "bundle"
@@ -33,7 +33,7 @@ async def test_watch_log_store_append_and_list():
         event_type=WatchEventType.ADDED,
         resource_version=1,
         payload={"id": "task_1", "status": "open"},
-        recipe_id="rec_1",
+        cookbook_id="rec_1",
     )
     assert entry2.seq > entry1.seq
 
@@ -50,9 +50,9 @@ async def test_watch_log_store_filter_by_resource_type():
     db = await get_db()
     store = WatchLogStore(db)
 
-    await store.append("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "rec_1")
-    await store.append("task", "task_1", WatchEventType.ADDED, 1, {}, "rec_1")
-    await store.append("task", "task_2", WatchEventType.MODIFIED, 2, {}, "rec_1")
+    await store.append("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "cb_1")
+    await store.append("task", "task_1", WatchEventType.ADDED, 1, {}, "cb_1")
+    await store.append("task", "task_2", WatchEventType.MODIFIED, 2, {}, "cb_1")
 
     task_entries = await store.list_since(since=0, resource_type="task")
     assert len(task_entries) == 2
@@ -60,16 +60,16 @@ async def test_watch_log_store_filter_by_resource_type():
 
 
 @pytest.mark.asyncio
-async def test_watch_log_store_filter_by_recipe():
+async def test_watch_log_store_filter_by_cookbook():
     db = await get_db()
     store = WatchLogStore(db)
 
-    await store.append("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "rec_1")
-    await store.append("bundle", "bun_2", WatchEventType.ADDED, 1, {}, "rec_2")
+    await store.append("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "cb_1")
+    await store.append("bundle", "bun_2", WatchEventType.ADDED, 1, {}, "cb_2")
 
-    rec1_entries = await store.list_since(since=0, recipe_id="rec_1")
-    assert len(rec1_entries) == 1
-    assert rec1_entries[0].resource_id == "bun_1"
+    cb1_entries = await store.list_since(since=0, cookbook_id="cb_1")
+    assert len(cb1_entries) == 1
+    assert cb1_entries[0].resource_id == "bun_1"
 
 
 @pytest.mark.asyncio
@@ -104,7 +104,7 @@ async def test_watch_log_store_trim():
 @pytest.mark.asyncio
 async def test_watch_service_record_and_notify():
     watch = get_watch_service()
-    options = WatchOptions(recipe_id="rec_test")
+    options = WatchOptions(cookbook_id="rec_test")
     queue = watch.subscribe(options)
 
     try:
@@ -114,7 +114,7 @@ async def test_watch_service_record_and_notify():
             event_type=WatchEventType.ADDED,
             resource_version=1,
             payload={"id": "bun_test", "status": "open"},
-            recipe_id="rec_test",
+            cookbook_id="rec_test",
         )
         assert event.seq > 0
         assert event.resource_type == "bundle"
@@ -128,27 +128,26 @@ async def test_watch_service_record_and_notify():
 
 
 @pytest.mark.asyncio
-async def test_watch_service_filter_by_recipe():
+async def test_watch_service_filter_by_cookbook():
     watch = get_watch_service()
-    queue_rec1 = watch.subscribe(WatchOptions(recipe_id="rec_1"))
-    queue_rec2 = watch.subscribe(WatchOptions(recipe_id="rec_2"))
+    queue_cb1 = watch.subscribe(WatchOptions(cookbook_id="cb_1"))
+    queue_cb2 = watch.subscribe(WatchOptions(cookbook_id="cb_2"))
 
     try:
-        await watch.record("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "rec_1")
-        await watch.record("bundle", "bun_2", WatchEventType.ADDED, 1, {}, "rec_2")
+        await watch.record("bundle", "bun_1", WatchEventType.ADDED, 1, {}, "cb_1")
+        await watch.record("bundle", "bun_2", WatchEventType.ADDED, 1, {}, "cb_2")
 
-        event1 = await asyncio.wait_for(queue_rec1.get(), timeout=1.0)
+        event1 = await asyncio.wait_for(queue_cb1.get(), timeout=1.0)
         assert event1.resource_id == "bun_1"
 
-        event2 = await asyncio.wait_for(queue_rec2.get(), timeout=1.0)
+        event2 = await asyncio.wait_for(queue_cb2.get(), timeout=1.0)
         assert event2.resource_id == "bun_2"
 
-        # Each queue should only have its own event
-        assert queue_rec1.empty()
-        assert queue_rec2.empty()
+        assert queue_cb1.empty()
+        assert queue_cb2.empty()
     finally:
-        watch.unsubscribe(queue_rec1)
-        watch.unsubscribe(queue_rec2)
+        watch.unsubscribe(queue_cb1)
+        watch.unsubscribe(queue_cb2)
 
 
 @pytest.mark.asyncio
@@ -159,11 +158,11 @@ async def test_watch_service_replay():
     e2 = await watch.record("task", "task_r1", WatchEventType.ADDED, 1, {}, "rec_r")
 
     # Replay from beginning
-    events = await watch.replay(WatchOptions(recipe_id="rec_r"))
+    events = await watch.replay(WatchOptions(cookbook_id="rec_r"))
     assert len(events) >= 2
 
     # Replay from after e1
-    events_after = await watch.replay(WatchOptions(recipe_id="rec_r", since=e1.seq))
+    events_after = await watch.replay(WatchOptions(cookbook_id="rec_r", since=e1.seq))
     assert any(e.resource_id == "task_r1" for e in events_after)
 
 
@@ -190,20 +189,12 @@ async def test_optimistic_concurrency_in_bundle_update(client):
     """Test that resource_version increments on update and is returned."""
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-versioning-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/versioning",
-        "repo_url": "git@github.com:test/versioning.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
 
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Test resource versioning",
-        "requested_by": "human_1",
         "tasks": [{"title": "Versioned task"}],
     })
     bundle = resp.json()["bundle"]
@@ -212,7 +203,6 @@ async def test_optimistic_concurrency_in_bundle_update(client):
     task = resp.json()["tasks"][0]
     assert task["resource_version"] == 1
 
-    # Claim the task
     resp = await client.post(f"/api/v1/tasks/{task['id']}/claim", json={
         "agent_id": "agent_v1",
     })
@@ -220,7 +210,6 @@ async def test_optimistic_concurrency_in_bundle_update(client):
     claimed_task = resp.json()["task"]
     assert claimed_task["resource_version"] > 1
 
-    # Mark done
     resp = await client.patch(f"/api/v1/tasks/{task['id']}/status", json={
         "status": "done",
     })
@@ -234,31 +223,20 @@ async def test_watch_endpoint_returns_events(client):
     """Test the /watch endpoint returns events via SSE format."""
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-watch-endpoint-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/watch-endpoint",
-        "repo_url": "git@github.com:test/watch-endpoint.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
 
-    # Create a bundle to generate watch events
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Test watch endpoint",
-        "requested_by": "human_1",
         "tasks": [{"title": "Watch me"}],
     })
     assert resp.status_code == 200
 
-    # Verify events are in the watch log
     watch = get_watch_service()
     seq = await watch.latest_seq()
     assert seq > 0
 
-    # Replay should return events
-    events = await watch.replay(WatchOptions(recipe_id=recipe_id))
+    events = await watch.replay(WatchOptions(cookbook_id=cookbook_id))
     assert len(events) >= 1
     assert any(e.resource_type == "bundle" for e in events)

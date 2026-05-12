@@ -275,16 +275,12 @@ async def test_task_events_stamp_cookbook_id_via_post_event(client):
     db = await get_db()
     svc = TaskService(db, get_watch_service())
 
-    # Cookbook-scoped task: recipe_id is None on the events. claim_task
-    # still takes recipe_id as a positional arg today (used for the
-    # active-agent-per-recipe gate); pass None so the FK doesn't blow
-    # up and the service stamps cookbook_id from the task's bundle.
-    claimed = await svc.claim_task(task_id, "agent_a", recipe_id=None)  # type: ignore[arg-type]
+    # Cookbook-scoped task: pass cookbook_id for the active-task gate.
+    claimed = await svc.claim_task(task_id, "agent_a", cookbook_id=cookbook_id)
     assert claimed is not None
 
     posted = await svc.post_event(
         task_id=task_id,
-        recipe_id=None,  # type: ignore[arg-type]
         event_type=EventType.TOOL_USE,
         actor_id="agent_a",
         actor_type=ActorType.AGENT,

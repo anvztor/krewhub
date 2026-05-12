@@ -148,13 +148,13 @@ async def append_task_followup(
     # for UI/brain happens via actor_type — the cookrew-beta event feed
     # and the brain's tape-reader both already key on actor_type.
     await db.execute(
-        "INSERT INTO events (id, recipe_id, bundle_id, task_id, type, "
+        "INSERT INTO events (id, cookbook_id, bundle_id, task_id, type, "
         "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
         "visibility, created_at) "
         "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, '[]', '[]', 'user', ?)",
         (
             event_id,
-            bundle.recipe_id,
+            bundle.cookbook_id,
             task.bundle_id,
             task_id,
             caller.account_id,
@@ -280,7 +280,7 @@ async def claim_task(
 
     watch = get_watch_service()
     svc = TaskService(db, watch)
-    updated = await svc.claim_task(task_id, req.agent_id, bundle.recipe_id)
+    updated = await svc.claim_task(task_id, req.agent_id, bundle.cookbook_id)
     if updated is None:
         raise HTTPException(
             status_code=400,

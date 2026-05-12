@@ -75,7 +75,7 @@ class WatchService:
 
     async def publish_legacy(
         self,
-        recipe_id: str,
+        cookbook_id: str,
         event_name: str,
         data: dict[str, Any],
     ) -> None:
@@ -148,7 +148,7 @@ def _matches(opts: WatchOptions, event: WatchEvent) -> bool:
         return False
     if opts.resource_types and event.resource_type not in opts.resource_types:
         return False
-    if opts.recipe_id and event.recipe_id != opts.recipe_id:
+    if opts.cookbook_id and event.cookbook_id != opts.cookbook_id:
         return False
     if opts.channel_prefixes:
         if not any(_channel_matches(p, event.channel) for p in opts.channel_prefixes):

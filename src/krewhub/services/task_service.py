@@ -72,13 +72,13 @@ class TaskService:
         return bundle.cookbook_id if bundle else None
 
     async def claim_task(
-        self, task_id: str, agent_id: str, recipe_id: str | None
+        self, task_id: str, agent_id: str, cookbook_id: str | None
     ) -> Task | None:
         task = await self._tasks.get(task_id)
         if task is None or task.status != TaskStatus.OPEN:
             return None
 
-        active_tasks = await self._tasks.list_active_by_agent(recipe_id, agent_id)
+        active_tasks = await self._tasks.list_active_by_agent(cookbook_id, agent_id)
         if active_tasks:
             return None
 
@@ -123,7 +123,6 @@ class TaskService:
     async def post_event(
         self,
         task_id: str,
-        recipe_id: str | None,
         event_type: EventType,
         actor_id: str,
         actor_type: ActorType,
@@ -199,7 +198,6 @@ class TaskService:
     async def post_events_batch(
         self,
         task_id: str,
-        recipe_id: str | None,
         events: list[dict],
         session_token: str | None = None,
     ) -> list[Event]:
@@ -386,7 +384,6 @@ class TaskService:
         deleted = await self._tasks.delete(task_id)
         if deleted:
             bundle = await self._bundles.get(task.bundle_id)
-            recipe_id = bundle.recipe_id if bundle else None
             cookbook_id = bundle.cookbook_id if bundle else None
             await self._watch.record(
                 "task", task_id, WatchEventType.DELETED,
