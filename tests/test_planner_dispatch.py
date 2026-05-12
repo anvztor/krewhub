@@ -61,7 +61,7 @@ def _mock_post_response(status_code: int = 200) -> Mock:
 
 
 async def _seed_cookbook_recipe(suffix: str | None = None) -> tuple[str, str]:
-    """Insert cookbook + recipe and return (cookbook_id, recipe_id)."""
+    """Insert cookbook; return (cookbook_id, "" placeholder for legacy)."""
     suffix = suffix or _next_suffix()
     db = await get_db()
     await db.execute(
@@ -69,16 +69,7 @@ async def _seed_cookbook_recipe(suffix: str | None = None) -> tuple[str, str]:
         (f"cb-{suffix}", f"cb-{suffix}", "human", _now().isoformat()),
     )
     await db.commit()
-
-    recipe = await RecipeRepo(db).create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human", created_at=_now(),
-            cookbook_id=f"cb-{suffix}",
-        )
-    )
-    return f"cb-{suffix}", recipe.id
+    return f"cb-{suffix}", ""
 
 
 async def _seed_empty_bundle(
@@ -90,14 +81,14 @@ async def _seed_empty_bundle(
     planner_status: AgentStatus = AgentStatus.ONLINE,
     planner_endpoint: str | None = "http://planner/api",
 ) -> tuple[str, str, str]:
-    """Seed an empty bundle (no graph_code, no tasks). Returns (bundle_id, cookbook_id, recipe_id)."""
+    """Seed an empty cookbook-scoped bundle. Returns (bundle_id, cookbook_id, "")."""
     suffix = suffix or _next_suffix()
-    cookbook_id, recipe_id = await _seed_cookbook_recipe(suffix)
+    cookbook_id, _ = await _seed_cookbook_recipe(suffix)
 
     db = await get_db()
     bundle = await BundleRepo(db).create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe_id, prompt="please plan",
+            id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="please plan",
             status=BundleStatus.OPEN, created_by="human",
             created_at=_now(),
         )
@@ -123,7 +114,7 @@ async def _seed_empty_bundle(
             )
         )
 
-    return bundle.id, cookbook_id, recipe_id
+    return bundle.id, cookbook_id, ""
 
 
 # ---------------------------------------------------------------------------
@@ -139,7 +130,7 @@ class TestEligibility:
         db = await get_db()
         await BundleRepo(db).create(
             Bundle(
-                id=f"b-{suffix}", recipe_id=recipe_id, prompt="x",
+                id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="x",
                 status=BundleStatus.OPEN, created_by="h",
                 created_at=_now(),
                 graph_code="g = ...", graph_mermaid="flowchart",
@@ -163,7 +154,7 @@ class TestEligibility:
         db = await get_db()
         bundle = await BundleRepo(db).create(
             Bundle(
-                id=f"b-{suffix}", recipe_id=recipe_id, prompt="x",
+                id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="x",
                 status=BundleStatus.OPEN, created_by="h",
                 created_at=_now(),
             )
@@ -192,7 +183,7 @@ class TestEligibility:
         db = await get_db()
         await BundleRepo(db).create(
             Bundle(
-                id=f"b-{suffix}", recipe_id=recipe_id, prompt="x",
+                id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="x",
                 status=BundleStatus.CLOSED, created_by="h",
                 created_at=_now(),
             )
@@ -256,9 +247,8 @@ class TestDispatch:
             metadata = payload["params"]["message"]["metadata"]
             assert metadata["bundle_id"] == bundle_id
             assert metadata["cookbook_id"] == cookbook_id
-            assert metadata["recipe_id"] == recipe_id
-            assert metadata["branch"] == "main"
-            # Prompt forwarded as the message text
+            # Step (e): recipe_id removed from metadata; repo_url/
+            # branch only present when bundle.repo_spec is set.
             text = payload["params"]["message"]["parts"][0]["text"]
             assert text == "please plan"
         finally:
