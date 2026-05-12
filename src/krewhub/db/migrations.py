@@ -312,6 +312,64 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     """)
     await _create_index_if_missing(db, "idx_tape_forks_parent", "tape_forks", "(parent_tape_id)")
 
+    # Phase 12: recipe removal — bundles point directly at cookbooks;
+    # repo binding becomes a per-bundle hint resolved at run time;
+    # sharing moves to cookbook-level. Additive only; recipe_id stays
+    # for dual-write until callers migrate.
+    await _add_column_if_missing(db, "bundles", "cookbook_id", "TEXT")
+    await _add_column_if_missing(db, "bundles", "repo_spec", "TEXT")
+    await _add_column_if_missing(db, "events", "cookbook_id", "TEXT")
+    await _add_column_if_missing(db, "watch_log", "cookbook_id", "TEXT")
+    await _create_index_if_missing(db, "idx_bundles_cookbook", "bundles", "(cookbook_id)")
+    await _create_index_if_missing(db, "idx_events_cookbook", "events", "(cookbook_id)")
+    await _create_index_if_missing(
+        db, "idx_watch_log_cookbook_seq", "watch_log", "(cookbook_id, seq)",
+    )
+
+    await _create_table_if_missing(db, "cookbook_shares", """
+        CREATE TABLE IF NOT EXISTS cookbook_shares (
+            id TEXT PRIMARY KEY,
+            cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+            shared_with_account_id TEXT NOT NULL REFERENCES accounts(id),
+            role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'viewer')),
+            shared_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+            shared_at TEXT NOT NULL,
+            revoked_at TEXT,
+            UNIQUE(cookbook_id, shared_with_account_id)
+        )
+    """)
+    await _create_index_if_missing(
+        db, "idx_cookbook_shares_cookbook", "cookbook_shares", "(cookbook_id)",
+    )
+    await _create_index_if_missing(
+        db, "idx_cookbook_shares_account", "cookbook_shares",
+        "(shared_with_account_id)",
+    )
+
+    await _create_table_if_missing(db, "repo_grants", """
+        CREATE TABLE IF NOT EXISTS repo_grants (
+            id TEXT PRIMARY KEY,
+            cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+            provider TEXT NOT NULL CHECK(provider IN ('github', 'gitlab', 'bitbucket')),
+            scope TEXT NOT NULL,
+            token_ref TEXT NOT NULL,
+            granted_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+            granted_at TEXT NOT NULL,
+            revoked_at TEXT
+        )
+    """)
+    await _create_index_if_missing(
+        db, "idx_repo_grants_cookbook", "repo_grants", "(cookbook_id)",
+    )
+    await _create_index_if_missing(
+        db, "idx_repo_grants_active", "repo_grants",
+        "(cookbook_id, provider) WHERE revoked_at IS NULL",
+    )
+
+    # Backfill cookbook_id on bundles + events from the legacy recipe link.
+    # Idempotent: skips rows that already have a non-null cookbook_id.
+    await _backfill_cookbook_id_from_recipe(db)
+
     await db.commit()
 
 
@@ -458,6 +516,73 @@ async def _backfill_accounts_from_identities(db: aiosqlite.Connection) -> None:
             (account_id, wallet),
         )
     logger.info("Migration: backfilled %d identities to accounts", len(rows))
+
+
+async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
+    """Phase 12: copy bundles.recipe_id -> bundles.cookbook_id via recipes.
+
+    Same for events.cookbook_id (and watch_log.cookbook_id if recipe_id
+    is present on that row). Idempotent — only touches rows where the
+    new column is NULL. Skip silently if the legacy recipes table is
+    already gone.
+    """
+    if not await _table_exists(db, "recipes"):
+        return
+
+    for table in ("bundles", "events"):
+        if not await _table_exists(db, table):
+            continue
+        cursor = await db.execute(f"PRAGMA table_info({table})")
+        cols = {row["name"] for row in await cursor.fetchall()}
+        if "cookbook_id" not in cols or "recipe_id" not in cols:
+            continue
+        try:
+            cursor = await db.execute(
+                f"""UPDATE {table}
+                    SET cookbook_id = (
+                        SELECT r.cookbook_id FROM recipes r
+                        WHERE r.id = {table}.recipe_id
+                    )
+                    WHERE cookbook_id IS NULL
+                      AND recipe_id IS NOT NULL""",
+            )
+            if cursor.rowcount:
+                logger.info(
+                    "Migration: backfilled %d %s rows with cookbook_id",
+                    cursor.rowcount, table,
+                )
+        except aiosqlite.OperationalError as exc:
+            logger.warning(
+                "Migration: cookbook_id backfill on %s skipped: %s",
+                table, exc,
+            )
+
+    # watch_log carries recipe_id as a denormalized filter — backfill
+    # cookbook_id the same way so SSE channels can flip cleanly.
+    if await _table_exists(db, "watch_log"):
+        cursor = await db.execute("PRAGMA table_info(watch_log)")
+        cols = {row["name"] for row in await cursor.fetchall()}
+        if "cookbook_id" in cols and "recipe_id" in cols:
+            try:
+                cursor = await db.execute(
+                    """UPDATE watch_log
+                       SET cookbook_id = (
+                           SELECT r.cookbook_id FROM recipes r
+                           WHERE r.id = watch_log.recipe_id
+                       )
+                       WHERE cookbook_id IS NULL
+                         AND recipe_id IS NOT NULL""",
+                )
+                if cursor.rowcount:
+                    logger.info(
+                        "Migration: backfilled %d watch_log rows with cookbook_id",
+                        cursor.rowcount,
+                    )
+            except aiosqlite.OperationalError as exc:
+                logger.warning(
+                    "Migration: cookbook_id backfill on watch_log skipped: %s",
+                    exc,
+                )
 
 
 async def _backfill_bundle_owner_from_created_by(db: aiosqlite.Connection) -> None:
