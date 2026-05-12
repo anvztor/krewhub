@@ -17,6 +17,11 @@ from krewhub.models import (
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.agent_repo import AgentRepo
+# Phase 12 TODO — task_service stamps recipe_id on every event emit
+# (~15 Event() constructors below). Backfill via migration handles
+# legacy rows; new events will have cookbook_id = NULL until this
+# service is rewritten to also resolve and stamp it. Tracked for
+# step (c.1).
 from krewhub.repositories.event_repo import EventRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.watch.service import WatchService

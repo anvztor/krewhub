@@ -381,6 +381,12 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # Idempotent: skips rows that already have a non-null cookbook_id.
     await _backfill_cookbook_id_from_recipe(db)
 
+    # Phase 12 step (c): cookbook-scoped bundles have no recipe.
+    # Relax bundles.recipe_id and events.recipe_id from NOT NULL.
+    # Idempotent: no-op if the constraint is already gone.
+    await _relax_bundles_recipe_id_nullable(db)
+    await _relax_events_recipe_id_nullable(db)
+
     await db.commit()
 
 
@@ -594,6 +600,134 @@ async def _backfill_cookbook_id_from_recipe(db: aiosqlite.Connection) -> None:
                     "Migration: cookbook_id backfill on watch_log skipped: %s",
                     exc,
                 )
+
+
+async def _column_is_nullable(
+    db: aiosqlite.Connection, table: str, column: str,
+) -> bool:
+    """True iff `table.column` exists with notnull=0."""
+    cursor = await db.execute(f"PRAGMA table_info({table})")
+    for row in await cursor.fetchall():
+        if row["name"] == column:
+            return int(row["notnull"]) == 0
+    return False
+
+
+async def _relax_bundles_recipe_id_nullable(
+    db: aiosqlite.Connection,
+) -> None:
+    """Drop NOT NULL on bundles.recipe_id.
+
+    Cookbook-scoped bundles (Phase 12 step c) have no recipe; the
+    column stays for the dual-write window but must allow NULL.
+    Idempotent: no-op if already nullable.
+    """
+    if not await _table_exists(db, "bundles"):
+        return
+    if await _column_is_nullable(db, "bundles", "recipe_id"):
+        return
+
+    logger.info("Migration: rebuilding bundles to make recipe_id nullable")
+    # Collect existing column list to preserve every other column.
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    cols = [row["name"] for row in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        CREATE TABLE bundles_new (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT REFERENCES recipes(id),
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            repo_spec TEXT,
+            prompt TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN ('open', 'claimed', 'cooked', 'blocked',
+                                 'cancelled', 'digested', 'rejected')),
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            claimed_at TEXT,
+            cooked_at TEXT,
+            digested_at TEXT,
+            blocked_reason TEXT,
+            graph_code TEXT,
+            graph_mermaid TEXT,
+            resource_version INTEGER NOT NULL DEFAULT 1,
+            generation INTEGER NOT NULL DEFAULT 1,
+            owner_account_id TEXT,
+            default_agent_runtime_id TEXT,
+            sandbox_id TEXT,
+            autoplan_enabled INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO bundles_new ({col_list})
+            SELECT {col_list} FROM bundles;
+        DROP TABLE bundles;
+        ALTER TABLE bundles_new RENAME TO bundles;
+        CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_bundles_runnable
+            ON bundles(status) WHERE graph_code IS NOT NULL;
+        """
+    )
+
+
+async def _relax_events_recipe_id_nullable(
+    db: aiosqlite.Connection,
+) -> None:
+    """Drop NOT NULL on events.recipe_id.
+
+    Cookbook-scoped events have no recipe; stamp cookbook_id instead.
+    Idempotent: no-op if already nullable.
+    """
+    if not await _table_exists(db, "events"):
+        return
+    if await _column_is_nullable(db, "events", "recipe_id"):
+        return
+
+    logger.info("Migration: rebuilding events to make recipe_id nullable")
+    cursor = await db.execute("PRAGMA table_info(events)")
+    cols = [row["name"] for row in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        CREATE TABLE events_new (
+            id TEXT PRIMARY KEY,
+            recipe_id TEXT REFERENCES recipes(id),
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            bundle_id TEXT REFERENCES bundles(id),
+            task_id TEXT,
+            type TEXT NOT NULL
+                CHECK(type IN (
+                    'prompt', 'plan', 'task_claimed', 'task_working',
+                    'milestone', 'fact_added', 'code_pushed',
+                    'digest_submitted', 'digest_approved', 'digest_rejected',
+                    'session_start', 'session_end', 'tool_use', 'tool_result',
+                    'agent_reply', 'thinking'
+                )),
+            actor_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL
+                CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+            body TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{{}}',
+            sequence INTEGER NOT NULL DEFAULT 0,
+            facts TEXT NOT NULL DEFAULT '[]',
+            code_refs TEXT NOT NULL DEFAULT '[]',
+            visibility TEXT NOT NULL DEFAULT 'system',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        INSERT INTO events_new ({col_list})
+            SELECT {col_list} FROM events;
+        DROP TABLE events;
+        ALTER TABLE events_new RENAME TO events;
+        CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
+        CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_events_task_sequence
+            ON events(task_id, sequence);
+        """
+    )
 
 
 async def _drop_table_level_unique_on_cookbook_shares(

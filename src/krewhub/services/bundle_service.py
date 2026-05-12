@@ -19,6 +19,7 @@ from krewhub.models import (
 )
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
+from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime import OrchestratorDeps, OrchestratorState, dispatch_cycle
 from krewhub.services.graph_sandbox import (
@@ -63,19 +64,45 @@ class BundleService:
 
     async def create_bundle(
         self,
-        recipe_id: str,
+        recipe_id: str | None,
         prompt: str,
         created_by: str,
         tasks: list[dict],
         *,
         autoplan: bool = False,
+        cookbook_id: str | None = None,
+        repo_spec: dict | None = None,
     ) -> tuple[Bundle, list[Task]]:
+        """Create a bundle.
+
+        Phase 12 dual-write: cookbook_id is now stamped alongside
+        recipe_id. Either parameter can be None:
+          - recipe_id None → cookbook-scoped bundle (new path)
+          - cookbook_id None → resolved from recipe.cookbook_id
+        At least one must be set; otherwise the bundle has no parent.
+        """
+        if recipe_id is None and cookbook_id is None:
+            raise ValueError(
+                "create_bundle requires at least one of recipe_id or cookbook_id",
+            )
+
         now = datetime.now(timezone.utc)
         bundle_id = f"bun_{uuid.uuid4().hex[:8]}"
+
+        # Resolve cookbook_id from the recipe when the caller only
+        # supplied recipe_id. Keeps every legacy POST /recipes/{id}/bundles
+        # writing the new column without changing call signatures.
+        resolved_cookbook_id = cookbook_id
+        if resolved_cookbook_id is None and recipe_id is not None:
+            recipe = await RecipeRepo(self._bundles._db).get(recipe_id)  # type: ignore[attr-defined]
+            if recipe is not None:
+                resolved_cookbook_id = recipe.cookbook_id
 
         bundle = Bundle(
             id=bundle_id,
             recipe_id=recipe_id,
+            cookbook_id=resolved_cookbook_id,
+            repo_spec=repo_spec,
             prompt=prompt,
             status=BundleStatus.OPEN,
             created_by=created_by,
@@ -91,7 +118,7 @@ class BundleService:
             )
 
         created_tasks: list[Task] = []
-        for i, t in enumerate(tasks):
+        for _i, t in enumerate(tasks):
             task = Task(
                 id=t.get("id", f"task_{uuid.uuid4().hex[:8]}"),
                 bundle_id=bundle_id,
@@ -105,6 +132,7 @@ class BundleService:
         prompt_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=recipe_id,
+            cookbook_id=resolved_cookbook_id,
             bundle_id=bundle_id,
             type=EventType.PROMPT,
             actor_id=created_by,
@@ -126,6 +154,7 @@ class BundleService:
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
             recipe_id=recipe_id,
+            cookbook_id=resolved_cookbook_id,
             bundle_id=bundle_id,
             type=EventType.PLAN,
             actor_id="system",

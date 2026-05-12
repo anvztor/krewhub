@@ -56,6 +56,18 @@ class CreateBundleRequest(BaseModel):
     autoplan: bool = False
 
 
+class CreateCookbookBundleRequest(BaseModel):
+    """Phase 12: cookbook-scoped bundle creation.
+
+    Same shape as CreateBundleRequest but without the recipe coupling
+    and with an optional repo_spec for JIT clone gating.
+    """
+    prompt: str
+    tasks: list[CreateTaskInput] = []
+    autoplan: bool = False
+    repo_spec: dict | None = None
+
+
 class ClaimTaskRequest(BaseModel):
     agent_id: str
 

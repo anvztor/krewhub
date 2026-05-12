@@ -51,8 +51,9 @@ CREATE INDEX IF NOT EXISTS idx_agent_presence_cookbook ON agent_presence(cookboo
 CREATE TABLE IF NOT EXISTS bundles (
     id TEXT PRIMARY KEY,
     -- DEPRECATED — recipe_id stays during dual-write; will drop with the
-    -- recipes table once callers migrate to cookbook_id.
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
+    -- recipes table once callers migrate to cookbook_id. Now nullable
+    -- so cookbook-scoped bundles (no recipe) can be created.
+    recipe_id TEXT REFERENCES recipes(id),
     -- New direct parent: bundles point at their cookbook without going
     -- through a recipe. Nullable until backfill completes.
     cookbook_id TEXT REFERENCES cookbooks(id),
@@ -188,7 +189,8 @@ CREATE INDEX IF NOT EXISTS idx_task_usage_task ON task_usage(task_id);
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     -- DEPRECATED — kept during dual-write; will drop with recipes.
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
+    -- Nullable so cookbook-scoped events (no recipe) can be created.
+    recipe_id TEXT REFERENCES recipes(id),
     -- New direct scope. Nullable until backfill completes.
     cookbook_id TEXT REFERENCES cookbooks(id),
     bundle_id TEXT REFERENCES bundles(id),

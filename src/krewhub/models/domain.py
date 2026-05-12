@@ -175,7 +175,20 @@ class AgentPresence(BaseModel, frozen=True):
 
 class Bundle(BaseModel, frozen=True):
     id: str
-    recipe_id: str
+    # DEPRECATED — recipe_id stays for the dual-write window. Once
+    # callers migrate to cookbook_id this field will be dropped along
+    # with the recipes table. Nullable so cookbook-scoped bundles
+    # (created via POST /cookbooks/{id}/bundles) can omit it.
+    recipe_id: str | None = None
+    # Phase 12: direct cookbook parent. Nullable during the dual-write
+    # window; will become required after backfill completes.
+    cookbook_id: str | None = None
+    # Phase 12: optional JIT repo hint (JSON serialized in the DB).
+    # Shape: {"provider": "github", "owner": "...", "repo": "...", "ref": "main"}
+    # When set, working-tree provisioning resolves this against
+    # repo_grants on the cookbook. NULL means this bundle does no
+    # file work.
+    repo_spec: dict | None = None
     prompt: str
     status: BundleStatus
     created_by: str
@@ -253,7 +266,11 @@ class CodeRef(BaseModel, frozen=True):
 
 class Event(BaseModel, frozen=True):
     id: str
-    recipe_id: str
+    # DEPRECATED — kept for dual-write window. Nullable so cookbook-
+    # scoped events (no recipe) can be created.
+    recipe_id: str | None = None
+    # Phase 12: direct cookbook scope. Nullable during dual-write.
+    cookbook_id: str | None = None
     bundle_id: str | None = None
     task_id: str | None = None
     type: EventType

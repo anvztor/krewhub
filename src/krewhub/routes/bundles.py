@@ -22,13 +22,16 @@ from krewhub.services.deps import get_e2b
 from krewhub.services.digest_service import DigestService
 from krewhub.services.e2b_client import E2bClient
 from krewhub.services.sandbox_service import SandboxService
+from krewhub.routes.cookbook_sharing import _require_role
 from krewhub.routes.schemas import (
     AddTaskRequest,
     AttachGraphRequest,
     CreateBundleRequest,
+    CreateCookbookBundleRequest,
     DecisionRequest,
     SubmitDigestRequest,
 )
+from krewhub.models import ShareRole
 
 router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller_or_cookie)])
 
@@ -131,6 +134,109 @@ async def list_bundles(
 ):
     repo = BundleRepo(db)
     bundles = await repo.list_by_recipe(recipe_id)
+    return {"bundles": [b.model_dump(mode="json") for b in bundles]}
+
+
+# ----------------------------------------------------------------------
+# Phase 12: cookbook-scoped bundles (the new entry point)
+# ----------------------------------------------------------------------
+
+
+@router.post("/cookbooks/{cookbook_id}/bundles")
+async def create_bundle_under_cookbook(
+    cookbook_id: str,
+    req: CreateCookbookBundleRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+    e2b: E2bClient = Depends(get_e2b),
+):
+    """Create a bundle directly under a cookbook (no recipe hop).
+
+    RBAC: caller must be at least MEMBER on the cookbook (sharing
+    matrix in cookbook_sharing.py). Sets bundle.cookbook_id; leaves
+    bundle.recipe_id NULL — cookbook-scoped bundles do not bind to a
+    recipe at all. repo_spec optionally drives JIT clone gated by
+    repo_grants on the cookbook.
+    """
+    await _require_role(cookbook_id, caller, db, ShareRole.MEMBER)
+
+    svc = BundleService(db, get_watch_service())
+    bundle, tasks = await svc.create_bundle(
+        recipe_id=None,  # cookbook-scoped; no recipe binding
+        cookbook_id=cookbook_id,
+        repo_spec=req.repo_spec,
+        prompt=req.prompt,
+        created_by=caller.account_id,
+        tasks=[
+            {**t.model_dump(exclude={"task_id"}),
+             **({"id": t.task_id} if t.task_id else {})}
+            for t in req.tasks
+        ],
+        autoplan=req.autoplan,
+    )
+
+    # Stamp owner_account_id parity with the legacy path so
+    # require_bundle_owner's primary check succeeds.
+    await db.execute(
+        "UPDATE bundles SET owner_account_id = ? WHERE id = ?",
+        (caller.account_id, bundle.id),
+    )
+
+    # Default-runtime binding (same as the legacy path).
+    runtime_cursor = await db.execute(
+        "SELECT id FROM agent_runtimes "
+        "WHERE account_id = ? AND status = 'online' "
+        "ORDER BY last_seen_at DESC LIMIT 1",
+        (caller.account_id,),
+    )
+    runtime_row = await runtime_cursor.fetchone()
+    default_runtime_id = runtime_row["id"] if runtime_row else None
+    if default_runtime_id:
+        await db.execute(
+            "UPDATE bundles SET default_agent_runtime_id = ? WHERE id = ?",
+            (default_runtime_id, bundle.id),
+        )
+
+    await db.commit()
+
+    # Bundle-level sandbox (fail-soft, same policy as legacy path).
+    settings = get_settings()
+    bundle_sandbox_id: str | None = None
+    try:
+        sandbox = await SandboxService(db, e2b).create_for_bundle(
+            bundle_id=bundle.id,
+            owner_account_id=caller.account_id,
+            template=settings.e2b_default_template,
+        )
+        bundle_sandbox_id = sandbox.id
+        await BundleRepo(db).set_sandbox(bundle.id, sandbox.id)
+    except Exception as exc:
+        logger.warning(
+            "bundle %s (cookbook %s): sandbox provision failed: %s — "
+            "bundle returned without a sandbox",
+            bundle.id, cookbook_id, exc,
+        )
+
+    bundle = bundle.model_copy(update={
+        "owner_account_id": caller.account_id,
+        "default_agent_runtime_id": default_runtime_id,
+        "sandbox_id": bundle_sandbox_id,
+    })
+    return {
+        "bundle": bundle.model_dump(mode="json"),
+        "tasks": [t.model_dump(mode="json") for t in tasks],
+    }
+
+
+@router.get("/cookbooks/{cookbook_id}/bundles")
+async def list_bundles_under_cookbook(
+    cookbook_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+):
+    """List bundles in a cookbook. VIEWER+ may read."""
+    await _require_role(cookbook_id, caller, db, ShareRole.VIEWER)
+    bundles = await BundleRepo(db).list_by_cookbook(cookbook_id)
     return {"bundles": [b.model_dump(mode="json") for b in bundles]}
 
 
