@@ -37,11 +37,16 @@ class WatchService:
         resource_version: int,
         payload: dict[str, Any],
         recipe_id: str | None = None,
+        cookbook_id: str | None = None,
     ) -> WatchEvent:
         """Record a resource mutation and notify subscribers.
 
         This should be called by repository methods after every
         create/update/delete operation.
+
+        Phase 12: callers should pass cookbook_id so SSE channels
+        route on the new key. recipe_id stays for the dual-write
+        window.
         """
         entry = await self._store.append(
             resource_type=resource_type,
@@ -50,6 +55,7 @@ class WatchService:
             resource_version=resource_version,
             payload=payload,
             recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
         )
         event = entry_to_watch_event(entry)
         await self._notify(event)
@@ -64,6 +70,7 @@ class WatchService:
         event_type: WatchEventType,
         resource: Any,
         recipe_id: str | None = None,
+        cookbook_id: str | None = None,
     ) -> WatchEvent:
         """Record a mutation using a Pydantic model as the payload."""
         payload = resource.model_dump(mode="json") if hasattr(resource, "model_dump") else resource
@@ -75,6 +82,7 @@ class WatchService:
             resource_version=rv,
             payload=payload,
             recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
         )
 
     async def publish_legacy(

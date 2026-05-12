@@ -319,4 +319,6 @@ class WatchEntry(BaseModel, frozen=True):
     resource_version: int
     payload: dict
     recipe_id: str | None = None
+    # Phase 12: direct cookbook scope for SSE channel routing.
+    cookbook_id: str | None = None
     created_at: datetime
