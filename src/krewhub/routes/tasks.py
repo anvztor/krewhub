@@ -260,6 +260,134 @@ async def get_task_last_reply(
     }
 
 
+@router.get("/tasks/{task_id}/events")
+async def get_task_events(
+    task_id: str,
+    limit: int = 400,
+    since_seq: int | None = None,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Return the full historical event tape for a task — used by the
+    cookrew-beta event feed when the operator focuses a task. The live
+    SSE stream only carries events from the moment of subscription, so
+    the feed needs a one-shot history fetch to render the dialog up to
+    "now" (thinking / tool_use / tool_result / agent_reply /
+    session_*/milestone / human_followup).
+
+    Returns events oldest-first so the feed can append them in render
+    order. Each row exposes `actor_type` so the renderer can
+    discriminate brain-vs-human agent_reply rows.
+    """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    capped = max(1, min(limit, 1000))
+    if since_seq is not None:
+        cursor = await db.execute(
+            "SELECT id, type, actor_id, actor_type, body, payload, "
+            "sequence, created_at FROM events "
+            "WHERE task_id = ? AND sequence > ? "
+            "ORDER BY sequence ASC LIMIT ?",
+            (task_id, since_seq, capped),
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT id, type, actor_id, actor_type, body, payload, "
+            "sequence, created_at FROM events "
+            "WHERE task_id = ? "
+            "ORDER BY sequence ASC LIMIT ?",
+            (task_id, capped),
+        )
+    rows = await cursor.fetchall()
+
+    out = []
+    for eid, etype, actor_id, actor_type, body, payload_json, seq, created_at in rows:
+        try:
+            payload = json.loads(payload_json or "{}")
+        except Exception:
+            payload = {}
+        out.append({
+            "id": eid,
+            "type": etype,
+            "actor_id": actor_id,
+            "actor_type": actor_type,
+            "body": body or "",
+            "payload": payload,
+            "sequence": seq,
+            "created_at": created_at,
+        })
+    return {"task_id": task_id, "events": out, "count": len(out)}
+
+
+@router.get("/tasks/{task_id}/last-human-input")
+async def get_task_last_human_input(
+    task_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Latest human prompt for this task — either the most recent
+    `human_followup` event (stored as type=agent_reply + actor_type=human
+    per the followup endpoint convention) or, if no follow-ups exist,
+    the bundle's original prompt that spawned the task.
+
+    Powers:
+      - HITL popout title ("operator said: …")
+      - Task live card sub-line (most recent human instruction)
+    """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Newest human event for this task, if any.
+    cursor = await db.execute(
+        "SELECT body, payload, created_at FROM events "
+        "WHERE task_id = ? AND actor_type = 'human' "
+        "ORDER BY sequence DESC LIMIT 1",
+        (task_id,),
+    )
+    row = await cursor.fetchone()
+    if row is not None:
+        body, payload_json, created_at = row
+        text = body or ""
+        try:
+            payload = json.loads(payload_json or "{}")
+            if isinstance(payload, dict):
+                pt = payload.get("text")
+                if isinstance(pt, str) and pt.strip():
+                    text = pt
+        except Exception:
+            pass
+        return {
+            "task_id": task_id,
+            "kind": "human_followup",
+            "text": text,
+            "created_at": created_at,
+        }
+
+    # Fall back to the bundle's initial prompt — that's what spawned
+    # this task and represents the original human ask.
+    cursor = await db.execute(
+        "SELECT prompt, created_at FROM bundles WHERE id = ?",
+        (task.bundle_id,),
+    )
+    brow = await cursor.fetchone()
+    if brow is not None:
+        prompt, created_at = brow
+        return {
+            "task_id": task_id,
+            "kind": "bundle_prompt",
+            "text": prompt or "",
+            "created_at": created_at,
+        }
+
+    return {
+        "task_id": task_id,
+        "kind": "none",
+        "text": "",
+        "created_at": None,
+    }
+
+
 @router.post("/tasks/{task_id}/claim")
 async def claim_task(
     task_id: str,
