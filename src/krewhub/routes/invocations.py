@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from typing import AsyncIterator
 
 import aiosqlite
@@ -199,14 +200,139 @@ async def post_result(
     envelope: ResultEnvelope,
     svc: InvocationService = Depends(get_service),
     _caller: CallerContext = Depends(resolve_caller_or_cookie),
+    db: aiosqlite.Connection = Depends(get_db),
 ):
+    inv = await svc.get(invocation_id)
     try:
         ev = await svc.submit_result(invocation_id, envelope)
     except KeyError:
         raise HTTPException(status_code=404, detail="invocation not found")
     except _ConflictError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
+
+    # Project the terminal envelope onto the task tape (best-effort).
+    # When the brain invoked delegate(human) while running a task, the
+    # operator's answer needs to appear in the next prompt as a HUMAN
+    # turn so `_build_prompt_with_context` can thread it. We piggy-back
+    # on the existing human_followup workaround (type='agent_reply' +
+    # actor_type='human') and tag payload.kind='delegate_answer' so the
+    # UI can render it distinctly from a plain operator follow-up.
+    if inv is not None and inv.task_id and envelope.action in (
+        "accept", "decline", "cancel", "error",
+    ):
+        try:
+            await _project_invocation_to_task_tape(
+                db,
+                task_id=inv.task_id,
+                invocation_id=invocation_id,
+                envelope=envelope,
+                actor_id=inv.created_by or "",
+            )
+        except Exception:
+            # Don't fail the operator's submit on a projection error —
+            # the invocation result is already authoritative; the tape
+            # projection is a convenience for prompt continuity.
+            logger.warning(
+                "post_result: tape projection failed for inv=%s task=%s",
+                invocation_id, inv.task_id, exc_info=True,
+            )
+
     return {"ok": True, "event_id": ev.id}
+
+
+async def _project_invocation_to_task_tape(
+    db: aiosqlite.Connection,
+    *,
+    task_id: str,
+    invocation_id: str,
+    envelope: ResultEnvelope,
+    actor_id: str,
+) -> None:
+    """Write a synthetic `agent_reply` event (actor_type=human) to the
+    task's events tape so the brain's next prompt-build threads the
+    operator's answer as a HUMAN turn.
+
+    Idempotent on (task_id, payload.invocation_id): re-submits (or
+    duplicate result submissions from the bridge / SSE retries) skip
+    silently rather than appending dupes.
+    """
+    # 1. Idempotency probe — has this invocation already been projected?
+    probe = await db.execute(
+        "SELECT id FROM events WHERE task_id = ? AND type = 'agent_reply' "
+        "AND actor_type = 'human' AND payload LIKE ? LIMIT 1",
+        (task_id, f'%"invocation_id": "{invocation_id}"%'),
+    )
+    if await probe.fetchone() is not None:
+        return
+
+    # 2. Find the recipe + bundle for this task — events rows need both.
+    trow = await db.execute(
+        "SELECT t.bundle_id, b.recipe_id FROM tasks t "
+        "JOIN bundles b ON b.id = t.bundle_id WHERE t.id = ?",
+        (task_id,),
+    )
+    tr = await trow.fetchone()
+    if tr is None:
+        return
+    bundle_id, recipe_id = tr[0], tr[1]
+
+    # 3. Render the envelope as the projected body. `accept` → content
+    # text; failure actions → a short reason summary so the brain can
+    # see *what happened* on re-entry instead of silently retrying.
+    body = _envelope_body(envelope)
+    if not body.strip():
+        return
+
+    # 4. Allocate the next sequence and write the event.
+    seq_row = await db.execute(
+        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
+        (task_id,),
+    )
+    seq = (await seq_row.fetchone())[0] or 1
+
+    from uuid import uuid4
+    event_id = f"evt_{uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    payload = json.dumps({
+        "text": body,
+        "kind": "delegate_answer",
+        "invocation_id": invocation_id,
+        "action": envelope.action,
+    })
+    await db.execute(
+        "INSERT INTO events (id, recipe_id, bundle_id, task_id, type, "
+        "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
+        "visibility, created_at) "
+        "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, "
+        "'[]', '[]', 'user', ?)",
+        (event_id, recipe_id, bundle_id, task_id, actor_id or "system",
+         body, payload, seq, now),
+    )
+    await db.commit()
+
+
+def _envelope_body(envelope: ResultEnvelope) -> str:
+    """Render a ResultEnvelope as the text body the brain will see."""
+    if envelope.action == "accept":
+        content = envelope.content
+        if isinstance(content, str):
+            return content
+        if isinstance(content, dict):
+            # Prefer a `text` / `message` field if present, else fall
+            # back to compact JSON so the brain can still parse it.
+            for key in ("text", "message", "answer", "response"):
+                v = content.get(key)
+                if isinstance(v, str) and v.strip():
+                    return v
+            try:
+                return json.dumps(content, sort_keys=True)
+            except Exception:
+                return str(content)
+        return ""
+    # Decline / cancel / error — surface the reason so the brain knows
+    # the operator declined or the invocation failed.
+    reason = envelope.reason or envelope.action
+    return f"[{envelope.action}] {reason}"
 
 
 # ---------------------------------------------------------------------------

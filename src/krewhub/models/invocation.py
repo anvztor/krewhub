@@ -52,9 +52,13 @@ EventKind = Literal[
 ]
 
 
-Action = Literal["accept", "decline", "cancel", "error"]
+Action = Literal["accept", "decline", "cancel", "error", "pending"]
 """ResultEnvelope.action — borrowed from MCP elicitation, extended with
-`error` for execution failures (contract §7)."""
+`error` for execution failures (contract §7) and `pending` for non-
+blocking delegate semantics: the bridge returns `pending` to the brain
+when the operator hasn't answered within the short poll window so the
+brain can end its turn cleanly; the answer arrives on the task tape
+and is threaded into the next prompt by `_build_prompt_with_context`."""
 
 
 TargetType = Literal["sandbox", "agent", "human"]
@@ -73,6 +77,9 @@ class ResultEnvelope(BaseModel):
     - decline → content typically null; reason recommended
     - cancel  → content typically null; reason REQUIRED
     - error   → content typically null; reason REQUIRED
+    - pending → content typically `{invocation_id: str}`; reason recommended
+                (non-terminal — the brain should end its turn; the
+                operator's answer arrives later on the task tape)
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -146,6 +153,13 @@ class InvocationRequest(BaseModel):
     # `no_sandbox_attached` failure path; the brain never sees
     # substrate state.
     bundle_id: str | None = None
+    # Optional task scoping — set when the brain invokes delegate(human)
+    # while running a task. The result projection (POST /result) uses
+    # this to append a `delegate_answer` event onto the task's events
+    # tape so the next prompt-build can thread the operator's answer as
+    # a HUMAN turn for the brain's re-entry. Not enforced for non-human
+    # targets, but harmless to pass through for any invocation.
+    task_id: str | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -180,6 +194,7 @@ class Invocation(BaseModel):
     parent_fork_point: int | None = None
     idempotency_key: str | None = None
     tape_id: str
+    task_id: str | None = None
     status: InvocationStatus
     result: ResultEnvelope | None = None
     created_at: datetime

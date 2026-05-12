@@ -22,15 +22,15 @@ class InvocationRepo:
             """INSERT INTO invocations
                (id, target_type, target_id, input_json, schema_json, deadline_s,
                 label, parent_tape_id, parent_fork_point, idempotency_key,
-                tape_id, status, result_json, created_at, started_at,
+                tape_id, task_id, status, result_json, created_at, started_at,
                 completed_at, created_by)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 inv.id, inv.target_type, inv.target_id,
                 json.dumps(inv.input), json.dumps(inv.schema) if inv.schema else None,
                 inv.deadline_s, inv.label,
                 inv.parent_tape_id, inv.parent_fork_point, inv.idempotency_key,
-                inv.tape_id, inv.status,
+                inv.tape_id, inv.task_id, inv.status,
                 inv.result.model_dump_json() if inv.result else None,
                 inv.created_at.isoformat(),
                 inv.started_at.isoformat() if inv.started_at else None,
@@ -93,6 +93,13 @@ class InvocationRepo:
 
 
 def _row_to_invocation(row) -> Invocation:
+    # `task_id` is read defensively — legacy rows from before the
+    # 2026-05-12 migration may not have the column hydrated; sqlite3
+    # Row will KeyError on missing names.
+    try:
+        task_id = row["task_id"]
+    except (IndexError, KeyError):
+        task_id = None
     return Invocation(
         id=row["id"],
         target_type=row["target_type"],
@@ -105,6 +112,7 @@ def _row_to_invocation(row) -> Invocation:
         parent_fork_point=row["parent_fork_point"],
         idempotency_key=row["idempotency_key"],
         tape_id=row["tape_id"],
+        task_id=task_id,
         status=row["status"],
         result=ResultEnvelope.model_validate_json(row["result_json"])
         if row["result_json"] else None,

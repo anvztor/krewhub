@@ -285,6 +285,12 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _create_index_if_missing(db, "idx_invocations_status", "invocations", "(status)")
     await _create_index_if_missing(db, "idx_invocations_target", "invocations", "(target_type, target_id)")
 
+    # 2026-05-12 — non-blocking delegate: attach invocations to a task
+    # so POST /result can project the ResultEnvelope onto the task's
+    # events tape. Additive column; legacy rows keep NULL.
+    await _add_column_if_missing(db, "invocations", "task_id", "TEXT")
+    await _create_index_if_missing(db, "idx_invocations_task", "invocations", "(task_id)")
+
     await _create_table_if_missing(db, "invocation_events", """
         CREATE TABLE IF NOT EXISTS invocation_events (
             tape_id TEXT NOT NULL,

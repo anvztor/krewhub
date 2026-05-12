@@ -379,6 +379,14 @@ CREATE TABLE IF NOT EXISTS invocations (
     parent_fork_point INTEGER,
     idempotency_key TEXT,
     tape_id TEXT NOT NULL UNIQUE,
+    -- task_id is set when the brain invokes delegate while running a
+    -- task — POST /invocations/{id}/result uses it to project the
+    -- ResultEnvelope onto the task's events tape so the next prompt
+    -- build threads the operator's answer as a HUMAN turn. Nullable
+    -- because not every invocation is task-scoped (agent-to-agent A2A
+    -- works without one). Added in 2026-05-12 for non-blocking
+    -- delegate semantics; legacy DBs grow it via run_migrations.
+    task_id TEXT,
     status TEXT NOT NULL CHECK (status IN ('pending','running','completed','cancelled','errored')) DEFAULT 'pending',
     result_json TEXT,
     created_at TEXT NOT NULL,

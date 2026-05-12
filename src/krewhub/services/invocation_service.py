@@ -197,6 +197,7 @@ class InvocationService:
             parent_fork_point=req.parent_fork_point,
             idempotency_key=req.idempotency_key,
             tape_id=_new_id("tape_"),
+            task_id=req.task_id,
             status="pending",
             result=None,
             created_at=now,
