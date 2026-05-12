@@ -21,23 +21,19 @@ from krewhub.db.connection import get_db
 
 async def _seed_bundle_and_task(db, *, task_status: str = "open") -> tuple[str, str]:
     import uuid
-    rec_id = f"rec_{uuid.uuid4().hex[:8]}"
     cb_id = f"cb_{uuid.uuid4().hex[:8]}"
     bundle_id = f"bun_{uuid.uuid4().hex[:8]}"
     task_id = f"task_{uuid.uuid4().hex[:8]}"
     await db.execute(
-        "INSERT INTO cookbooks (id, name, owner_id, created_at) VALUES (?, 'cb', 'dev-user-1', '2026-05-12T00:00:00')",
+        "INSERT INTO cookbooks (id, name, owner_id, created_at) "
+        "VALUES (?, 'cb', 'dev-user-1', '2026-05-12T00:00:00')",
         (cb_id,),
     )
     await db.execute(
-        "INSERT INTO recipes (id, name, repo_url, default_branch, created_by, created_at, cookbook_id) "
-        "VALUES (?, 'r', 'https://github.com/x/y.git', 'main', 'dev-user-1', '2026-05-12T00:00:00', ?)",
-        (rec_id, cb_id),
-    )
-    await db.execute(
-        "INSERT INTO bundles (id, recipe_id, prompt, status, created_by, created_at, owner_account_id) "
+        "INSERT INTO bundles (id, cookbook_id, prompt, status, created_by, "
+        "created_at, owner_account_id) "
         "VALUES (?, ?, 'p', 'open', 'dev-user-1', '2026-05-12T00:00:00', 'dev-user-1')",
-        (bundle_id, rec_id),
+        (bundle_id, cb_id),
     )
     await db.execute(
         "INSERT INTO tasks (id, bundle_id, title, status, depends_on_task_ids, "

@@ -23,15 +23,20 @@ class BundleRepo:
         self._db = db
 
     async def create(self, bundle: Bundle) -> Bundle:
+        import json
+
+        repo_spec_json = json.dumps(bundle.repo_spec) if bundle.repo_spec else None
         await self._db.execute(
             """INSERT INTO bundles
-               (id, recipe_id, prompt, status, created_by, created_at,
+               (id, cookbook_id, repo_spec, prompt, status,
+                created_by, created_at,
                 claimed_at, cooked_at, digested_at, blocked_reason,
                 graph_code, graph_mermaid,
                 resource_version, generation,
                 owner_account_id, default_agent_runtime_id, sandbox_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (bundle.id, bundle.recipe_id, bundle.prompt, bundle.status,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (bundle.id, bundle.cookbook_id, repo_spec_json,
+             bundle.prompt, bundle.status,
              bundle.created_by, bundle.created_at.isoformat(),
              bundle.claimed_at.isoformat() if bundle.claimed_at else None,
              bundle.cooked_at.isoformat() if bundle.cooked_at else None,
@@ -78,10 +83,18 @@ class BundleRepo:
             return None
         return _row_to_bundle(row)
 
-    async def list_by_recipe(self, recipe_id: str) -> list[Bundle]:
+    async def list_by_cookbook(self, cookbook_id: str) -> list[Bundle]:
+        """Phase 12: direct cookbook lookup, no recipes join.
+
+        Replaces list_by_recipe for callers that have a cookbook_id
+        in hand. During the dual-write window, both this method and
+        list_by_recipe return correct results because every bundle
+        gets stamped with both columns at create time + backfill.
+        """
         cursor = await self._db.execute(
-            "SELECT * FROM bundles WHERE recipe_id = ? ORDER BY created_at DESC",
-            (recipe_id,),
+            "SELECT * FROM bundles WHERE cookbook_id = ? "
+            "ORDER BY created_at DESC",
+            (cookbook_id,),
         )
         rows = await cursor.fetchall()
         return [_row_to_bundle(r) for r in rows]
@@ -190,10 +203,15 @@ class BundleRepo:
 
 
 def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
+    import json
+
     keys = set(row.keys())
+    repo_spec_raw = row["repo_spec"] if "repo_spec" in keys else None
+    repo_spec = json.loads(repo_spec_raw) if repo_spec_raw else None
     return Bundle(
         id=row["id"],
-        recipe_id=row["recipe_id"],
+        cookbook_id=row["cookbook_id"] if "cookbook_id" in keys else None,
+        repo_spec=repo_spec,
         prompt=row["prompt"],
         status=row["status"],
         created_by=row["created_by"],

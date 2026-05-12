@@ -1,5 +1,5 @@
 """
-Tape manager for digest lifecycle.
+Tape manager for event lifecycle.
 
 Uses republic's TapeEntry and TapeQuery for structured queries,
 backed by SqliteTapeStore for persistence.
@@ -12,16 +12,26 @@ from typing import Any
 import aiosqlite
 from republic import TapeEntry, TapeQuery
 
-from krewhub.models import Digest, Event
+from krewhub.models import Event
 from krewhub.tape.store import SqliteTapeStore
 
 
 class TapeManager:
-    """Manages tape operations for a recipe."""
+    """Manages tape operations for a tape namespace.
 
-    def __init__(self, db: aiosqlite.Connection, recipe_id: str) -> None:
+    Phase 12 step (e): callers pass a fully-qualified tape name —
+    e.g. ``cookbook:{cookbook_id}`` or ``recipe:{recipe_id}`` — and
+    the manager stores entries under that exact key. Previously the
+    constructor implicitly prefixed with ``recipe:``; that hard-coded
+    coupling was retired when recipes were collapsed away.
+    """
+
+    def __init__(self, db: aiosqlite.Connection, tape_name: str) -> None:
         self._store = SqliteTapeStore(db)
-        self._tape_name = f"recipe:{recipe_id}"
+        if ":" not in tape_name:
+            # Back-compat: a bare id (legacy call sites) means recipe-scoped.
+            tape_name = f"recipe:{tape_name}"
+        self._tape_name = tape_name
 
     async def record_event(self, event: Event) -> TapeEntry:
         payload: dict[str, Any] = {
@@ -38,25 +48,6 @@ class TapeManager:
             "event_type": event.type,
         }
         entry = TapeEntry(id=0, kind=event.type, payload=payload, meta=meta)
-        return await self._store.append(self._tape_name, entry)
-
-    async def create_digest_anchor(self, digest: Digest) -> TapeEntry:
-        payload: dict[str, Any] = {
-            "name": f"digest:{digest.bundle_id}",
-            "phase": "digested",
-            "digest_id": digest.id,
-            "bundle_id": digest.bundle_id,
-            "summary": digest.summary,
-            "task_results": [tr.model_dump() for tr in digest.task_results],
-            "facts": [f.model_dump() for f in digest.facts],
-            "code_refs": [c.model_dump() for c in digest.code_refs],
-            "decision": digest.decision,
-            "decided_by": digest.decided_by,
-        }
-        meta = {
-            "submitted_by": digest.submitted_by,
-        }
-        entry = TapeEntry(id=0, kind="anchor", payload=payload, meta=meta)
         return await self._store.append(self._tape_name, entry)
 
     async def get_history(self) -> list[TapeEntry]:

@@ -7,7 +7,7 @@ GraphRunnerController reached the bundle. The root step could execute twice and
 outside the graph's edge ordering.
 
 The two fixes:
-    1. TaskRepo.list_open_by_recipe filters out tasks with graph_node_id set,
+    1. TaskRepo.list_open_by_cookbook filters out tasks with graph_node_id set,
        so the legacy dispatcher can't even see them.
     2. dispatch_cycle treats CLAIMED/WORKING tasks as in-flight and waits for
        terminal rather than re-dispatching (belt-and-suspenders).
@@ -32,13 +32,11 @@ from krewhub.models import (
     AgentStatus,
     Bundle,
     BundleStatus,
-    Recipe,
     Task,
     TaskStatus,
 )
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime import (
     OrchestratorDeps,
@@ -75,7 +73,7 @@ def _mock_post_response(*, status_code: int = 200, state: str = "working") -> Mo
 
 
 async def _seed_recipe() -> tuple[str, str]:
-    """Insert a cookbook + recipe. Returns (cookbook_id, recipe_id)."""
+    """Insert a cookbook (legacy name). Returns (cookbook_id, cookbook_id)."""
     suffix = _next_suffix()
     cookbook_id = f"cb-{suffix}"
     db = await get_db()
@@ -84,23 +82,15 @@ async def _seed_recipe() -> tuple[str, str]:
         (cookbook_id, cookbook_id, "human", _now().isoformat()),
     )
     await db.commit()
-    recipe = await RecipeRepo(db).create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human", created_at=_now(),
-            cookbook_id=cookbook_id,
-        )
-    )
-    return cookbook_id, recipe.id
+    return cookbook_id, cookbook_id
 
 
-async def _seed_bundle(recipe_id: str, *, graph_code: str | None = None) -> str:
+async def _seed_bundle(cookbook_id: str, *, graph_code: str | None = None) -> str:
     suffix = _next_suffix()
     db = await get_db()
     bundle = await BundleRepo(db).create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe_id, prompt="p",
+            id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="p",
             status=BundleStatus.OPEN, created_by="h",
             created_at=_now(),
             graph_code=graph_code,
@@ -137,21 +127,21 @@ def _make_ctx(state: OrchestratorState, deps: OrchestratorDeps):
 
 
 # ---------------------------------------------------------------------------
-# Fix 1: TaskRepo.list_open_by_recipe excludes graph tasks
+# Fix 1: TaskRepo.list_open_by_cookbook excludes graph tasks
 # ---------------------------------------------------------------------------
 
 
 class TestListOpenExcludesGraphTasks:
     @pytest.mark.asyncio
-    async def test_graph_task_is_hidden_from_list_open_by_recipe(self):
+    async def test_graph_task_is_hidden_from_list_open_by_cookbook(self):
         _cb, recipe_id = await _seed_recipe()
         bundle_id = await _seed_bundle(recipe_id, graph_code="graph = ...")
         await _seed_task(bundle_id, graph_node_id="root")
 
         db = await get_db()
-        open_tasks = await TaskRepo(db).list_open_by_recipe(recipe_id)
+        open_tasks = await TaskRepo(db).list_open_by_cookbook(recipe_id)
         assert open_tasks == [], (
-            f"graph-backed task leaked into list_open_by_recipe: {open_tasks}"
+            f"graph-backed task leaked into list_open_by_cookbook: {open_tasks}"
         )
 
     @pytest.mark.asyncio
@@ -161,20 +151,20 @@ class TestListOpenExcludesGraphTasks:
         task_id = await _seed_task(bundle_id, graph_node_id=None)
 
         db = await get_db()
-        open_tasks = await TaskRepo(db).list_open_by_recipe(recipe_id)
+        open_tasks = await TaskRepo(db).list_open_by_cookbook(recipe_id)
         assert [t.id for t in open_tasks] == [task_id]
 
     @pytest.mark.asyncio
     async def test_mixed_bundle_only_returns_non_graph_task(self):
         """A bundle with both graph tasks and a legacy task should expose
-        only the legacy one via list_open_by_recipe."""
+        only the legacy one via list_open_by_cookbook."""
         _cb, recipe_id = await _seed_recipe()
         bundle_id = await _seed_bundle(recipe_id, graph_code="graph = ...")
         _graph_task = await _seed_task(bundle_id, graph_node_id="root")
         legacy_task = await _seed_task(bundle_id, graph_node_id=None)
 
         db = await get_db()
-        open_tasks = await TaskRepo(db).list_open_by_recipe(recipe_id)
+        open_tasks = await TaskRepo(db).list_open_by_cookbook(recipe_id)
         assert [t.id for t in open_tasks] == [legacy_task]
 
 

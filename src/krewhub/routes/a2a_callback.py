@@ -118,9 +118,14 @@ async def task_callback(
         else f"Task blocked: {req.blocked_reason or 'unknown'}"
     )
 
+    # Resolve cookbook_id from the bundle (step e — no recipes).
+    from krewhub.repositories.bundle_repo import BundleRepo
+    bundle = await BundleRepo(db).get(task.bundle_id)
+    cookbook_id = bundle.cookbook_id if bundle else None
+
     event = Event(
         id=f"evt_{uuid.uuid4().hex[:8]}",
-        recipe_id=task.bundle_id,  # Will be resolved below
+        cookbook_id=cookbook_id,
         bundle_id=task.bundle_id,
         task_id=req.task_id,
         type=EventType.MILESTONE,
@@ -132,25 +137,15 @@ async def task_callback(
         created_at=now,
     )
 
-    # Resolve recipe_id from the bundle
-    from krewhub.repositories.bundle_repo import BundleRepo
-    bundle = await BundleRepo(db).get(task.bundle_id)
-    if bundle is not None:
-        event = event.model_copy(update={"recipe_id": bundle.recipe_id})
-
     await event_repo.create(event)
 
     if updated is not None:
-        recipe_id = bundle.recipe_id if bundle else ""
         await watch.record_resource(
             "task", req.task_id, WatchEventType.MODIFIED, updated,
-            recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
         )
 
-    # Recompute bundle status (may transition to cooked/blocked)
-    if bundle is not None:
-        from krewhub.services.bundle_service import BundleService
-        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): bundle status is OPEN/CLOSED only; no recompute.
 
     return {
         "task": updated.model_dump(mode="json") if updated else None,

@@ -17,19 +17,16 @@ _TASK_STATUS_TO_CHANNEL = {
     "cancelled": "task:cancelled",
 }
 
-# Bundle status → channel suffix (for MODIFIED)
+# Bundle status → channel suffix (for MODIFIED).
+# Phase 12 step (d.1): bundle FSM is just OPEN/CLOSED. The MODIFIED
+# event surfaces close/reopen transitions; UI subscribes to the
+# typed channels for those.
 _BUNDLE_STATUS_TO_CHANNEL = {
-    "cooked": "bundle:cooked",
-    "blocked": "bundle:blocked",
-    "cancelled": "bundle:cancelled",
-    "claimed": "bundle:claimed",
-    "digested": "bundle:digested",
+    "closed": "bundle:closed",
+    "open": "bundle:reopened",  # MODIFIED→open implies reopen
 }
 
 # Event type → channel (for nested events in tasks)
-# Grouping: tool_use/tool_result/thinking/agent_reply/milestone → task:message
-# session_* → task:session_*
-# digest_* → digest:*
 _EVENT_TYPE_TO_CHANNEL = {
     "tool_use": "task:message",
     "tool_result": "task:message",
@@ -40,20 +37,12 @@ _EVENT_TYPE_TO_CHANNEL = {
     "code_pushed": "task:message",
     "session_start": "task:session_start",
     "session_end": "task:session_end",
-    "digest_submitted": "digest:submitted",
-    "digest_approved": "digest:approved",
-    "digest_rejected": "digest:rejected",
+    "bundle_closed": "bundle:closed",
+    "bundle_reopened": "bundle:reopened",
     "prompt": "bundle:prompt",
     "plan": "bundle:plan",
     "task_claimed": "task:claimed",
     "task_working": "task:working",
-}
-
-# Digest decision → channel
-_DIGEST_DECISION_TO_CHANNEL = {
-    "pending": "digest:submitted",
-    "approved": "digest:approved",
-    "rejected": "digest:rejected",
 }
 
 # Agent status → channel
@@ -102,11 +91,7 @@ def derive_channel(
             return _EVENT_TYPE_TO_CHANNEL[evt_type]
         return f"event:{event_type_lower}"
 
-    if resource_type == "digest":
-        decision = obj.get("decision")
-        if decision and decision in _DIGEST_DECISION_TO_CHANNEL:
-            return _DIGEST_DECISION_TO_CHANNEL[decision]
-        return f"digest:{event_type_lower}"
+    # Phase 12 step (d): digest resource is gone.
 
     if resource_type == "agent":
         if event_type_lower == "added":

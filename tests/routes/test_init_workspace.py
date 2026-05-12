@@ -13,31 +13,26 @@ from httpx import AsyncClient
 
 
 @pytest.mark.asyncio
-async def test_init_creates_cookbook_and_recipe_for_new_user(
-    cookie_client: AsyncClient,
-):
+async def test_init_creates_cookbook_for_new_user(cookie_client: AsyncClient):
+    """Step (e): init-workspace creates cookbook only — recipes are gone."""
     r = await cookie_client.post("/api/v1/me/init-workspace")
     assert r.status_code == 200, r.text
     body = r.json()
 
     assert body["cookbook"]["name"] == "my-cookbook"
     assert body["cookbook"]["owner_id"] == "acc_test_cookie"
-    assert body["recipe"]["name"] == "my-recipe"
-    assert body["recipe"]["cookbook_id"] == body["cookbook"]["id"]
-    assert body["recipe"]["created_by"] == "acc_test_cookie"
+    assert "recipe" not in body
 
 
 @pytest.mark.asyncio
 async def test_init_is_idempotent(cookie_client: AsyncClient):
-    """Calling /init-workspace twice returns the same cookbook + recipe.
-    SPA can call it on every auth load without duplicating entities."""
+    """Calling /init-workspace twice returns the same cookbook."""
     first = await cookie_client.post("/api/v1/me/init-workspace")
     assert first.status_code == 200, first.text
     second = await cookie_client.post("/api/v1/me/init-workspace")
     assert second.status_code == 200, second.text
 
     assert first.json()["cookbook"]["id"] == second.json()["cookbook"]["id"]
-    assert first.json()["recipe"]["id"] == second.json()["recipe"]["id"]
 
 
 @pytest.mark.asyncio

@@ -27,13 +27,13 @@ class WatchLogStore:
         event_type: WatchEventType,
         resource_version: int,
         payload: dict[str, Any],
-        recipe_id: str | None = None,
+        cookbook_id: str | None = None,
     ) -> WatchEntry:
         now = datetime.now(timezone.utc)
         cursor = await self._db.execute(
             """INSERT INTO watch_log
                (resource_type, resource_id, event_type, resource_version,
-                payload, recipe_id, created_at)
+                payload, cookbook_id, created_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 resource_type,
@@ -41,7 +41,7 @@ class WatchLogStore:
                 event_type,
                 resource_version,
                 json.dumps(payload),
-                recipe_id,
+                cookbook_id,
                 now.isoformat(),
             ),
         )
@@ -54,7 +54,7 @@ class WatchLogStore:
             event_type=event_type,
             resource_version=resource_version,
             payload=payload,
-            recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
             created_at=now,
         )
 
@@ -62,7 +62,7 @@ class WatchLogStore:
         self,
         since: int = 0,
         resource_type: str | None = None,
-        recipe_id: str | None = None,
+        cookbook_id: str | None = None,
         limit: int = 500,
     ) -> list[WatchEntry]:
         parts = ["seq > ?"]
@@ -71,9 +71,9 @@ class WatchLogStore:
         if resource_type is not None:
             parts.append("resource_type = ?")
             params.append(resource_type)
-        if recipe_id is not None:
-            parts.append("recipe_id = ?")
-            params.append(recipe_id)
+        if cookbook_id is not None:
+            parts.append("cookbook_id = ?")
+            params.append(cookbook_id)
 
         where = " AND ".join(parts)
         params.append(limit)
@@ -103,6 +103,7 @@ class WatchLogStore:
 
 
 def _row_to_entry(row: aiosqlite.Row) -> WatchEntry:
+    keys = set(row.keys())
     return WatchEntry(
         seq=row["seq"],
         resource_type=row["resource_type"],
@@ -110,7 +111,7 @@ def _row_to_entry(row: aiosqlite.Row) -> WatchEntry:
         event_type=row["event_type"],
         resource_version=row["resource_version"],
         payload=json.loads(row["payload"]),
-        recipe_id=row["recipe_id"],
+        cookbook_id=row["cookbook_id"] if "cookbook_id" in keys else None,
         created_at=datetime.fromisoformat(row["created_at"]),
     )
 
@@ -128,7 +129,7 @@ def entry_to_watch_event(entry: WatchEntry) -> WatchEvent:
         resource_id=entry.resource_id,
         resource_version=entry.resource_version,
         object=entry.payload,
-        recipe_id=entry.recipe_id,
+        cookbook_id=entry.cookbook_id,
         seq=entry.seq,
         channel=channel,
     )

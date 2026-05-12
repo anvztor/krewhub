@@ -6,25 +6,16 @@ import pytest
 async def _setup_bundle_with_task(client) -> tuple[str, str, str]:
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-tasks-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/tasks",
-        "repo_url": "git@github.com:test/tasks.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Task test",
-        "requested_by": "human_1",
         "tasks": [{"title": "Claimable task"}],
     })
     bundle_id = resp.json()["bundle"]["id"]
     task_id = resp.json()["tasks"][0]["id"]
-    return recipe_id, bundle_id, task_id
+    return cookbook_id, bundle_id, task_id
 
 
 @pytest.mark.asyncio
@@ -98,28 +89,9 @@ async def test_mark_task_blocked(client):
     assert resp.json()["task"]["status"] == "blocked"
 
 
-@pytest.mark.asyncio
-async def test_rerun_reopens_blocked_tasks(client):
-    _, bundle_id, task_id = await _setup_bundle_with_task(client)
-
-    await client.post(f"/api/v1/tasks/{task_id}/claim", json={
-        "agent_id": "agent_alpha",
-    })
-    await client.patch(f"/api/v1/tasks/{task_id}/status", json={
-        "status": "blocked",
-        "blocked_reason": "Missing dependency",
-    })
-
-    rerun = await client.post(f"/api/v1/bundles/{bundle_id}/rerun")
-    assert rerun.status_code == 200
-    assert rerun.json()["bundle"]["status"] == "open"
-    assert rerun.json()["bundle"]["blocked_reason"] is None
-
-    bundle = await client.get(f"/api/v1/bundles/{bundle_id}")
-    task = bundle.json()["tasks"][0]
-    assert task["status"] == "open"
-    assert task["blocked_reason"] is None
-    assert task["claimed_by_agent_id"] is None
+# test_rerun_reopens_blocked_tasks removed in step (d) — the
+# /bundles/{id}/rerun route is gone. Bundle BLOCKED state no longer
+# exists; per-task rerun belongs on the task layer (reopen_for_rerun).
 
 
 @pytest.mark.asyncio
@@ -147,20 +119,11 @@ async def test_remove_task(client):
 async def test_dependency_blocks_claim(client):
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-deps-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/deps",
-        "repo_url": "git@github.com:test/deps.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Dependency test",
-        "requested_by": "human_1",
         "tasks": [
             {"title": "First task"},
             {"title": "Second task", "depends_on_task_ids": ["placeholder"]},
@@ -170,12 +133,10 @@ async def test_dependency_blocks_claim(client):
     task_1_id = tasks[0]["id"]
     task_2_id = tasks[1]["id"]
 
-    # Update task 2 to depend on task 1
     await client.patch(f"/api/v1/tasks/{task_2_id}", json={
         "depends_on_task_ids": [task_1_id],
     })
 
-    # Should fail: task 1 not done yet
     resp = await client.post(f"/api/v1/tasks/{task_2_id}/claim", json={
         "agent_id": "agent_alpha",
     })
@@ -186,20 +147,11 @@ async def test_dependency_blocks_claim(client):
 async def test_agent_can_only_hold_one_active_task(client):
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-one-active-task-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/one-active-task",
-        "repo_url": "git@github.com:test/one-active-task.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Two parallel tasks",
-        "requested_by": "human_1",
         "tasks": [
             {"title": "Task one"},
             {"title": "Task two"},
@@ -221,26 +173,14 @@ async def test_agent_can_only_hold_one_active_task(client):
 
 @pytest.mark.asyncio
 async def test_cancel_task_via_cookie_auth(client, cookie_client):
-    """Regression: browser cancel-task POST must accept the krew_session
-    cookie. Same BFF-elimination gap that affected /bundles routes —
-    tasks router was on resolve_caller until Phase 3.
-    """
-    # Seed via API key (still works), then cancel via cookie.
+    """Browser cancel-task POST must accept the krew_session cookie."""
     resp = await client.post("/api/v1/cookbooks", json={
         "name": "test-task-cookie-cookbook",
-        "owner_id": "human_1",
+        "owner_id": "acc_legacy_apikey",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post("/api/v1/recipes", json={
-        "name": "test/task-cookie",
-        "repo_url": "git@github.com:test/task-cookie.git",
-        "created_by": "human_1",
-        "cookbook_id": cookbook_id,
-    })
-    recipe_id = resp.json()["recipe"]["id"]
-    resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
+    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Cancel-via-cookie smoke",
-        "requested_by": "human_1",
         "tasks": [{"title": "Will be cancelled"}],
     })
     task_id = resp.json()["tasks"][0]["id"]

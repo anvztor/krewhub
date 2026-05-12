@@ -25,17 +25,14 @@ async def _seed_blocked_task(
     *,
     blocked_reason: str = "execution_timeout",
 ) -> tuple[str, str]:
-    """Create a recipe + bundle + blocked task. Returns (recipe_id, task_id)."""
+    """Create cookbook + bundle + blocked task. Returns (cookbook_id, task_id)."""
     init = await cookie_client.post("/api/v1/me/init-workspace")
-    recipe_id = init.json()["recipe"]["id"]
+    cookbook_id = init.json()["cookbook"]["id"]
     bundle = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
-        json={"prompt": "", "requested_by": "tester", "tasks": []},
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
+        json={"prompt": "", "tasks": []},
     )
     bundle_id = bundle.json()["bundle"]["id"]
-    # Direct DB insert of a blocked task; bypasses the bundle/runtime
-    # binding requirement of /bundles/{id}/tasks since the test only
-    # needs the row in `blocked` state.
     db = await get_db()
     task_id = "task_hitltest"
     await db.execute(
@@ -51,7 +48,7 @@ async def _seed_blocked_task(
         ),
     )
     await db.commit()
-    return recipe_id, task_id
+    return cookbook_id, task_id
 
 
 @pytest.mark.asyncio
@@ -100,10 +97,10 @@ async def test_hitl_answer_emits_prompt_event(cookie_client: AsyncClient):
 @pytest.mark.asyncio
 async def test_hitl_answer_rejects_non_blocked_task(cookie_client: AsyncClient):
     init = await cookie_client.post("/api/v1/me/init-workspace")
-    recipe_id = init.json()["recipe"]["id"]
+    cookbook_id = init.json()["cookbook"]["id"]
     bundle = await cookie_client.post(
-        f"/api/v1/recipes/{recipe_id}/bundles",
-        json={"prompt": "", "requested_by": "t", "tasks": []},
+        f"/api/v1/cookbooks/{cookbook_id}/bundles",
+        json={"prompt": "", "tasks": []},
     )
     bundle_id = bundle.json()["bundle"]["id"]
     db = await get_db()

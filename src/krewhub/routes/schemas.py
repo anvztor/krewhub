@@ -17,6 +17,34 @@ class InviteMemberRequest(BaseModel):
     role: str = "member"
 
 
+# --- Cookbook sharing / repo grants (Phase 12) ---
+
+
+class CreateCookbookShareRequest(BaseModel):
+    shared_with_account_id: str
+    role: str = "member"
+
+
+class UpdateCookbookShareRequest(BaseModel):
+    role: str
+
+
+class CreateRepoGrantRequest(BaseModel):
+    provider: str
+    scope: str
+    token_ref: str
+
+
+class BundleLifecycleRequest(BaseModel):
+    """Phase 12 step (d): one verb for OPEN ↔ CLOSED.
+
+    Idempotent and symmetric. Replaces the old cancel + rerun +
+    decision endpoints.
+    """
+    status: str  # "open" or "closed"
+    reason: str | None = None
+
+
 class CreateTaskInput(BaseModel):
     model_config = {"populate_by_name": True}
     task_id: str | None = Field(None, alias="id")
@@ -36,6 +64,18 @@ class CreateBundleRequest(BaseModel):
     # mode flows that genuinely want LLM planning set this to true on
     # create, or POST /bundles/{id}/dispatch-planner later.
     autoplan: bool = False
+
+
+class CreateCookbookBundleRequest(BaseModel):
+    """Phase 12: cookbook-scoped bundle creation.
+
+    Same shape as CreateBundleRequest but without the recipe coupling
+    and with an optional repo_spec for JIT clone gating.
+    """
+    prompt: str
+    tasks: list[CreateTaskInput] = []
+    autoplan: bool = False
+    repo_spec: dict | None = None
 
 
 class ClaimTaskRequest(BaseModel):

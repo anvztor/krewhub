@@ -109,10 +109,8 @@ class GraphAttachmentService:
                 dispatch_cycle=dispatch_cycle,
             )
         except (GraphValidationError, GraphExecError) as exc:
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason=f"graph artifact rejected: {exc}"[:500],
-            )
+            # Step (d.1): sandbox failures don't move the bundle FSM.
+            # Surface as 422; caller can retry with corrected code.
             logger.warning(
                 "attach_graph_artifact: bundle %s sandbox rejected: %s", bundle_id, exc,
             )
@@ -121,10 +119,6 @@ class GraphAttachmentService:
         # 2. Structure + mermaid
         node_ids, edges = extract_graph_structure(graph)
         if not node_ids:
-            await self._bundles.update_status(
-                bundle_id, BundleStatus.BLOCKED,
-                blocked_reason="graph artifact has no user-step nodes",
-            )
             raise GraphArtifactError(422, "graph contains no executable steps")
 
         rendered = render_graph(graph, direction="LR")
@@ -176,7 +170,6 @@ class GraphAttachmentService:
         # 7. Record a PLAN event so cookrew sees the planning step land.
         plan_event = Event(
             id=f"evt_{uuid.uuid4().hex[:8]}",
-            recipe_id=bundle.recipe_id,
             bundle_id=bundle_id,
             type=EventType.PLAN,
             actor_id=created_by,
@@ -194,12 +187,10 @@ class GraphAttachmentService:
         # 8. Watch events for cookrew SSE.
         await self._watch.record_resource(
             "bundle", bundle_id, WatchEventType.MODIFIED, updated_bundle,
-            recipe_id=bundle.recipe_id,
         )
         for task in created_tasks:
             await self._watch.record_resource(
                 "task", task.id, WatchEventType.ADDED, task,
-                recipe_id=bundle.recipe_id,
             )
 
         logger.info(

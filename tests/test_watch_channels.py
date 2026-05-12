@@ -35,18 +35,14 @@ class TestDeriveChannel:
         obj = {"status": "open"}
         assert derive_channel("task", "ADDED", obj) == "task:added"
 
-    # Bundle events
-    def test_bundle_cooked(self):
-        obj = {"status": "cooked"}
-        assert derive_channel("bundle", "MODIFIED", obj) == "bundle:cooked"
+    # Bundle events — step (d.1): only open/closed exist now.
+    def test_bundle_closed(self):
+        obj = {"status": "closed"}
+        assert derive_channel("bundle", "MODIFIED", obj) == "bundle:closed"
 
-    def test_bundle_blocked(self):
-        obj = {"status": "blocked"}
-        assert derive_channel("bundle", "MODIFIED", obj) == "bundle:blocked"
-
-    def test_bundle_cancelled(self):
-        obj = {"status": "cancelled"}
-        assert derive_channel("bundle", "MODIFIED", obj) == "bundle:cancelled"
+    def test_bundle_reopened(self):
+        obj = {"status": "open"}
+        assert derive_channel("bundle", "MODIFIED", obj) == "bundle:reopened"
 
     def test_bundle_added(self):
         obj = {"status": "open"}
@@ -75,24 +71,13 @@ class TestDeriveChannel:
     def test_event_session_end(self):
         assert derive_channel("event", "ADDED", {"type": "session_end"}) == "task:session_end"
 
-    def test_event_digest_submitted(self):
-        assert derive_channel("event", "ADDED", {"type": "digest_submitted"}) == "digest:submitted"
+    # Phase 12 step (d): digest channels gone. Bundle lifecycle uses
+    # bundle:closed / bundle:reopened instead.
+    def test_event_bundle_closed(self):
+        assert derive_channel("event", "ADDED", {"type": "bundle_closed"}) == "bundle:closed"
 
-    def test_event_digest_approved(self):
-        assert derive_channel("event", "ADDED", {"type": "digest_approved"}) == "digest:approved"
-
-    def test_event_digest_rejected(self):
-        assert derive_channel("event", "ADDED", {"type": "digest_rejected"}) == "digest:rejected"
-
-    # Digest events
-    def test_digest_submitted_resource(self):
-        assert derive_channel("digest", "ADDED", {"decision": "pending"}) == "digest:submitted"
-
-    def test_digest_approved_resource(self):
-        assert derive_channel("digest", "MODIFIED", {"decision": "approved"}) == "digest:approved"
-
-    def test_digest_rejected_resource(self):
-        assert derive_channel("digest", "MODIFIED", {"decision": "rejected"}) == "digest:rejected"
+    def test_event_bundle_reopened(self):
+        assert derive_channel("event", "ADDED", {"type": "bundle_reopened"}) == "bundle:reopened"
 
     # Agent events
     def test_agent_added(self):

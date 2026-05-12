@@ -24,17 +24,12 @@ async def _seed_minimal_recipe_and_bundle(
         ("cb_a2", "test", owner, "2026-01-01"),
     )
     await db.execute(
-        "INSERT OR IGNORE INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r_a2", "test", "https://example", "main", owner, "2026-01-01", "cb_a2"),
-    )
-    await db.execute(
-        "INSERT OR IGNORE INTO bundles (id, recipe_id, prompt, status, "
+        "INSERT OR IGNORE INTO bundles (id, cookbook_id, prompt, status, "
         "created_by, created_at, owner_account_id, default_agent_runtime_id) "
         "VALUES (?,?,?,?,?,?,?,?)",
         (
             bundle_id,
-            "r_a2",
+            "cb_a2",
             "prompt",
             "open",
             owner,

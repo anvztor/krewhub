@@ -14,7 +14,6 @@ from krewhub.git.transport import ensure_bare_repo, resolve_repo_path
 from krewhub.models import Cookbook, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.cookbook_repo import CookbookRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import CreateCookbookRequest
 from krewhub.watch.globals import get_watch_service
 
@@ -97,11 +96,9 @@ async def get_cookbook(
     if cookbook is None:
         raise HTTPException(status_code=404, detail="Cookbook not found")
 
-    recipes = await RecipeRepo(db).list_by_cookbook(cookbook_id)
     agents = await AgentRepo(db).list_by_cookbook(cookbook_id)
 
     return {
         "cookbook": cookbook.model_dump(mode="json"),
-        "recipes": [r.model_dump(mode="json") for r in recipes],
         "agents": [a.model_dump(mode="json") for a in agents],
     }

@@ -15,12 +15,11 @@ from krewhub.watch.types import WatchEvent, WatchOptions
 router = APIRouter(tags=["stream"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
-@router.get("/recipes/{recipe_id}/stream")
-async def recipe_stream(recipe_id: str, request: Request):
-    """Legacy SSE stream for a recipe. Wraps the watch service
-    to deliver events in the same format the old SSE clients expect."""
+@router.get("/cookbooks/{cookbook_id}/stream")
+async def cookbook_stream(cookbook_id: str, request: Request):
+    """SSE stream for a cookbook."""
     watch = get_watch_service()
-    options = WatchOptions(recipe_id=recipe_id)
+    options = WatchOptions(cookbook_id=cookbook_id)
     queue = watch.subscribe(options)
 
     async def event_generator():
@@ -63,7 +62,6 @@ async def watch_stream(
     channel_prefixes = [c.strip() for c in (channel or "").split(",") if c.strip()]
     options = WatchOptions(
         resource_type=resource_type,
-        recipe_id=recipe_id,
         since=since,
         channel_prefixes=channel_prefixes,
     )

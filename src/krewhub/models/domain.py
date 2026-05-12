@@ -7,20 +7,50 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 
+# DEPRECATED: kept as stubs so legacy import chains compile.
+# Recipes are gone in step (e); these classes never represent real data.
+class Recipe(BaseModel):
+    """DEPRECATED stub — recipes table no longer exists."""
+    id: str
+    name: str = ""
+    repo_url: str = ""
+    default_branch: str = "main"
+    created_by: str = ""
+    created_at: datetime = Field(default_factory=lambda: datetime.now())
+    cookbook_id: str | None = None
+
+
 class Role(StrEnum):
+    """DEPRECATED stub — recipe_members table no longer exists."""
     OWNER = "owner"
     MEMBER = "member"
     AGENT = "agent"
 
 
+class RecipeMember(BaseModel):
+    """DEPRECATED stub — recipe_members table no longer exists."""
+    id: str
+    recipe_id: str
+    actor_id: str
+    actor_type: str = "human"
+    role: Role = Role.MEMBER
+    joined_at: datetime = Field(default_factory=lambda: datetime.now())
+
+
 class BundleStatus(StrEnum):
+    """Phase 12 step (d.1): collapsed FSM.
+
+    Bundle is a dumb container. Task-level FSM is authoritative; the
+    bundle does not derive from task aggregate, does not approve or
+    reject task work, and does not have BLOCKED / CANCELLED terminal
+    states. Lifecycle is just open ↔ closed (idempotent, reversible).
+
+    Migration backfilled legacy rows:
+        CLAIMED / COOKED / BLOCKED → OPEN
+        CANCELLED / DIGESTED / REJECTED → CLOSED
+    """
     OPEN = "open"
-    CLAIMED = "claimed"
-    COOKED = "cooked"
-    BLOCKED = "blocked"
-    CANCELLED = "cancelled"
-    DIGESTED = "digested"
-    REJECTED = "rejected"
+    CLOSED = "closed"
 
 
 class TaskStatus(StrEnum):
@@ -40,9 +70,9 @@ class EventType(StrEnum):
     MILESTONE = "milestone"
     FACT_ADDED = "fact_added"
     CODE_PUSHED = "code_pushed"
-    DIGEST_SUBMITTED = "digest_submitted"
-    DIGEST_APPROVED = "digest_approved"
-    DIGEST_REJECTED = "digest_rejected"
+    # Bundle lifecycle (Phase 12 step d).
+    BUNDLE_CLOSED = "bundle_closed"
+    BUNDLE_REOPENED = "bundle_reopened"
     # Agent-level events (streamed from local CLI agents)
     SESSION_START = "session_start"
     SESSION_END = "session_end"
@@ -65,12 +95,6 @@ class ActorType(StrEnum):
     HOOK = "hook"
 
 
-class DigestDecision(StrEnum):
-    PENDING = "pending"
-    APPROVED = "approved"
-    REJECTED = "rejected"
-
-
 class WatchEventType(StrEnum):
     ADDED = "ADDED"
     MODIFIED = "MODIFIED"
@@ -87,23 +111,43 @@ class Cookbook(BaseModel, frozen=True):
     created_at: datetime
 
 
-class Recipe(BaseModel, frozen=True):
-    id: str
-    name: str
-    repo_url: str
-    default_branch: str
-    created_by: str
-    created_at: datetime
-    cookbook_id: str | None = None
+class ShareRole(StrEnum):
+    OWNER = "owner"
+    MEMBER = "member"
+    VIEWER = "viewer"
 
 
-class RecipeMember(BaseModel, frozen=True):
+class CookbookShare(BaseModel, frozen=True):
     id: str
-    recipe_id: str
-    actor_id: str
-    actor_type: Literal["human", "agent"]
-    role: Role
-    joined_at: datetime
+    cookbook_id: str
+    shared_with_account_id: str
+    role: ShareRole
+    shared_by_account_id: str
+    shared_at: datetime
+    revoked_at: datetime | None = None
+
+
+class RepoProvider(StrEnum):
+    GITHUB = "github"
+    GITLAB = "gitlab"
+    BITBUCKET = "bitbucket"
+
+
+class RepoGrant(BaseModel, frozen=True):
+    id: str
+    cookbook_id: str
+    provider: RepoProvider
+    # Scope syntax:
+    #   "owner/repo"   one specific repo
+    #   "owner/*"      all repos under an owner/org
+    #   "owner"        same as "owner/*"
+    scope: str
+    # Reference into the secret store (vault key, KMS arn, etc).
+    # Never the raw token — krewhub does not see plaintext credentials.
+    token_ref: str
+    granted_by_account_id: str
+    granted_at: datetime
+    revoked_at: datetime | None = None
 
 
 class AgentPresence(BaseModel, frozen=True):
@@ -125,7 +169,15 @@ class AgentPresence(BaseModel, frozen=True):
 
 class Bundle(BaseModel, frozen=True):
     id: str
-    recipe_id: str
+    # Phase 12 step (e): bundles are cookbook-scoped only. recipes
+    # gone, recipe_id column dropped, repo binding moved to repo_spec.
+    cookbook_id: str | None = None
+    # Phase 12: optional JIT repo hint (JSON serialized in the DB).
+    # Shape: {"provider": "github", "owner": "...", "repo": "...", "ref": "main"}
+    # When set, working-tree provisioning resolves this against
+    # repo_grants on the cookbook. NULL means this bundle does no
+    # file work.
+    repo_spec: dict | None = None
     prompt: str
     status: BundleStatus
     created_by: str
@@ -203,7 +255,8 @@ class CodeRef(BaseModel, frozen=True):
 
 class Event(BaseModel, frozen=True):
     id: str
-    recipe_id: str
+    # Phase 12 step (e): cookbook-only scope.
+    cookbook_id: str | None = None
     bundle_id: str | None = None
     task_id: str | None = None
     type: EventType
@@ -222,28 +275,6 @@ class Event(BaseModel, frozen=True):
     expires_at: datetime | None = None
 
 
-class DigestTaskResult(BaseModel, frozen=True):
-    task_id: str
-    outcome: str
-
-
-class Digest(BaseModel, frozen=True):
-    id: str
-    recipe_id: str
-    bundle_id: str
-    summary: str
-    task_results: list[DigestTaskResult] = Field(default_factory=list)
-    facts: list[FactRef] = Field(default_factory=list)
-    code_refs: list[CodeRef] = Field(default_factory=list)
-    submitted_by: str
-    submitted_at: datetime
-    decision: DigestDecision = DigestDecision.PENDING
-    decided_by: str | None = None
-    decided_at: datetime | None = None
-    resource_version: int = 1
-    generation: int = 1
-
-
 class WatchEntry(BaseModel, frozen=True):
     seq: int
     resource_type: str
@@ -251,5 +282,6 @@ class WatchEntry(BaseModel, frozen=True):
     event_type: WatchEventType
     resource_version: int
     payload: dict
-    recipe_id: str | None = None
+    # Phase 12: cookbook scope for SSE channel routing.
+    cookbook_id: str | None = None
     created_at: datetime

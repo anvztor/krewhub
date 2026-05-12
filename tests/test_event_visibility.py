@@ -6,22 +6,16 @@ import pytest
 
 async def _setup_task(client) -> tuple[str, str, str]:
     cb = await client.post("/api/v1/cookbooks", json={
-        "name": "vis-test", "description": "x", "owner_id": "u1",
+        "name": "vis-test", "owner_id": "acc_legacy_apikey",
     })
     cb_id = cb.json()["cookbook"]["id"]
-    rec = await client.post("/api/v1/recipes", json={
-        "cookbook_id": cb_id, "name": "r",
-        "repo_url": "https://example.com/x.git", "created_by": "u1",
-    })
-    rec_id = rec.json()["recipe"]["id"]
-    bun = await client.post(f"/api/v1/recipes/{rec_id}/bundles", json={
-        "prompt": "p", "requested_by": "u1",
+    bun = await client.post(f"/api/v1/cookbooks/{cb_id}/bundles", json={
+        "prompt": "p", "tasks": [{"title": "t"}],
     })
     bun_id = bun.json()["bundle"]["id"]
-    task = await client.post(f"/api/v1/bundles/{bun_id}/tasks", json={"title": "t"})
-    task_id = task.json()["task"]["id"]
+    task_id = bun.json()["tasks"][0]["id"]
     await client.post(f"/api/v1/tasks/{task_id}/claim", json={"agent_id": "a1"})
-    return rec_id, bun_id, task_id
+    return cb_id, bun_id, task_id
 
 
 class TestDefaultVisibility:
@@ -58,11 +52,11 @@ class TestDefaultVisibility:
         assert resp.json()["event"]["visibility"] == "system"
 
     @pytest.mark.asyncio
-    async def test_digest_events_are_user_visible(self, client):
+    async def test_bundle_lifecycle_events_are_user_visible(self, client):
         _, _, task_id = await _setup_task(client)
         resp = await client.post(f"/api/v1/tasks/{task_id}/events", json={
-            "type": "digest_approved", "actor_id": "u1", "actor_type": "human",
-            "body": "Approved",
+            "type": "bundle_closed", "actor_id": "u1", "actor_type": "human",
+            "body": "Closed",
         })
         assert resp.status_code == 200
         assert resp.json()["event"]["visibility"] == "user"
@@ -85,7 +79,7 @@ class TestVisibilityClassifier:
 
     def test_user_visible_types(self):
         from krewhub.services.event_visibility import classify_visibility
-        for t in ("milestone", "digest_submitted", "digest_approved", "digest_rejected",
+        for t in ("milestone", "bundle_closed", "bundle_reopened",
                   "fact_added", "code_pushed", "prompt", "plan", "task_claimed"):
             assert classify_visibility(t) == "user", f"{t} should be user-visible"
 

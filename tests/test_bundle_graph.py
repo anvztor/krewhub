@@ -24,12 +24,10 @@ from krewhub.models import (
     AgentStatus,
     Bundle,
     BundleStatus,
-    Recipe,
     TaskStatus,
 )
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.watch.globals import get_watch_service
@@ -97,7 +95,7 @@ def _mock_post_response(*, status_code: int = 200, state: str = "submitted") -> 
 
 
 async def _seed_empty_bundle(suffix: str | None = None) -> tuple[str, str, str]:
-    """Create a bundle with no graph_code yet. Returns (bundle_id, recipe_id, cookbook_id)."""
+    """Create a cookbook-scoped bundle. Returns (bundle_id, "", cookbook_id)."""
     suffix = suffix or _next_suffix()
     db = await get_db()
     await db.execute(
@@ -106,22 +104,14 @@ async def _seed_empty_bundle(suffix: str | None = None) -> tuple[str, str, str]:
     )
     await db.commit()
 
-    recipe = await RecipeRepo(db).create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human", created_at=_now(),
-            cookbook_id=f"cb-{suffix}",
-        )
-    )
     bundle = await BundleRepo(db).create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe.id, prompt="run something",
+            id=f"b-{suffix}", cookbook_id=f"cb-{suffix}", prompt="run something",
             status=BundleStatus.OPEN, created_by="human",
             created_at=_now(),
         )
     )
-    return bundle.id, recipe.id, f"cb-{suffix}"
+    return bundle.id, "", f"cb-{suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +209,10 @@ class TestAttachRejection:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_422_on_invalid_code_marks_bundle_blocked(self):
+    async def test_422_on_invalid_code_leaves_bundle_open(self):
+        """Step (d.1): graph rejection raises 422 but bundle stays
+        OPEN. The failure belongs in the caller's response, not the
+        bundle FSM."""
         bundle_id, _r, _c = await _seed_empty_bundle()
         db = await get_db()
         svc = BundleService(db, get_watch_service())
@@ -231,9 +224,7 @@ class TestAttachRejection:
 
         bundle = await BundleRepo(db).get(bundle_id)
         assert bundle is not None
-        assert bundle.status == BundleStatus.BLOCKED
-        assert bundle.blocked_reason is not None
-        assert "rejected" in bundle.blocked_reason
+        assert bundle.status == BundleStatus.OPEN
 
     @pytest.mark.asyncio
     async def test_422_when_graph_has_no_user_steps(self):
@@ -259,20 +250,12 @@ graph = g.build()
 class TestAttachRoute:
     @pytest.mark.asyncio
     async def test_post_attaches_and_returns_bundle_plus_tasks(self, client):
-        # Create cookbook + recipe + bundle via the API to mirror real usage
         resp = await client.post("/api/v1/cookbooks", json={
-            "name": "graph-route-cb", "owner_id": "human",
+            "name": "graph-route-cb", "owner_id": "acc_legacy_apikey",
         })
         cookbook_id = resp.json()["cookbook"]["id"]
-
-        resp = await client.post("/api/v1/recipes", json={
-            "name": "test/route", "repo_url": "git@x:r.git",
-            "created_by": "human", "cookbook_id": cookbook_id,
-        })
-        recipe_id = resp.json()["recipe"]["id"]
-
-        resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-            "prompt": "do work", "requested_by": "human", "tasks": [],
+        resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
+            "prompt": "do work", "tasks": [],
         })
         bundle_id = resp.json()["bundle"]["id"]
 
@@ -298,16 +281,11 @@ class TestAttachRoute:
     @pytest.mark.asyncio
     async def test_post_422_on_bad_code(self, client):
         resp = await client.post("/api/v1/cookbooks", json={
-            "name": "bad-cb", "owner_id": "human",
+            "name": "bad-cb", "owner_id": "acc_legacy_apikey",
         })
         cookbook_id = resp.json()["cookbook"]["id"]
-        resp = await client.post("/api/v1/recipes", json={
-            "name": "test/bad", "repo_url": "git@x:b.git",
-            "created_by": "human", "cookbook_id": cookbook_id,
-        })
-        recipe_id = resp.json()["recipe"]["id"]
-        resp = await client.post(f"/api/v1/recipes/{recipe_id}/bundles", json={
-            "prompt": "x", "requested_by": "human", "tasks": [],
+        resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
+            "prompt": "x", "tasks": [],
         })
         bundle_id = resp.json()["bundle"]["id"]
 
@@ -372,8 +350,17 @@ class TestAttachThenRun:
             await runner._execute_bundle(bundle_id)
             await flip_task
 
+            # Step (d.1): bundle is a dumb container — runner emits a
+            # MILESTONE event instead of flipping to COOKED. Bundle stays OPEN.
             bundle = await BundleRepo(db).get(bundle_id)
             assert bundle is not None
-            assert bundle.status == BundleStatus.COOKED, bundle.blocked_reason
+            assert bundle.status == BundleStatus.OPEN
+            cur = await db.execute(
+                "SELECT type, payload FROM events "
+                "WHERE bundle_id = ? AND type = 'milestone'",
+                (bundle_id,),
+            )
+            milestones = await cur.fetchall()
+            assert len(milestones) >= 1
         finally:
             await runner.stop()

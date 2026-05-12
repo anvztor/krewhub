@@ -13,7 +13,6 @@ from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
 from krewhub.repositories.agent_repo import AgentRepo, _row_to_presence
 from krewhub.repositories.cookbook_repo import CookbookRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.routes.schemas import HeartbeatRequest, MintAgentRequest, RegisterAgentRequest
 from krewhub.watch.globals import get_watch_service
 
@@ -84,16 +83,9 @@ async def register_agent(
     await db.commit()
 
     watch = get_watch_service()
-    recipes = await RecipeRepo(db).list_by_cookbook(req.cookbook_id)
-    for recipe in recipes:
-        await watch.record_resource(
-            "agent", req.agent_id, WatchEventType.ADDED, updated,
-            recipe_id=recipe.id,
-        )
-    if not recipes:
-        await watch.record_resource(
-            "agent", req.agent_id, WatchEventType.ADDED, updated,
-        )
+    await watch.record_resource(
+        "agent", req.agent_id, WatchEventType.ADDED, updated,
+    )
 
     # Upsert A2A agent card — uses agent owner's username, not cookbook owner
     from krewhub.routes.a2a_gateway import upsert_agent_card
@@ -196,15 +188,8 @@ async def heartbeat(
     updated = await repo.upsert_presence(presence)
 
     watch = get_watch_service()
-    recipes = await RecipeRepo(db).list_by_cookbook(req.cookbook_id)
-    for recipe in recipes:
-        await watch.record_resource(
-            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
-            recipe_id=recipe.id,
-        )
-    if not recipes:
-        await watch.record_resource(
-            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
-        )
+    await watch.record_resource(
+        "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+    )
 
     return {"presence": updated.model_dump(mode="json")}

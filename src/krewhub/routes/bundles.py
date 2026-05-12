@@ -12,68 +12,66 @@ from krewhub.watch.globals import get_watch_service
 from krewhub.auth import CallerContext, require_bundle_owner, resolve_caller_or_cookie
 from krewhub.config import get_settings
 from krewhub.db.connection import get_db
-from krewhub.models import DigestDecision
 from krewhub.repositories.bundle_repo import BundleRepo
 from krewhub.repositories.event_repo import EventRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService, GraphArtifactError
 from krewhub.services.deps import get_e2b
-from krewhub.services.digest_service import DigestService
 from krewhub.services.e2b_client import E2bClient
 from krewhub.services.sandbox_service import SandboxService
+from krewhub.routes.cookbook_sharing import _require_role
 from krewhub.routes.schemas import (
     AddTaskRequest,
     AttachGraphRequest,
-    CreateBundleRequest,
-    DecisionRequest,
-    SubmitDigestRequest,
+    BundleLifecycleRequest,
+    CreateCookbookBundleRequest,
 )
+from krewhub.models import ShareRole
 
 router = APIRouter(tags=["bundles"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
-@router.post("/recipes/{recipe_id}/bundles")
-async def create_bundle(
-    recipe_id: str,
-    req: CreateBundleRequest,
+# Phase 12 step (e): cookbook-scoped bundles are the only entry point.
+
+
+@router.post("/cookbooks/{cookbook_id}/bundles")
+async def create_bundle_under_cookbook(
+    cookbook_id: str,
+    req: CreateCookbookBundleRequest,
     db: aiosqlite.Connection = Depends(get_db),
     caller: CallerContext = Depends(resolve_caller_or_cookie),
     e2b: E2bClient = Depends(get_e2b),
 ):
-    recipe = await RecipeRepo(db).get(recipe_id)
-    if recipe is None:
-        raise HTTPException(status_code=404, detail="Recipe not found")
+    """Create a bundle directly under a cookbook (no recipe hop).
 
-    # Stamp account_id everywhere so require_bundle_owner's primary check
-    # (owner_account_id == caller.account_id) succeeds. Previously we used
-    # caller.username for created_by, which left owner_account_id NULL and
-    # made require_bundle_owner fall through to the username-vs-account_id
-    # string compare — that always failed, returning "Not your bundle"
-    # right after the bundle was created.
-    created_by = caller.account_id
+    RBAC: caller must be at least MEMBER on the cookbook (sharing
+    matrix in cookbook_sharing.py). Sets bundle.cookbook_id; repo_spec
+    optionally drives JIT clone gated by repo_grants on the cookbook.
+    """
+    await _require_role(cookbook_id, caller, db, ShareRole.MEMBER)
 
     svc = BundleService(db, get_watch_service())
     bundle, tasks = await svc.create_bundle(
-        recipe_id=recipe_id,
+        cookbook_id=cookbook_id,
+        repo_spec=req.repo_spec,
         prompt=req.prompt,
-        created_by=created_by,
-        tasks=[{**t.model_dump(exclude={"task_id"}), **({"id": t.task_id} if t.task_id else {})} for t in req.tasks],
+        created_by=caller.account_id,
+        tasks=[
+            {**t.model_dump(exclude={"task_id"}),
+             **({"id": t.task_id} if t.task_id else {})}
+            for t in req.tasks
+        ],
         autoplan=req.autoplan,
     )
-    # Set the canonical owner column directly. The BundleService doesn't
-    # accept owner_account_id yet; doing it here as a follow-up UPDATE keeps
-    # the change small and contained to the route. Bundle is a frozen
-    # Pydantic model so we can't assign — return a copy instead.
+
+    # Stamp owner_account_id parity with the legacy path so
+    # require_bundle_owner's primary check succeeds.
     await db.execute(
         "UPDATE bundles SET owner_account_id = ? WHERE id = ?",
         (caller.account_id, bundle.id),
     )
 
-    # Auto-bind the caller's most recently-seen online runtime as the
-    # bundle's default agent. Without this, POST /bundles/{id}/tasks
-    # immediately returns no_paired_agent, blocking the cookrew-beta
-    # ship flow even when the user has already paired a daemon.
+    # Default-runtime binding (same as the legacy path).
     runtime_cursor = await db.execute(
         "SELECT id FROM agent_runtimes "
         "WHERE account_id = ? AND status = 'online' "
@@ -90,12 +88,7 @@ async def create_bundle(
 
     await db.commit()
 
-    # Bundle-level sandbox provisioning. cookrew-beta wants this so the
-    # agent has one persistent working tree (cloned repo, generated
-    # files, edits) for every task in the bundle. Fail-soft: a bad e2b
-    # config shouldn't block bundle creation, the bundle just won't
-    # have a sandbox and the legacy per-task path will provision one
-    # on first ship.
+    # Bundle-level sandbox (fail-soft, same policy as legacy path).
     settings = get_settings()
     bundle_sandbox_id: str | None = None
     try:
@@ -108,9 +101,9 @@ async def create_bundle(
         await BundleRepo(db).set_sandbox(bundle.id, sandbox.id)
     except Exception as exc:
         logger.warning(
-            "bundle %s: sandbox provision failed: %s — bundle returned "
-            "without a sandbox; tasks will fall back to per-task path",
-            bundle.id, exc,
+            "bundle %s (cookbook %s): sandbox provision failed: %s — "
+            "bundle returned without a sandbox",
+            bundle.id, cookbook_id, exc,
         )
 
     bundle = bundle.model_copy(update={
@@ -124,13 +117,15 @@ async def create_bundle(
     }
 
 
-@router.get("/recipes/{recipe_id}/bundles")
-async def list_bundles(
-    recipe_id: str,
+@router.get("/cookbooks/{cookbook_id}/bundles")
+async def list_bundles_under_cookbook(
+    cookbook_id: str,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
-    repo = BundleRepo(db)
-    bundles = await repo.list_by_recipe(recipe_id)
+    """List bundles in a cookbook. VIEWER+ may read."""
+    await _require_role(cookbook_id, caller, db, ShareRole.VIEWER)
+    bundles = await BundleRepo(db).list_by_cookbook(cookbook_id)
     return {"bundles": [b.model_dump(mode="json") for b in bundles]}
 
 
@@ -169,20 +164,6 @@ def _task_with_sandbox_inherited(task, bundle) -> dict:
     return payload
 
 
-@router.get("/bundles/{bundle_id}/digest")
-async def get_bundle_digest(
-    bundle_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    from krewhub.repositories.digest_repo import DigestRepo
-
-    digest = await DigestRepo(db).get_by_bundle(bundle_id)
-    if digest is None:
-        raise HTTPException(status_code=404, detail="Digest not found")
-
-    return {"digest": digest.model_dump(mode="json")}
-
-
 @router.get("/bundles/{bundle_id}/usage")
 async def get_bundle_usage(
     bundle_id: str,
@@ -210,30 +191,50 @@ async def get_bundle_usage(
     return {"usage": usage_list, "totals": totals}
 
 
-@router.patch("/bundles/{bundle_id}")
-async def cancel_bundle(
+# Phase 12 step (d): one verb for OPEN ↔ CLOSED. Replaces the
+# deprecated PATCH /bundles/{id} (cancel) + POST /bundles/{id}/rerun
+# + digest decision flow. Idempotent + symmetric.
+@router.patch("/cookbooks/{cookbook_id}/bundles/{bundle_id}")
+async def set_bundle_status(
+    cookbook_id: str,
     bundle_id: str,
+    req: BundleLifecycleRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
-    svc = BundleService(db, get_watch_service())
-    updated = await svc.cancel_bundle(bundle_id, "system")
-    if updated is None:
-        raise HTTPException(status_code=400, detail="Cannot cancel this bundle")
-    return {"bundle": updated.model_dump(mode="json")}
+    """Close or reopen a bundle.
 
+    RBAC: caller must be at least MEMBER on the cookbook. The route
+    is cookbook-scoped so the RBAC check has a clean attachment
+    point; the bundle must belong to that cookbook (enforced by the
+    path).
+    """
+    await _require_role(cookbook_id, caller, db, ShareRole.MEMBER)
 
-@router.post("/bundles/{bundle_id}/rerun")
-async def rerun_blocked_bundle(
-    bundle_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
+    bundle = await BundleRepo(db).get(bundle_id)
+    if bundle is None or bundle.cookbook_id != cookbook_id:
+        raise HTTPException(
+            status_code=404, detail="Bundle not found in this cookbook",
+        )
+
+    desired = req.status.lower().strip()
     svc = BundleService(db, get_watch_service())
-    updated = await svc.rerun_blocked_tasks(bundle_id)
-    if updated is None:
+    if desired == "closed":
+        updated = await svc.close_bundle(
+            bundle_id, caller.account_id, reason=req.reason,
+        )
+    elif desired == "open":
+        updated = await svc.reopen_bundle(
+            bundle_id, caller.account_id, reason=req.reason,
+        )
+    else:
         raise HTTPException(
             status_code=400,
-            detail="No blocked tasks are available to rerun.",
+            detail=f"Invalid status {desired!r}; expected 'open' or 'closed'",
         )
+
+    if updated is None:
+        raise HTTPException(status_code=500, detail="Bundle update failed")
     return {"bundle": updated.model_dump(mode="json")}
 
 
@@ -368,51 +369,3 @@ async def add_task_to_bundle(
     }
 
 
-@router.post("/bundles/{bundle_id}/digest")
-async def submit_digest(
-    bundle_id: str,
-    req: SubmitDigestRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    svc = DigestService(db, get_watch_service())
-    digest = await svc.submit_digest(
-        bundle_id=bundle_id,
-        submitted_by=req.submitted_by,
-        summary=req.summary,
-        task_results=req.task_results,
-        facts=req.facts,
-        code_refs=req.code_refs,
-    )
-    if digest is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot submit digest. Ensure all tasks are done/blocked and no digest exists.",
-        )
-    return {"digest": digest.model_dump(mode="json")}
-
-
-@router.post("/bundles/{bundle_id}/decision")
-async def decide_digest(
-    bundle_id: str,
-    req: DecisionRequest,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    svc = DigestService(db, get_watch_service())
-    decision = DigestDecision(req.decision)
-    digest = await svc.decide(bundle_id, decision, req.decided_by, req.note)
-    if digest is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot decide. No pending digest found.",
-        )
-    return {"digest": digest.model_dump(mode="json")}
-
-
-@router.get("/recipes/{recipe_id}/digests")
-async def list_approved_digests(
-    recipe_id: str,
-    db: aiosqlite.Connection = Depends(get_db),
-):
-    from krewhub.repositories.digest_repo import DigestRepo
-    digests = await DigestRepo(db).list_approved_by_recipe(recipe_id)
-    return {"digests": [d.model_dump(mode="json") for d in digests]}

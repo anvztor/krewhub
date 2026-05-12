@@ -11,23 +11,16 @@ from krewhub.repositories.sandbox_repo import SandboxRepo
 
 
 async def _seed_task(db, task_id: str = "t1", bundle_id: str = "b1") -> None:
-    # Ensure prerequisite bundle row + recipe row exist for FK if enforced.
-    # The schema enforces FK to bundles(id) on tasks, but PRAGMA foreign_keys
-    # may be on; we satisfy it by inserting a minimal recipe + bundle.
+    """Seed cookbook + bundle + task. Step (e): no recipes."""
     await db.execute(
         "INSERT OR IGNORE INTO cookbooks (id, name, owner_id, created_at) "
         "VALUES (?,?,?,?)",
         ("cb1", "test", "alice", "2026-01-01"),
     )
     await db.execute(
-        "INSERT OR IGNORE INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r1", "test", "https://example", "main", "alice", "2026-01-01", "cb1"),
-    )
-    await db.execute(
-        "INSERT OR IGNORE INTO bundles (id, recipe_id, prompt, status, "
+        "INSERT OR IGNORE INTO bundles (id, cookbook_id, prompt, status, "
         "created_by, created_at) VALUES (?,?,?,?,?,?)",
-        (bundle_id, "r1", "p", "open", "alice", "2026-01-01"),
+        (bundle_id, "cb1", "p", "open", "alice", "2026-01-01"),
     )
     await db.execute(
         "INSERT OR IGNORE INTO tasks (id, bundle_id, title, description, "

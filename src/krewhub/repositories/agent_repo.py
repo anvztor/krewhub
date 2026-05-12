@@ -44,17 +44,6 @@ class AgentRepo:
         rows = await cursor.fetchall()
         return [_row_to_presence(r) for r in rows]
 
-    async def list_by_recipe(self, recipe_id: str) -> list[AgentPresence]:
-        """List agents available for a recipe via its cookbook."""
-        cursor = await self._db.execute(
-            """SELECT ap.* FROM agent_presence ap
-               JOIN recipes r ON r.cookbook_id = ap.cookbook_id
-               WHERE r.id = ?""",
-            (recipe_id,),
-        )
-        rows = await cursor.fetchall()
-        return [_row_to_presence(r) for r in rows]
-
     async def get(self, agent_id: str, cookbook_id: str) -> AgentPresence | None:
         cursor = await self._db.execute(
             "SELECT * FROM agent_presence WHERE agent_id = ? AND cookbook_id = ?",

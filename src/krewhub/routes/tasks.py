@@ -148,13 +148,13 @@ async def append_task_followup(
     # for UI/brain happens via actor_type — the cookrew-beta event feed
     # and the brain's tape-reader both already key on actor_type.
     await db.execute(
-        "INSERT INTO events (id, recipe_id, bundle_id, task_id, type, "
+        "INSERT INTO events (id, cookbook_id, bundle_id, task_id, type, "
         "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
         "visibility, created_at) "
         "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, '[]', '[]', 'user', ?)",
         (
             event_id,
-            bundle.recipe_id,
+            bundle.cookbook_id,
             task.bundle_id,
             task_id,
             caller.account_id,
@@ -408,14 +408,16 @@ async def claim_task(
 
     watch = get_watch_service()
     svc = TaskService(db, watch)
-    updated = await svc.claim_task(task_id, req.agent_id, bundle.recipe_id)
+    updated = await svc.claim_task(task_id, req.agent_id, bundle.cookbook_id)
     if updated is None:
         raise HTTPException(
             status_code=400,
             detail="Cannot claim task. Check status and dependencies.",
         )
 
-    await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): bundle status is no longer derived from task aggregate.
+    # Bundle stays OPEN until explicitly closed via PATCH
+    # /cookbooks/{cb}/bundles/{id}.
 
     # Inherit bundle.sandbox_id when task.sandbox_id is null. The
     # daemon merges this response into `task_detail` and passes
@@ -459,7 +461,6 @@ async def post_task_event(
     try:
         event = await svc.post_event(
             task_id=task_id,
-            recipe_id=bundle.recipe_id,
             event_type=EventType(req.type),
             actor_id=req.actor_id,
             actor_type=ActorType(req.actor_type),
@@ -511,7 +512,6 @@ async def post_task_events_batch(
     try:
         created = await svc.post_events_batch(
             task_id=task_id,
-            recipe_id=bundle.recipe_id,
             events=redacted_events,
             session_token=req.session_token,
         )
@@ -540,9 +540,7 @@ async def update_task_status(
     if updated is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    task = await TaskRepo(db).get(task_id)
-    if task:
-        await BundleService(db, watch).recompute_bundle_status(task.bundle_id)
+    # Step (d.1): no bundle-status recompute — bundle is dumb container.
 
     return {"task": updated.model_dump(mode="json")}
 
@@ -756,13 +754,12 @@ async def post_task_hitl_answer(
     # 2. Drop a HITL event onto the bundle stream.
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
-    recipe_id = bundle.recipe_id if bundle else None
+    cookbook_id = bundle.cookbook_id if bundle else None
 
     svc = TaskService(db, get_watch_service())
-    if recipe_id:
+    if cookbook_id:
         await svc.post_event(
             task_id,
-            recipe_id=recipe_id,
             event_type=EventType.PROMPT,
             actor_id=caller.account_id,
             actor_type=ActorType.HUMAN,
@@ -780,9 +777,9 @@ async def post_task_hitl_answer(
         clear_claim=True,
         clear_blocked_reason=True,
     )
-    if updated is not None and recipe_id:
+    if updated is not None and cookbook_id:
         await get_watch_service().record_resource(
-            "task", task_id, WatchEventType.MODIFIED, updated, recipe_id=recipe_id,
+            "task", task_id, WatchEventType.MODIFIED, updated,
         )
 
     return {"task": updated.model_dump(mode="json") if updated else None}
@@ -842,7 +839,6 @@ async def post_task_progress(
             event_type=WatchEventType.MODIFIED,
             resource_version=updated.resource_version,
             payload=task_dump,
-            recipe_id=None,
         )
 
     return {"task_id": task_id, "progress": progress}

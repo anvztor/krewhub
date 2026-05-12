@@ -74,13 +74,11 @@ class _TapeWriter:
         watch: WatchService,
         tape_id: str,
         *,
-        recipe_id: str | None = None,
         invocation_id: str | None = None,
     ) -> None:
         self._events = events
         self._watch = watch
         self.tape_id = tape_id
-        self._recipe_id = recipe_id
         self._invocation_id = invocation_id
 
     async def append(
@@ -117,7 +115,6 @@ class _TapeWriter:
                 "payload": ev.payload,
                 "ts": ev.ts.isoformat(),
             },
-            recipe_id=self._recipe_id,
         )
         return ev
 
@@ -225,7 +222,7 @@ class InvocationService:
         cancel = _CancelToken()
         external_result: asyncio.Future[ResultEnvelope] = asyncio.get_event_loop().create_future()
         task = asyncio.create_task(
-            self._run(invocation, cancel, external_result, req.recipe_id),
+            self._run(invocation, cancel, external_result),
             name=f"invocation:{invocation.id}",
         )
         self._runs[invocation.id] = _Run(
@@ -333,11 +330,9 @@ class InvocationService:
         invocation: Invocation,
         cancel: _CancelToken,
         external_result: asyncio.Future[ResultEnvelope],
-        recipe_id: str | None = None,
     ) -> None:
         tape = _TapeWriter(
             self._events, self._watch, invocation.tape_id,
-            recipe_id=recipe_id,
             invocation_id=invocation.id,
         )
 

@@ -11,7 +11,7 @@ graph_sandbox builds Graph objects from LLM source. graph_runtime runs them:
 Bundle service composition (forthcoming step 4):
 
     deps = OrchestratorDeps(db=..., http=..., watch=..., task_id_map=..., ...)
-    state = OrchestratorState(prompt=..., bundle_id=..., recipe_id=...)
+    state = OrchestratorState(prompt=..., bundle_id=...,)
     graph = execute_graph_code(code, ..., dispatch_cycle=dispatch_cycle)
     async with graph.iter(state=state, deps=deps) as run:
         async for node in run:

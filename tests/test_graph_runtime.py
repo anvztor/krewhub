@@ -23,13 +23,11 @@ from krewhub.models import (
     AgentStatus,
     Bundle,
     BundleStatus,
-    Recipe,
     Task,
     TaskStatus,
 )
 from krewhub.repositories.agent_repo import AgentRepo
 from krewhub.repositories.bundle_repo import BundleRepo
-from krewhub.repositories.recipe_repo import RecipeRepo
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.graph_runtime import (
     AttemptRecord,
@@ -241,15 +239,6 @@ class TestA2ADispatch:
         ) is False
 
     @pytest.mark.asyncio
-    async def test_rejects_when_agent_has_no_endpoint(self):
-        http = AsyncMock(spec=httpx.AsyncClient)
-        agent = _agent("g1", endpoint_url=None)
-        assert await dispatch_to_gateway(
-            http, agent=agent, task=_task(), prompt="x", attempt=1,
-        ) is False
-        http.post.assert_not_called()
-
-    @pytest.mark.asyncio
     async def test_carries_attempt_in_metadata(self):
         http = AsyncMock(spec=httpx.AsyncClient)
         http.post.return_value = _mock_post_response(
@@ -293,7 +282,6 @@ async def _create_seed_task(
     """Insert a real bundle + task and return (bundle_id, task_id)."""
     suffix = suffix or _next_suffix()
     db = await get_db()
-    recipe_repo = RecipeRepo(db)
     bundle_repo = BundleRepo(db)
     task_repo = TaskRepo(db)
 
@@ -304,17 +292,9 @@ async def _create_seed_task(
     )
     await db.commit()
 
-    recipe = await recipe_repo.create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/recipe-{suffix}",
-            repo_url="git@x:y.git", default_branch="main",
-            created_by="human_1", created_at=_now(),
-            cookbook_id=cookbook_id,
-        )
-    )
     bundle = await bundle_repo.create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe.id, prompt="hi",
+            id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="hi",
             status=BundleStatus.OPEN, created_by="human_1",
             created_at=_now(),
         )
@@ -466,22 +446,13 @@ async def _seed_with_agent(
     )
     await db.commit()
 
-    recipe_repo = RecipeRepo(db)
     bundle_repo = BundleRepo(db)
     task_repo = TaskRepo(db)
     agent_repo = AgentRepo(db)
 
-    recipe = await recipe_repo.create(
-        Recipe(
-            id=f"r-{suffix}", name=f"test/cycle-{suffix}",
-            repo_url="git@x:c.git", default_branch="main",
-            created_by="human_1", created_at=_now(),
-            cookbook_id=cookbook_id,
-        )
-    )
     bundle = await bundle_repo.create(
         Bundle(
-            id=f"b-{suffix}", recipe_id=recipe.id, prompt="run",
+            id=f"b-{suffix}", cookbook_id=cookbook_id, prompt="run",
             status=BundleStatus.OPEN, created_by="human_1",
             created_at=_now(),
         )
@@ -504,7 +475,7 @@ async def _seed_with_agent(
             last_heartbeat_at=_now(),
         )
     )
-    return cookbook_id, task.id, recipe.id
+    return cookbook_id, task.id, None
 
 
 def _make_ctx(state: OrchestratorState, deps: OrchestratorDeps):
@@ -585,23 +556,15 @@ class TestDispatchCycle:
 
     @pytest.mark.asyncio
     async def test_no_agents_fails_with_recorded_attempt(self):
-        # Seed db with no agents.
         db = await get_db()
         await db.execute(
             "INSERT INTO cookbooks (id, name, owner_id, created_at) VALUES (?, ?, ?, ?)",
             ("cb-empty", "empty", "h", datetime.now(timezone.utc).isoformat()),
         )
         await db.commit()
-        recipe = await RecipeRepo(db).create(
-            Recipe(
-                id="r-empty", name="t/e", repo_url="g@x:e.git",
-                default_branch="main", created_by="h",
-                created_at=_now(), cookbook_id="cb-empty",
-            )
-        )
         bundle = await BundleRepo(db).create(
             Bundle(
-                id="b-empty", recipe_id=recipe.id, prompt="x",
+                id="b-empty", cookbook_id="cb-empty", prompt="x",
                 status=BundleStatus.OPEN, created_by="h",
                 created_at=datetime.now(timezone.utc),
             )
@@ -612,7 +575,7 @@ class TestDispatchCycle:
 
         watch = get_watch_service()
         http = AsyncMock(spec=httpx.AsyncClient)
-        state = OrchestratorState(prompt="p", bundle_id=bundle.id, recipe_id=recipe.id)
+        state = OrchestratorState(prompt="p", bundle_id=bundle.id)
         deps = OrchestratorDeps(
             db=db, http=http, watch=watch,
             task_id_map={"step1": task.id},

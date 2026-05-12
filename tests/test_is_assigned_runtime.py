@@ -78,15 +78,10 @@ async def test_post_event_denied_for_unassigned_caller(cookie_client_for_account
         ("cb_x", "x", "alice", "2026-01-01"),
     )
     await db.execute(
-        "INSERT INTO recipes (id, name, repo_url, default_branch, created_by, "
-        "created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r_x", "x", "https://e", "main", "alice", "2026-01-01", "cb_x"),
-    )
-    await db.execute(
-        "INSERT INTO bundles (id, recipe_id, prompt, status, created_by, "
+        "INSERT INTO bundles (id, cookbook_id, prompt, status, created_by, "
         "created_at, owner_account_id, default_agent_runtime_id) "
         "VALUES (?,?,?,?,?,?,?,?)",
-        ("BUN_X", "r_x", "p", "open", "alice", "2026-01-01", "alice", "rt_alice"),
+        ("BUN_X", "cb_x", "p", "open", "alice", "2026-01-01", "alice", "rt_alice"),
     )
     await db.execute(
         "INSERT INTO agent_runtimes (id, agent_id, account_id, host_info, "
@@ -125,15 +120,10 @@ async def test_post_event_allowed_for_assigned_runtime_owner(
         ("cb_y", "y", "alice", "2026-01-01"),
     )
     await db.execute(
-        "INSERT INTO recipes (id, name, repo_url, default_branch, created_by, "
-        "created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r_y", "y", "https://e", "main", "alice", "2026-01-01", "cb_y"),
-    )
-    await db.execute(
-        "INSERT INTO bundles (id, recipe_id, prompt, status, created_by, "
+        "INSERT INTO bundles (id, cookbook_id, prompt, status, created_by, "
         "created_at, owner_account_id, default_agent_runtime_id) "
         "VALUES (?,?,?,?,?,?,?,?)",
-        ("BUN_Y", "r_y", "p", "open", "alice", "2026-01-01", "alice", "rt_alice2"),
+        ("BUN_Y", "cb_y", "p", "open", "alice", "2026-01-01", "alice", "rt_alice2"),
     )
     await db.execute(
         "INSERT INTO agent_runtimes (id, agent_id, account_id, host_info, "

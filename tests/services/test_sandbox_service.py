@@ -15,14 +15,9 @@ async def _seed_task(db, task_id: str = "t1") -> None:
         ("cb1", "test", "alice", "2026-01-01"),
     )
     await db.execute(
-        "INSERT OR IGNORE INTO recipes (id, name, repo_url, default_branch, "
-        "created_by, created_at, cookbook_id) VALUES (?,?,?,?,?,?,?)",
-        ("r1", "test", "https://example", "main", "alice", "2026-01-01", "cb1"),
-    )
-    await db.execute(
-        "INSERT OR IGNORE INTO bundles (id, recipe_id, prompt, status, "
+        "INSERT OR IGNORE INTO bundles (id, cookbook_id, prompt, status, "
         "created_by, created_at) VALUES (?,?,?,?,?,?)",
-        ("b1", "r1", "p", "open", "alice", "2026-01-01"),
+        ("b1", "cb1", "p", "open", "alice", "2026-01-01"),
     )
     await db.execute(
         "INSERT OR IGNORE INTO tasks (id, bundle_id, title, description, "

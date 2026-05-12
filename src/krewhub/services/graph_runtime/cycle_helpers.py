@@ -154,5 +154,4 @@ async def _mark_claimed(
         recipe_id = deps.recipe_meta.get("recipe_id", "") if deps.recipe_meta else ""
         await deps.watch.record_resource(
             "task", task_id, WatchEventType.MODIFIED, updated,
-            recipe_id=recipe_id,
         )

@@ -36,20 +36,16 @@ class WatchService:
         event_type: WatchEventType,
         resource_version: int,
         payload: dict[str, Any],
-        recipe_id: str | None = None,
+        cookbook_id: str | None = None,
     ) -> WatchEvent:
-        """Record a resource mutation and notify subscribers.
-
-        This should be called by repository methods after every
-        create/update/delete operation.
-        """
+        """Record a resource mutation and notify subscribers."""
         entry = await self._store.append(
             resource_type=resource_type,
             resource_id=resource_id,
             event_type=event_type,
             resource_version=resource_version,
             payload=payload,
-            recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
         )
         event = entry_to_watch_event(entry)
         await self._notify(event)
@@ -63,7 +59,7 @@ class WatchService:
         resource_id: str,
         event_type: WatchEventType,
         resource: Any,
-        recipe_id: str | None = None,
+        cookbook_id: str | None = None,
     ) -> WatchEvent:
         """Record a mutation using a Pydantic model as the payload."""
         payload = resource.model_dump(mode="json") if hasattr(resource, "model_dump") else resource
@@ -74,12 +70,12 @@ class WatchService:
             event_type=event_type,
             resource_version=rv,
             payload=payload,
-            recipe_id=recipe_id,
+            cookbook_id=cookbook_id,
         )
 
     async def publish_legacy(
         self,
-        recipe_id: str,
+        cookbook_id: str,
         event_name: str,
         data: dict[str, Any],
     ) -> None:
@@ -96,7 +92,6 @@ class WatchService:
             event_type=event_type,
             resource_version=data.get("resource_version", 0),
             payload={"legacy_event": event_name, **data},
-            recipe_id=recipe_id,
         )
 
     # -- Subscribing --
@@ -118,7 +113,6 @@ class WatchService:
         entries = await self._store.list_since(
             since=opts.since,
             resource_type=opts.resource_type,
-            recipe_id=opts.recipe_id,
         )
         return [entry_to_watch_event(e) for e in entries]
 
@@ -154,7 +148,7 @@ def _matches(opts: WatchOptions, event: WatchEvent) -> bool:
         return False
     if opts.resource_types and event.resource_type not in opts.resource_types:
         return False
-    if opts.recipe_id and event.recipe_id != opts.recipe_id:
+    if opts.cookbook_id and event.cookbook_id != opts.cookbook_id:
         return False
     if opts.channel_prefixes:
         if not any(_channel_matches(p, event.channel) for p in opts.channel_prefixes):

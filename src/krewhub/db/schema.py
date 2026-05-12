@@ -7,29 +7,8 @@ CREATE TABLE IF NOT EXISTS cookbooks (
     repo_path TEXT
 );
 
-CREATE TABLE IF NOT EXISTS recipes (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    repo_url TEXT NOT NULL,
-    default_branch TEXT NOT NULL DEFAULT 'main',
-    created_by TEXT NOT NULL,
-    created_at TEXT NOT NULL,
-    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
-    commit_sha TEXT
-);
-
-CREATE INDEX IF NOT EXISTS idx_recipes_cookbook ON recipes(cookbook_id);
-
-CREATE TABLE IF NOT EXISTS recipe_members (
-    id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
-    actor_id TEXT NOT NULL,
-    actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent')),
-    role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'agent')),
-    joined_at TEXT NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_recipe_members_recipe ON recipe_members(recipe_id);
+-- Phase 12 step (e): recipes and recipe_members tables are gone.
+-- Cookbook → Bundle → Task is the new hierarchy.
 
 CREATE TABLE IF NOT EXISTS agent_presence (
     agent_id TEXT NOT NULL,
@@ -50,10 +29,17 @@ CREATE INDEX IF NOT EXISTS idx_agent_presence_cookbook ON agent_presence(cookboo
 
 CREATE TABLE IF NOT EXISTS bundles (
     id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
+    -- Direct parent. Cookbook-scoped only after step (e).
+    cookbook_id TEXT REFERENCES cookbooks(id),
+    -- Optional JIT repo hint: { provider, owner, repo, ref } resolved
+    -- at task-run time against the cookbook's repo_grants. NULL means
+    -- this bundle does no file work.
+    repo_spec TEXT,
     prompt TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'open'
-        CHECK(status IN ('open', 'claimed', 'cooked', 'blocked', 'cancelled', 'digested', 'rejected')),
+        -- Phase 12 step (d.1): collapsed to OPEN/CLOSED. Middle
+        -- states were folded by migration (_collapse_bundles_status).
+        CHECK(status IN ('open', 'closed')),
     created_by TEXT NOT NULL,
     created_at TEXT NOT NULL,
     claimed_at TEXT,
@@ -81,7 +67,7 @@ CREATE TABLE IF NOT EXISTS bundles (
     autoplan_enabled INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE INDEX IF NOT EXISTS idx_bundles_recipe ON bundles(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_bundles_cookbook ON bundles(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_bundles_runnable
     ON bundles(status) WHERE graph_code IS NOT NULL;
 
@@ -177,14 +163,15 @@ CREATE INDEX IF NOT EXISTS idx_task_usage_task ON task_usage(task_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
+    -- Direct scope after step (e).
+    cookbook_id TEXT REFERENCES cookbooks(id),
     bundle_id TEXT REFERENCES bundles(id),
     task_id TEXT,
     type TEXT NOT NULL
         CHECK(type IN (
             'prompt', 'plan', 'task_claimed', 'task_working', 'milestone',
-            'fact_added', 'code_pushed', 'digest_submitted',
-            'digest_approved', 'digest_rejected',
+            'fact_added', 'code_pushed',
+            'bundle_closed', 'bundle_reopened',
             'session_start', 'session_end', 'tool_use', 'tool_result',
             'agent_reply', 'thinking'
         )),
@@ -200,30 +187,10 @@ CREATE TABLE IF NOT EXISTS events (
     expires_at TEXT
 );
 
-CREATE INDEX IF NOT EXISTS idx_events_recipe ON events(recipe_id);
+CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
 CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
 CREATE INDEX IF NOT EXISTS idx_events_task_sequence ON events(task_id, sequence);
-
-CREATE TABLE IF NOT EXISTS digests (
-    id TEXT PRIMARY KEY,
-    recipe_id TEXT NOT NULL REFERENCES recipes(id),
-    bundle_id TEXT NOT NULL UNIQUE REFERENCES bundles(id),
-    summary TEXT NOT NULL,
-    task_results TEXT NOT NULL DEFAULT '[]',
-    facts TEXT NOT NULL DEFAULT '[]',
-    code_refs TEXT NOT NULL DEFAULT '[]',
-    submitted_by TEXT NOT NULL,
-    submitted_at TEXT NOT NULL,
-    decision TEXT NOT NULL DEFAULT 'pending' CHECK(decision IN ('pending', 'approved', 'rejected')),
-    decided_by TEXT,
-    decided_at TEXT,
-    resource_version INTEGER NOT NULL DEFAULT 1,
-    generation INTEGER NOT NULL DEFAULT 1
-);
-
-CREATE INDEX IF NOT EXISTS idx_digests_recipe ON digests(recipe_id);
-CREATE INDEX IF NOT EXISTS idx_digests_bundle ON digests(bundle_id);
 
 CREATE TABLE IF NOT EXISTS tape_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -243,12 +210,12 @@ CREATE TABLE IF NOT EXISTS watch_log (
     event_type TEXT NOT NULL CHECK(event_type IN ('ADDED', 'MODIFIED', 'DELETED')),
     resource_version INTEGER NOT NULL,
     payload TEXT NOT NULL DEFAULT '{}',
-    recipe_id TEXT,
+    cookbook_id TEXT,
     created_at TEXT NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_watch_log_type_seq ON watch_log(resource_type, seq);
-CREATE INDEX IF NOT EXISTS idx_watch_log_recipe_seq ON watch_log(recipe_id, seq);
+CREATE INDEX IF NOT EXISTS idx_watch_log_cookbook_seq ON watch_log(cookbook_id, seq);
 
 CREATE TABLE IF NOT EXISTS identities (
     wallet_address TEXT PRIMARY KEY,
@@ -450,4 +417,42 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_credentials_account_host
     ON credentials(account_id, host) WHERE archived_at IS NULL;
 CREATE INDEX IF NOT EXISTS idx_credentials_account
     ON credentials(account_id) WHERE archived_at IS NULL;
+
+-- Phase 12: recipe removal (additive — recipes table still exists for
+-- the dual-write window). bundles + events get a direct cookbook_id;
+-- bundles get an optional repo_spec (JSON) used for JIT repo
+-- materialization gated by repo_grants.
+CREATE TABLE IF NOT EXISTS cookbook_shares (
+    id TEXT PRIMARY KEY,
+    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+    shared_with_account_id TEXT NOT NULL REFERENCES accounts(id),
+    role TEXT NOT NULL CHECK(role IN ('owner', 'member', 'viewer')),
+    shared_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+    shared_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cookbook_shares_cookbook
+    ON cookbook_shares(cookbook_id);
+CREATE INDEX IF NOT EXISTS idx_cookbook_shares_account
+    ON cookbook_shares(shared_with_account_id);
+-- Partial unique: only one ACTIVE share per (cookbook, account).
+-- Revoked rows kept for audit; reshare goes via new INSERT.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_cookbook_shares_unique_active
+    ON cookbook_shares(cookbook_id, shared_with_account_id)
+    WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS repo_grants (
+    id TEXT PRIMARY KEY,
+    cookbook_id TEXT NOT NULL REFERENCES cookbooks(id),
+    provider TEXT NOT NULL CHECK(provider IN ('github', 'gitlab', 'bitbucket')),
+    scope TEXT NOT NULL,
+    token_ref TEXT NOT NULL,
+    granted_by_account_id TEXT NOT NULL REFERENCES accounts(id),
+    granted_at TEXT NOT NULL,
+    revoked_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_repo_grants_cookbook
+    ON repo_grants(cookbook_id);
+CREATE INDEX IF NOT EXISTS idx_repo_grants_active
+    ON repo_grants(cookbook_id, provider) WHERE revoked_at IS NULL;
 """
