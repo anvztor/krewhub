@@ -73,6 +73,76 @@ async def get_task(
     return {"task": task.model_dump(mode="json")}
 
 
+@router.get("/tasks/{task_id}/last-reply")
+async def get_task_last_reply(
+    task_id: str,
+    db: aiosqlite.Connection = Depends(get_db),
+):
+    """Return the brain's final response for a task — used by cookrew-beta's
+    PLS_REVIEW popout to render the DONE-state card.
+
+    The brain's terminal session_end is preceded by a `milestone` event
+    whose body is the final summary, AND/OR an `agent_reply` event with
+    the same prose in `payload.text`. We prefer the agent_reply (richer
+    body) but fall back to the milestone for tasks that didn't emit one.
+
+    Returns:
+        {"html": str, "kind": "agent_reply"|"milestone"|"none",
+         "created_at": str|None, "task_id": str}
+    """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Prefer the latest agent_reply (richer body). Fall back to milestone
+    # (which has the truncated summary the brain wrote on session_end).
+    cursor = await db.execute(
+        "SELECT type, body, payload, created_at FROM events "
+        "WHERE task_id = ? AND type IN ('agent_reply', 'milestone') "
+        "ORDER BY created_at DESC",
+        (task_id,),
+    )
+    rows = await cursor.fetchall()
+
+    chosen_kind: str = "none"
+    chosen_html: str = ""
+    chosen_at: str | None = None
+
+    # Walk newest-first, prefer agent_reply over milestone
+    for kind, body, payload_json, created_at in rows:
+        # payload.text is the full untruncated agent_reply body; `body`
+        # for milestones is the operator-visible summary.
+        text = ""
+        try:
+            payload = json.loads(payload_json or "{}")
+            if isinstance(payload, dict):
+                pt = payload.get("text")
+                if isinstance(pt, str) and pt.strip():
+                    text = pt
+        except Exception:
+            pass
+        if not text:
+            text = body or ""
+
+        if kind == "agent_reply" and text:
+            chosen_kind = "agent_reply"
+            chosen_html = text
+            chosen_at = created_at
+            break
+        if kind == "milestone" and chosen_kind == "none" and text:
+            chosen_kind = "milestone"
+            chosen_html = text
+            chosen_at = created_at
+            # Don't break — keep searching for an agent_reply
+
+    return {
+        "task_id": task_id,
+        "kind": chosen_kind,
+        "html": chosen_html,
+        "created_at": chosen_at,
+    }
+
+
 @router.post("/tasks/{task_id}/claim")
 async def claim_task(
     task_id: str,
