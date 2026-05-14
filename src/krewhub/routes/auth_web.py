@@ -6,6 +6,7 @@ user profile — replacing the BFF's auth proxy layer.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -32,6 +33,27 @@ from krewhub.repositories.cookbook_repo import CookbookRepo
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["auth_web"])
+
+# Per-cookbook asyncio lock for the init_workspace seed step.
+# Two parallel POST /init-workspace calls from the same fresh account
+# can both pass has_any_for_cookbook == False and both insert a starter
+# bundle. SQLite has no unique constraint that prevents this, and
+# BundleRepo.create commits mid-flight so we can't wrap check+create in
+# a single SQL transaction. This lock serializes seed attempts on the
+# same cookbook within a single FastAPI process. Cross-process races
+# (multiple uvicorn workers) remain possible but unlikely on first
+# init since the cookbook itself is created moments earlier in the
+# same request.
+_seed_locks: dict[str, asyncio.Lock] = {}
+
+
+def _seed_lock_for(cookbook_id: str) -> asyncio.Lock:
+    """Return (creating if needed) the asyncio.Lock for this cookbook id."""
+    lock = _seed_locks.get(cookbook_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _seed_locks[cookbook_id] = lock
+    return lock
 
 
 def _cookie_kwargs(settings: Settings) -> dict:
@@ -418,20 +440,44 @@ async def init_workspace(
     # new operator lands on cookrew-beta with a tab + sandbox visible
     # instead of the bare empty board. Idempotent: skipped when any
     # bundle (open OR closed) already exists for this cookbook.
+    #
+    # Concurrency: a per-cookbook asyncio.Lock + re-check inside the
+    # critical section serializes the check-then-create. SQLite has no
+    # unique constraint preventing dual seeds, and BundleRepo.create
+    # commits mid-flight so a SQL-level BEGIN IMMEDIATE wrap won't hold
+    # across the create. Asyncio lock is the right granularity for the
+    # single-connection FastAPI process model used here.
+    #
+    # Failure policy: cookbook bootstrap is the primary contract; the
+    # seed is a UX nicety. If create_bundle raises (e2b unreachable,
+    # watch service blip, integrity error), swallow and log — the
+    # operator can create a bundle manually.
     from krewhub.repositories.bundle_repo import BundleRepo
     from krewhub.services.bundle_service import BundleService
     from krewhub.watch.globals import get_watch_service
 
-    if not await BundleRepo(db).has_any_for_cookbook(cookbook.id):
-        svc = BundleService(db, get_watch_service())
-        await svc.create_bundle(
-            cookbook_id=cookbook.id,
-            repo_spec=None,
-            prompt="",
-            created_by=caller.account_id,
-            tasks=[],
-            autoplan=False,
-        )
+    bundle_repo = BundleRepo(db)
+    if not await bundle_repo.has_any_for_cookbook(cookbook.id):
+        async with _seed_lock_for(cookbook.id):
+            # Re-check inside the lock so the second concurrent caller
+            # sees the first caller's bundle and skips.
+            if not await bundle_repo.has_any_for_cookbook(cookbook.id):
+                try:
+                    svc = BundleService(db, get_watch_service())
+                    await svc.create_bundle(
+                        cookbook_id=cookbook.id,
+                        repo_spec=None,
+                        prompt="",
+                        created_by=caller.account_id,
+                        tasks=[],
+                        autoplan=False,
+                    )
+                except Exception:
+                    logger.warning(
+                        "init_workspace: starter bundle seed failed for cookbook %s",
+                        cookbook.id,
+                        exc_info=True,
+                    )
 
     return {
         "cookbook": cookbook.model_dump(mode="json"),
