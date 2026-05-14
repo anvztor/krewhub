@@ -77,13 +77,33 @@ class EventRepo:
         rows = await cursor.fetchall()
         return [_row_to_event(r) for r in rows]
 
-    async def list_by_bundle(self, bundle_id: str) -> list[Event]:
+    async def list_by_bundle(
+        self, bundle_id: str, *, limit: int | None = None,
+    ) -> list[Event]:
+        """Return events for a bundle in ascending (sequence, created_at) order.
+
+        When `limit` is given, returns the most-recent N events still in
+        ascending order (DESC + LIMIT internally, then reversed) so the
+        caller's chronological-order contract is preserved. Used by
+        GET /api/v1/bundles/{id} to cap the historical event payload —
+        SSE drives real-time updates so unbounded backfill is wasteful
+        on bundles with 65K+ milestone events from graph runners.
+        """
+        if limit is None:
+            cursor = await self._db.execute(
+                "SELECT * FROM events WHERE bundle_id = ? "
+                "ORDER BY sequence, created_at",
+                (bundle_id,),
+            )
+            rows = await cursor.fetchall()
+            return [_row_to_event(r) for r in rows]
         cursor = await self._db.execute(
-            "SELECT * FROM events WHERE bundle_id = ? ORDER BY sequence, created_at",
-            (bundle_id,),
+            "SELECT * FROM events WHERE bundle_id = ? "
+            "ORDER BY sequence DESC, created_at DESC LIMIT ?",
+            (bundle_id, limit),
         )
         rows = await cursor.fetchall()
-        return [_row_to_event(r) for r in rows]
+        return list(reversed([_row_to_event(r) for r in rows]))
 
     async def list_by_task(self, task_id: str) -> list[Event]:
         cursor = await self._db.execute(

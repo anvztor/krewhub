@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +132,7 @@ async def list_bundles_under_cookbook(
 @router.get("/bundles/{bundle_id}")
 async def get_bundle(
     bundle_id: str,
+    events_limit: int = Query(default=100, ge=0, le=10000),
     db: aiosqlite.Connection = Depends(get_db),
 ):
     bundle = await BundleRepo(db).get(bundle_id)
@@ -139,7 +140,18 @@ async def get_bundle(
         raise HTTPException(status_code=404, detail="Bundle not found")
 
     tasks = await TaskRepo(db).list_by_bundle(bundle_id)
-    events = await EventRepo(db).list_by_bundle(bundle_id)
+
+    # Bundle lifecycle: cap events. SSE drives real-time updates;
+    # historical event payload was unbounded (top bundles have 65K+
+    # milestone events from graph runners). events_limit=0 skips
+    # entirely. Default 100 returns the most recent N for any UI that
+    # still wants a quick look.
+    if events_limit == 0:
+        events = []
+    else:
+        events = await EventRepo(db).list_by_bundle(
+            bundle_id, limit=events_limit,
+        )
 
     return {
         "bundle": bundle.model_dump(mode="json"),

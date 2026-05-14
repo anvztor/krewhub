@@ -209,6 +209,11 @@ class Bundle(BaseModel, frozen=True):
     # BundleService.create() return values). Callers that need a value
     # should fall back to created_at.
     latest_task_activity_at: datetime | None = None
+    # Bundle lifecycle: COUNT(tasks) for this bundle, computed at query
+    # time by BundleRepo.list_by_cookbook so the SPA can render tab task
+    # counts without N+1 getBundle calls. None on Bundle objects
+    # constructed outside that path.
+    task_count: int | None = None
 
 
 class Task(BaseModel, frozen=True):

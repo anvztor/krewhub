@@ -58,3 +58,15 @@ async def test_max_scoped_per_bundle(seeded_db):
     assert bundles["b-seed"].latest_task_activity_at == t_seed_updated
     assert bundles["b-other"].latest_task_activity_at == t_other_updated
     assert bundles["b-seed"].latest_task_activity_at != bundles["b-other"].latest_task_activity_at
+
+
+@pytest.mark.asyncio
+async def test_task_count_in_list(seeded_db):
+    """list_by_cookbook returns task_count per bundle."""
+    repo = TaskRepo(seeded_db)
+    await repo.create(Task(id="tc1", bundle_id="b-seed", title="a", status=TaskStatus.OPEN))
+    await repo.create(Task(id="tc2", bundle_id="b-seed", title="b", status=TaskStatus.OPEN))
+
+    bundles = await BundleRepo(seeded_db).list_by_cookbook("cb-seed")
+    [b] = [x for x in bundles if x.id == "b-seed"]
+    assert b.task_count == 2

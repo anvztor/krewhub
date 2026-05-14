@@ -107,7 +107,8 @@ class BundleRepo:
                       COALESCE(
                           (SELECT MAX(t.updated_at) FROM tasks t WHERE t.bundle_id = b.id),
                           b.created_at
-                      ) AS latest_task_activity_at
+                      ) AS latest_task_activity_at,
+                      (SELECT COUNT(*) FROM tasks t WHERE t.bundle_id = b.id) AS task_count
                  FROM bundles b
                 WHERE b.cookbook_id = ?
                 ORDER BY b.created_at DESC""",
@@ -231,6 +232,8 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
     else:
         latest_activity = datetime.fromisoformat(row["created_at"])
 
+    task_count = row["task_count"] if "task_count" in keys else None
+
     return Bundle(
         id=row["id"],
         cookbook_id=row["cookbook_id"] if "cookbook_id" in keys else None,
@@ -255,4 +258,5 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         ),
         sandbox_id=row["sandbox_id"] if "sandbox_id" in keys else None,
         latest_task_activity_at=latest_activity,
+        task_count=task_count,
     )
