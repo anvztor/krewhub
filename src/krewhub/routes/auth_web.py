@@ -414,6 +414,25 @@ async def init_workspace(
         )
         cookbook = await cookbook_repo.create(cookbook, repo_path=str(repo_path))
 
+    # Bundle lifecycle: seed one starter bundle on first init so a brand-
+    # new operator lands on cookrew-beta with a tab + sandbox visible
+    # instead of the bare empty board. Idempotent: skipped when any
+    # bundle (open OR closed) already exists for this cookbook.
+    from krewhub.repositories.bundle_repo import BundleRepo
+    from krewhub.services.bundle_service import BundleService
+    from krewhub.watch.globals import get_watch_service
+
+    if not await BundleRepo(db).has_any_for_cookbook(cookbook.id):
+        svc = BundleService(db, get_watch_service())
+        await svc.create_bundle(
+            cookbook_id=cookbook.id,
+            repo_spec=None,
+            prompt="",
+            created_by=caller.account_id,
+            tasks=[],
+            autoplan=False,
+        )
+
     return {
         "cookbook": cookbook.model_dump(mode="json"),
     }

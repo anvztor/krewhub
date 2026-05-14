@@ -83,6 +83,18 @@ class BundleRepo:
             return None
         return _row_to_bundle(row)
 
+    async def has_any_for_cookbook(self, cookbook_id: str) -> bool:
+        """True if at least one bundle (any status) exists in this cookbook.
+
+        Used by init_workspace to decide whether to seed a starter bundle.
+        Counts CLOSED bundles too so we never reseed after the operator
+        deliberately closed everything."""
+        cursor = await self._db.execute(
+            "SELECT 1 FROM bundles WHERE cookbook_id = ? LIMIT 1",
+            (cookbook_id,),
+        )
+        return await cursor.fetchone() is not None
+
     async def list_by_cookbook(self, cookbook_id: str) -> list[Bundle]:
         """List bundles for a cookbook, with MAX(tasks.updated_at) joined.
 
