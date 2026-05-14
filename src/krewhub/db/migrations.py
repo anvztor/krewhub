@@ -244,7 +244,8 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
                SET updated_at = COALESCE(
                    completed_at,
                    claimed_at,
-                   (SELECT created_at FROM bundles WHERE bundles.id = tasks.bundle_id)
+                   (SELECT created_at FROM bundles WHERE bundles.id = tasks.bundle_id),
+                   strftime('%Y-%m-%dT%H:%M:%f+00:00','now')
                )
              WHERE updated_at IS NULL
         """)

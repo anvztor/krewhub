@@ -1,6 +1,8 @@
 """Verifies the additive migration adds tasks.updated_at and backfills it."""
 from __future__ import annotations
 
+import re
+
 import aiosqlite
 import pytest
 
@@ -50,7 +52,8 @@ async def test_updated_at_added_and_backfilled(tmp_path):
             "INSERT INTO tasks (id, bundle_id, title, claimed_at, completed_at) "
             "VALUES ('t-claimed', 'b1', 'a', '2026-05-02T00:00:00+00:00', NULL),"
             "       ('t-done',    'b1', 'b', NULL, '2026-05-03T00:00:00+00:00'),"
-            "       ('t-fresh',   'b1', 'c', NULL, NULL)",
+            "       ('t-fresh',   'b1', 'c', NULL, NULL),"
+            "       ('t-orphan',  'ghost', 'd', NULL, NULL)",
         )
         await db.commit()
 
@@ -70,3 +73,18 @@ async def test_updated_at_added_and_backfilled(tmp_path):
         assert rows["t-claimed"] == "2026-05-02T00:00:00+00:00"
         assert rows["t-done"] == "2026-05-03T00:00:00+00:00"
         assert rows["t-fresh"] == "2026-05-01T00:00:00+00:00"  # bundle.created_at
+
+        fixed_dates = {
+            "2026-05-01T00:00:00+00:00",
+            "2026-05-02T00:00:00+00:00",
+            "2026-05-03T00:00:00+00:00",
+        }
+        assert rows["t-orphan"] is not None
+        assert re.match(r"^\d{4}-\d{2}-\d{2}T", rows["t-orphan"])
+        assert rows["t-orphan"] not in fixed_dates
+
+        first_rows = rows
+        await run_migrations(db)
+        cur = await db.execute("SELECT id, updated_at FROM tasks ORDER BY id")
+        rows = {r["id"]: r["updated_at"] for r in await cur.fetchall()}
+        assert rows == first_rows
