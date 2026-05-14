@@ -84,16 +84,20 @@ class BundleRepo:
         return _row_to_bundle(row)
 
     async def list_by_cookbook(self, cookbook_id: str) -> list[Bundle]:
-        """Phase 12: direct cookbook lookup, no recipes join.
+        """List bundles for a cookbook, with MAX(tasks.updated_at) joined.
 
-        Replaces list_by_recipe for callers that have a cookbook_id
-        in hand. During the dual-write window, both this method and
-        list_by_recipe return correct results because every bundle
-        gets stamped with both columns at create time + backfill.
-        """
+        latest_task_activity_at falls back to bundle.created_at when the
+        bundle has no tasks (LEFT JOIN + COALESCE). cookrew-beta uses
+        this column to derive its active/idle bucket without needing a
+        per-bundle round trip."""
         cursor = await self._db.execute(
-            "SELECT * FROM bundles WHERE cookbook_id = ? "
-            "ORDER BY created_at DESC",
+            """SELECT b.*,
+                      COALESCE(MAX(t.updated_at), b.created_at) AS latest_task_activity_at
+                 FROM bundles b
+                 LEFT JOIN tasks t ON t.bundle_id = b.id
+                WHERE b.cookbook_id = ?
+                GROUP BY b.id
+                ORDER BY b.created_at DESC""",
             (cookbook_id,),
         )
         rows = await cursor.fetchall()
@@ -208,6 +212,12 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
     keys = set(row.keys())
     repo_spec_raw = row["repo_spec"] if "repo_spec" in keys else None
     repo_spec = json.loads(repo_spec_raw) if repo_spec_raw else None
+
+    if "latest_task_activity_at" in keys and row["latest_task_activity_at"]:
+        latest_activity = datetime.fromisoformat(row["latest_task_activity_at"])
+    else:
+        latest_activity = datetime.fromisoformat(row["created_at"])
+
     return Bundle(
         id=row["id"],
         cookbook_id=row["cookbook_id"] if "cookbook_id" in keys else None,
@@ -231,4 +241,5 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
             else None
         ),
         sandbox_id=row["sandbox_id"] if "sandbox_id" in keys else None,
+        latest_task_activity_at=latest_activity,
     )

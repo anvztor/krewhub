@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from enum import StrEnum
 from typing import Literal
 
@@ -202,6 +202,13 @@ class Bundle(BaseModel, frozen=True):
     # in this bundle reuses it so the agent's working tree (cloned repo,
     # generated files, edits) survives across tasks.
     sandbox_id: str | None = None
+    # Bundle lifecycle: MAX(tasks.updated_at) for this bundle, falling
+    # back to bundle.created_at when no tasks exist. Drives cookrew-beta's
+    # active/idle bucket. Computed at query time by BundleRepo, not
+    # stored.
+    latest_task_activity_at: datetime = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+    )
 
 
 class Task(BaseModel, frozen=True):
