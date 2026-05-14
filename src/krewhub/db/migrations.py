@@ -230,6 +230,26 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # The sandboxes table itself is created by SCHEMA_SQL (CREATE IF NOT EXISTS).
     await _add_column_if_missing(db, "tasks", "assigned_runtime_id", "TEXT")
     await _add_column_if_missing(db, "tasks", "sandbox_id", "TEXT")
+
+    # Bundle lifecycle (2026-05-14): tasks.updated_at drives the
+    # frontend's active/idle bucket via MAX(tasks.updated_at) per
+    # bundle. Backfill from the most recent of completed_at, claimed_at,
+    # falling back to bundle.created_at so legacy rows don't all collapse
+    # to NULL (which the bundle aggregate would coalesce to created_at
+    # -- same end result, but we backfill for clarity).
+    await _add_column_if_missing(db, "tasks", "updated_at", "TEXT")
+    if await _table_exists(db, "tasks") and await _table_exists(db, "bundles"):
+        await db.execute("""
+            UPDATE tasks
+               SET updated_at = COALESCE(
+                   completed_at,
+                   claimed_at,
+                   (SELECT created_at FROM bundles WHERE bundles.id = tasks.bundle_id)
+               )
+             WHERE updated_at IS NULL
+        """)
+        await db.commit()
+
     # Bundle-level sandbox: when cookrew-beta opens a bundle tab, krewhub
     # provisions ONE e2b sandbox and every task in the bundle reuses it.
     # bundles.sandbox_id is the bundle's primary sandbox; sandboxes.bundle_id

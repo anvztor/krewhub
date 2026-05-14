@@ -96,7 +96,12 @@ CREATE TABLE IF NOT EXISTS tasks (
     session_token TEXT,
     -- Auth track A2: runtime assignment + sandbox attachment
     assigned_runtime_id TEXT,
-    sandbox_id TEXT
+    sandbox_id TEXT,
+    -- Bundle lifecycle: drives frontend active/idle bucket via
+    -- MAX(tasks.updated_at) per bundle. Bumped on create + every update
+    -- by TaskRepo. Nullable because the additive migration may run
+    -- before backfill on fresh upgrades.
+    updated_at TEXT
 );
 
 -- Auth track A2: e2b sandboxes — provisioned per bundle (preferred) or
