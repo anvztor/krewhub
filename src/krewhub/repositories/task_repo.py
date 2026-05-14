@@ -14,12 +14,15 @@ class TaskRepo:
         self._db = db
 
     async def create(self, task: Task) -> Task:
+        from datetime import timezone
+        now_iso = datetime.now(timezone.utc).isoformat()
         await self._db.execute(
             """INSERT INTO tasks
                (id, bundle_id, title, description, status, depends_on_task_ids,
                 assigned_agent_id, claimed_by_agent_id, claimed_at, completed_at,
-                blocked_reason, graph_node_id, resource_version, generation)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                blocked_reason, graph_node_id, resource_version, generation,
+                updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (task.id, task.bundle_id, task.title, task.description, task.status,
              json.dumps(task.depends_on_task_ids),
              task.assigned_agent_id,
@@ -28,10 +31,13 @@ class TaskRepo:
              task.completed_at.isoformat() if task.completed_at else None,
              task.blocked_reason,
              task.graph_node_id,
-             task.resource_version, task.generation),
+             task.resource_version, task.generation,
+             now_iso),
         )
         await self._db.commit()
-        return task
+        return task.model_copy(update={
+            "updated_at": datetime.fromisoformat(now_iso),
+        })
 
     async def create_many(self, tasks: list[Task]) -> list[Task]:
         for task in tasks:
@@ -188,6 +194,13 @@ class TaskRepo:
             # Only resource_version bump, nothing actually changed
             return await self.get(task_id)
 
+        # Bundle lifecycle: bump updated_at on every real change so
+        # MAX(tasks.updated_at) per bundle drives the frontend's
+        # active/idle bucket.
+        from datetime import timezone
+        parts.append("updated_at = ?")
+        params.append(datetime.now(timezone.utc).isoformat())
+
         where = "id = ?"
         params.append(task_id)
 
@@ -215,6 +228,7 @@ class TaskRepo:
         return cursor.rowcount > 0
 
     async def reopen_for_rerun(self, task_id: str) -> Task | None:
+        from datetime import timezone
         await self._db.execute(
             """UPDATE tasks
                SET status = 'open',
@@ -223,9 +237,10 @@ class TaskRepo:
                    claimed_at = NULL,
                    completed_at = NULL,
                    blocked_reason = NULL,
-                   resource_version = resource_version + 1
+                   resource_version = resource_version + 1,
+                   updated_at = ?
                WHERE id = ?""",
-            (task_id,),
+            (datetime.now(timezone.utc).isoformat(), task_id),
         )
         await self._db.commit()
         return await self.get(task_id)
@@ -293,6 +308,12 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
     except (IndexError, KeyError):
         sandbox_id = None
 
+    try:
+        updated_at_raw = row["updated_at"]
+        updated_at = datetime.fromisoformat(updated_at_raw) if updated_at_raw else None
+    except (IndexError, KeyError):
+        updated_at = None
+
     return Task(
         id=row["id"],
         bundle_id=row["bundle_id"],
@@ -315,4 +336,5 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         session_token=session_token,
         assigned_runtime_id=assigned_runtime_id,
         sandbox_id=sandbox_id,
+        updated_at=updated_at,
     )

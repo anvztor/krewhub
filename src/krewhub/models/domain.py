@@ -235,6 +235,10 @@ class Task(BaseModel, frozen=True):
     # dispatched to a paired agent runtime via an e2b sandbox.
     assigned_runtime_id: str | None = None
     sandbox_id: str | None = None
+    # Bundle lifecycle: drives frontend active/idle bucket. Bumped by
+    # TaskRepo on create + every update. Nullable on legacy rows that
+    # the migration backfills.
+    updated_at: datetime | None = None
 
 
 class FactRef(BaseModel, frozen=True):
