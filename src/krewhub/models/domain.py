@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -204,11 +204,11 @@ class Bundle(BaseModel, frozen=True):
     sandbox_id: str | None = None
     # Bundle lifecycle: MAX(tasks.updated_at) for this bundle, falling
     # back to bundle.created_at when no tasks exist. Drives cookrew-beta's
-    # active/idle bucket. Computed at query time by BundleRepo, not
-    # stored.
-    latest_task_activity_at: datetime = Field(
-        default_factory=lambda: datetime.now(timezone.utc),
-    )
+    # active/idle bucket. Computed at query time by BundleRepo.list_by_cookbook;
+    # None on Bundle objects constructed outside that path (e.g. fresh
+    # BundleService.create() return values). Callers that need a value
+    # should fall back to created_at.
+    latest_task_activity_at: datetime | None = None
 
 
 class Task(BaseModel, frozen=True):

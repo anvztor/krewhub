@@ -92,11 +92,12 @@ class BundleRepo:
         per-bundle round trip."""
         cursor = await self._db.execute(
             """SELECT b.*,
-                      COALESCE(MAX(t.updated_at), b.created_at) AS latest_task_activity_at
+                      COALESCE(
+                          (SELECT MAX(t.updated_at) FROM tasks t WHERE t.bundle_id = b.id),
+                          b.created_at
+                      ) AS latest_task_activity_at
                  FROM bundles b
-                 LEFT JOIN tasks t ON t.bundle_id = b.id
                 WHERE b.cookbook_id = ?
-                GROUP BY b.id
                 ORDER BY b.created_at DESC""",
             (cookbook_id,),
         )
