@@ -110,9 +110,12 @@ async def test_sweep_expired_leases_reverts(test_db):
         id="el_1", invocation_id="inv_1", op="auth_required",
         payload_json='{}', status="pending",
     ))
-    # Use a 1-second lease — wait 1.5s for it to expire naturally.
+    # Use a 1-second lease and sleep long enough to cross a second boundary
+    # on a busy CI runner. SQLite datetime('now') has 1-second precision, so
+    # the diff between `injecting_until` and `now` only registers as
+    # "expired" after the wall clock ticks past the lease second.
     await repo.reserve(invocation_id="inv_1", elicit_id="el_1", lease_s=1)
-    await asyncio.sleep(1.5)
+    await asyncio.sleep(2.5)
     swept = await repo.sweep_expired_leases()
     assert swept == 1
     # Now back to pending → re-reservable.
