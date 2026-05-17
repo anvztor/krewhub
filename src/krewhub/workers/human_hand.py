@@ -154,6 +154,14 @@ class HumanHand:
 
         from krewhub.repositories.elicit_repo import ElicitRepo, ElicitRow
 
+        # If HumanHand wasn't constructed with a db handle, skip the elicit
+        # row write — the runtime path that emits the event still works.
+        if self._db is None:
+            logger.warning(
+                "HumanHand._write_elicit_row: no db handle; skipping elicit row insert"
+            )
+            return
+
         # Look up the invocation_id for this tape.
         cur = await self._db.execute(
             "SELECT id FROM invocations WHERE tape_id = ?",
