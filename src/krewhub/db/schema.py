@@ -460,4 +460,18 @@ CREATE INDEX IF NOT EXISTS idx_repo_grants_cookbook
     ON repo_grants(cookbook_id);
 CREATE INDEX IF NOT EXISTS idx_repo_grants_active
     ON repo_grants(cookbook_id, provider) WHERE revoked_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS elicits (
+    id              TEXT PRIMARY KEY,
+    invocation_id   TEXT NOT NULL,
+    op              TEXT NOT NULL,
+    payload_json    TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK (status IN ('pending', 'injecting', 'resolved', 'expired')),
+    injecting_until TEXT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    resolved_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_elicits_invocation_status ON elicits(invocation_id, status);
+CREATE INDEX IF NOT EXISTS idx_elicits_injecting_until ON elicits(injecting_until) WHERE status = 'injecting';
 """

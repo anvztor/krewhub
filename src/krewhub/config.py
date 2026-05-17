@@ -86,6 +86,14 @@ class Settings(BaseSettings):
     # documented dev-only switch; OFF in prod.
     krew_dev_fake_auth: bool = False
 
+    # Auth Phase 0 — credential relay
+    # Timeout for SandboxHand.inject_env_one_shot(); must be less than
+    # relay_lease_s so the lease outlives the inject attempt.
+    sandbox_inject_timeout_s: int = 25
+    # Reservation lease for the credential-relay endpoint. The SPA can
+    # retry after this window elapses if the inject timed out.
+    relay_lease_s: int = 60   # must be > sandbox_inject_timeout_s + margin
+
     model_config = {"env_prefix": "KREWHUB_"}
 
 

@@ -13,8 +13,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(na
 from krewhub.db.connection import close_db, init_db
 from krewhub.routes import (
     a2a_callback, a2a_gateway, agent_runtimes, agents, aggregate, auth_web,
-    bundles, cookbook_sharing, cookbooks, credentials, git_http, hooks,
-    invocations, oauth, proxy_krewauth, stream, tapes, tasks,
+    bundles, cookbook_sharing, cookbooks, credential_relay, credentials,
+    git_http, hooks, invocations, oauth, proxy_krewauth, stream, tapes, tasks,
 )
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
@@ -100,7 +100,7 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
                 _app.state.e2b, db=db, sandbox_service=sandbox_service,
                 credentials_service=credentials_service,
             ),
-            "human": HumanHand(),
+            "human": HumanHand(db),
             # AgentHand bridges to the existing A2A queue. The krewcli
             # daemon must implement method="delegate" to actually run a
             # sub-Brain; without that, agent invocations time out and
@@ -109,7 +109,22 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
         },
     )
 
+    # Auth Phase 0 — sweep expired elicit leases so timed-out inject
+    # attempts don't permanently block the SPA from retrying.
+    from krewhub.services.elicit_sweeper import run_elicit_sweep_loop
+    elicit_sweep_task = asyncio.create_task(
+        run_elicit_sweep_loop(_get_singleton_db, interval_s=10.0),
+        name="elicit-sweeper",
+    )
+    _app.state.elicit_sweep_task = elicit_sweep_task
+
     yield
+
+    elicit_sweep_task.cancel()
+    try:
+        await elicit_sweep_task
+    except asyncio.CancelledError:
+        pass
 
     await sweeper.stop()
     await manager.stop_all()
@@ -168,6 +183,7 @@ def create_app() -> FastAPI:
     app.include_router(hooks.router, prefix="/api/v1")
     app.include_router(invocations.router, prefix="/api/v1")
     app.include_router(credentials.router, prefix="/api/v1")
+    app.include_router(credential_relay.router)
     app.include_router(oauth.router, prefix="/api/v1")
 
     # A2A hub gateway — public agent endpoints

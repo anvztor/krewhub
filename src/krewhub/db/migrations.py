@@ -430,6 +430,26 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # the recipes / recipe_members tables. Idempotent.
     await _drop_recipe_id_columns_and_tables(db)
 
+    # Auth Phase 0 — elicits table for credential-relay reservation semantics.
+    # Idempotent: no-op on fresh DBs (SCHEMA_SQL creates it via CREATE IF NOT
+    # EXISTS). On existing DBs this creates the table if it was somehow missed.
+    await _create_table_if_missing(db, "elicits", """
+        CREATE TABLE IF NOT EXISTS elicits (
+            id              TEXT PRIMARY KEY,
+            invocation_id   TEXT NOT NULL,
+            op              TEXT NOT NULL,
+            payload_json    TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending'
+                            CHECK (status IN ('pending', 'injecting', 'resolved', 'expired')),
+            injecting_until TEXT,
+            created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+            resolved_at     TEXT
+        )
+    """)
+    await _create_index_if_missing(
+        db, "idx_elicits_invocation_status", "elicits", "(invocation_id, status)",
+    )
+
     await db.commit()
 
 

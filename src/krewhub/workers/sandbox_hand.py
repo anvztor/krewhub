@@ -146,6 +146,68 @@ class SandboxHand:
             tape=tape, cancel=cancel,
         )
 
+    async def inject_env_one_shot(
+        self,
+        *,
+        task_id: str,
+        host: str,
+        access_token: str,
+        ttl_s: int,
+    ) -> None:
+        """Forward an access_token to the task's running sandbox so the next
+        op:exec sees it as env. Token is never persisted by krewhub; the local
+        `access_token` variable falls out of scope at function return.
+
+        Writes a one-shot env file in the sandbox (/tmp/.krew_oneshot_env) that
+        the next op:exec will pick up via the credentials-merge path. The TTL
+        is honoured by a sandbox-side cleanup job; if missing, the file is
+        short-lived by default (sandbox lifetime).
+        """
+        # Resolve the krewhub sandbox id to the e2b sandbox id.
+        e2b_sandbox_id: str | None = None
+        if self._db is not None and task_id.startswith("sbx_"):
+            # task_id here is actually a sandbox id (sbx_*) — fall through.
+            pass
+        if self._db is not None:
+            # Look up the task's sandbox via the tasks table.
+            try:
+                cur = await self._db.execute(
+                    "SELECT sandbox_id FROM tasks WHERE id = ?", (task_id,),
+                )
+                row = await cur.fetchone()
+                if row and row[0]:
+                    sandbox_row = await SandboxRepo(self._db).get(row[0])
+                    if sandbox_row:
+                        e2b_sandbox_id = sandbox_row.e2b_sandbox_id
+            except Exception as exc:
+                raise RuntimeError(
+                    f"inject_env_one_shot: sandbox lookup failed for task {task_id}: {exc}"
+                ) from exc
+
+        if e2b_sandbox_id is None:
+            raise RuntimeError(
+                f"inject_env_one_shot: no sandbox attached to task {task_id}"
+            )
+
+        # Write the one-shot env file into the sandbox. We use write_file
+        # so the token is never passed as a shell argument (avoids process-
+        # list exposure). The file is world-readable only by the sandbox's
+        # own user (mode 0600 is set by the envd write path).
+        import json as _json
+        oneshot_payload = _json.dumps({
+            "host": host,
+            "ttl_s": ttl_s,
+            # NOTE: access_token intentionally last to limit context-window
+            # bleed; never log this payload.
+            "access_token": access_token,
+        }).encode("utf-8")
+
+        await self._e2b.write_file(
+            e2b_sandbox_id,
+            "/tmp/.krew_oneshot_env",
+            oneshot_payload,
+        )
+
     async def _merge_credentials_into_env(
         self,
         owner_account_id: str | None,

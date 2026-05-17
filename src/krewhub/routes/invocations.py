@@ -22,6 +22,10 @@ from fastapi.responses import StreamingResponse
 
 from krewhub.auth import resolve_caller_or_cookie, CallerContext
 from krewhub.db.connection import get_db
+from krewhub.repositories.bundle_repo import BundleRepo
+from krewhub.repositories.elicit_repo import ElicitRepo
+from krewhub.repositories.invocation_repo import InvocationRepo as _InvocationRepo
+from krewhub.repositories.task_repo import TaskRepo
 from krewhub.models.invocation import (
     InvocationRequest,
     ResultEnvelope,
@@ -420,3 +424,51 @@ async def stream_events(
 
 def _sse_chunk(data: dict) -> bytes:
     return f"data: {json.dumps(data)}\n\n".encode()
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/invocations/:id/task   (Auth Phase 0 — SPA helper)
+# ---------------------------------------------------------------------------
+
+
+from pydantic import BaseModel as _BaseModel
+
+
+class InvocationTaskResponse(_BaseModel):
+    task_id: str
+    elicit_id: str | None  # most recent pending op:auth_required, if any
+
+
+async def _require_cookie_session(
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+) -> CallerContext:
+    """Cookie-session-only dep (mirrors credential_relay.require_cookie_session)."""
+    method = getattr(caller, "auth_method", None)
+    if method == "api_key":
+        raise HTTPException(status_code=401, detail="cookie-session required")
+    return caller
+
+
+@router.get("/invocations/{invocation_id}/task", response_model=InvocationTaskResponse)
+async def invocation_task(
+    invocation_id: str,
+    caller: CallerContext = Depends(_require_cookie_session),
+    db: aiosqlite.Connection = Depends(get_db),
+) -> InvocationTaskResponse:
+    """Return the task_id + latest pending auth_required elicit_id for an invocation."""
+    inv = await _InvocationRepo(db).get(invocation_id)
+    if not inv or not inv.task_id:
+        raise HTTPException(404, "invocation not found")
+    task = await TaskRepo(db).get(inv.task_id)
+    if not task:
+        raise HTTPException(404, "task not found")
+    bundle = await BundleRepo(db).get(task.bundle_id) if task.bundle_id else None
+    if not bundle or bundle.owner_account_id is None:
+        raise HTTPException(403, "bundle has no owner")
+    if bundle.owner_account_id != caller.account_id:
+        raise HTTPException(403, "not your invocation")
+    pending = await ElicitRepo(db).latest_pending_auth_required(invocation_id=invocation_id)
+    return InvocationTaskResponse(
+        task_id=inv.task_id,
+        elicit_id=pending.id if pending else None,
+    )

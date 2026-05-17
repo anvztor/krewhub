@@ -22,18 +22,31 @@ always: started → elicit → decision → done.
 This is the *human-as-MCP-tool* implementation that fills the gap left
 by Anthropic Managed Agents' Session/Harness/Sandbox triple. From the
 brain's POV it's just a `delegate(to="human", ...)` tool call.
+
+Auth Phase 0: when `db` is provided at construction, HumanHand will
+also write a durable `elicits` row for every `op:auth_required` elicit
+so the credential-relay endpoint can atomically reserve and forward it.
 """
 from __future__ import annotations
 
+import json
+import logging
 from datetime import datetime, timedelta, timezone
-from typing import Literal
+from typing import Any, Literal
 
 from krewhub.invocations.protocol import CancelToken, TapeWriter
 from krewhub.models.invocation import ResultEnvelope
 
+logger = logging.getLogger(__name__)
+
 
 class HumanHand:
     target_type: Literal["sandbox", "agent", "human"] = "human"
+
+    def __init__(self, db: Any | None = None) -> None:
+        # Optional db connection. When provided, auth_required ops also
+        # write a durable elicit row for credential-relay reservation.
+        self._db = db
 
     async def execute(
         self,
@@ -95,6 +108,22 @@ class HumanHand:
             actor_id="operator",
         )
 
+        # Auth Phase 0: for op:auth_required elicits, also write a durable
+        # elicit row so the credential-relay endpoint can atomically reserve
+        # and forward it. The row must be written AFTER the tape event so
+        # that the SPA's /invocations/{id}/task endpoint always finds a row
+        # if it sees an elicit event. Best-effort: a failure here does NOT
+        # block the operator flow — the existing HITL still works.
+        if structured is not None and structured.get("op") == "auth_required" and self._db is not None:
+            try:
+                await self._write_elicit_row(tape, structured)
+            except Exception:
+                logger.exception(
+                    "HumanHand: failed to write elicit row for tape %s; "
+                    "credential-relay will be unavailable for this elicit",
+                    tape.tape_id,
+                )
+
         # Wait for one of:
         # - cancel.fire()          → operator dismissed / service deadline
         # - external_result set    → operator submitted via /result endpoint
@@ -113,6 +142,45 @@ class HumanHand:
             action="cancel",
             reason="operator_submission_pending_capture",
         )
+
+    async def _write_elicit_row(self, tape: TapeWriter, structured: dict) -> None:
+        """Write a durable elicit row for credential-relay reservation.
+
+        Looks up the invocation_id from the invocations table using the
+        tape_id, then inserts an elicits row. Idempotent: ON CONFLICT DO
+        NOTHING prevents duplicate rows on retry.
+        """
+        from uuid import uuid4
+
+        from krewhub.repositories.elicit_repo import ElicitRepo, ElicitRow
+
+        # Look up the invocation_id for this tape.
+        cur = await self._db.execute(
+            "SELECT id FROM invocations WHERE tape_id = ?",
+            (tape.tape_id,),
+        )
+        row = await cur.fetchone()
+        if row is None:
+            logger.warning(
+                "HumanHand._write_elicit_row: no invocation for tape_id=%s",
+                tape.tape_id,
+            )
+            return
+
+        invocation_id = row[0]
+        elicit_id = f"el_{uuid4().hex[:16]}"
+
+        # Build payload from the structured op dict (drop the op key itself
+        # since it's stored in the `op` column).
+        payload_data = {k: v for k, v in structured.items() if k != "op"}
+
+        await ElicitRepo(self._db).put(ElicitRow(
+            id=elicit_id,
+            invocation_id=invocation_id,
+            op="auth_required",
+            payload_json=json.dumps(payload_data),
+            status="pending",
+        ))
 
 
 # ---------------------------------------------------------------------------
