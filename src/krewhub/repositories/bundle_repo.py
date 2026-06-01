@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -165,11 +165,54 @@ class BundleRepo:
 
         return await self.get(bundle_id)
 
+    async def mark_graph_terminal(
+        self,
+        bundle_id: str,
+        *,
+        success: bool,
+        reason: str | None = None,
+    ) -> Bundle | None:
+        """Stamp a graph-runner terminal marker on the bundle.
+
+        The GraphRunnerController is level-triggered: every reconcile it
+        re-runs any bundle list_runnable() returns. Until the d.1 refactor
+        the digest layer set digested_at on completion, which list_runnable
+        filters on; deleting that layer left nothing marking a bundle as
+        "graph already ran", so completed-but-still-OPEN bundles re-executed
+        every 2s forever (alert#34: 1M+ identical milestone rows / 5GB).
+
+        We restore the terminal marker WITHOUT changing status — the bundle
+        stays a dumb OPEN container (step d.1); a downstream observer still
+        owns the OPEN→CLOSED transition. success -> digested_at (the existing
+        runnable filter); failure -> blocked_reason (also filtered, and
+        cleared by reopen_for_rerun). Bumps resource_version so SSE refreshes.
+        """
+        now = datetime.now(timezone.utc)
+        if success:
+            await self._db.execute(
+                """UPDATE bundles
+                   SET digested_at = COALESCE(digested_at, ?),
+                       resource_version = resource_version + 1
+                   WHERE id = ?""",
+                (now.isoformat(), bundle_id),
+            )
+        else:
+            await self._db.execute(
+                """UPDATE bundles
+                   SET blocked_reason = ?,
+                       resource_version = resource_version + 1
+                   WHERE id = ?""",
+                ((reason or "graph run failed")[:500], bundle_id),
+            )
+        await self._db.commit()
+        return await self.get(bundle_id)
+
     async def reopen_for_rerun(self, bundle_id: str) -> Bundle | None:
         await self._db.execute(
             """UPDATE bundles
                SET status = 'open',
                    blocked_reason = NULL,
+                   digested_at = NULL,
                    resource_version = resource_version + 1
                WHERE id = ?""",
             (bundle_id,),
@@ -207,13 +250,20 @@ class BundleRepo:
 
         These are the candidates the GraphRunnerController will execute.
         Ordered by created_at so older bundles run first (FIFO fairness).
-        Excludes already-digested bundles to prevent re-run after crash.
+
+        Excludes bundles the runner already drove to a terminal outcome:
+        digested_at marks a successful graph run, blocked_reason marks a
+        terminal failure (both stamped by mark_graph_terminal). Without
+        these guards the level-triggered runner re-executes completed
+        bundles every cycle forever (alert#34). reopen_for_rerun clears
+        both to put a bundle back in the runnable set.
         """
         cursor = await self._db.execute(
             """SELECT * FROM bundles
                WHERE graph_code IS NOT NULL
                  AND status = 'open'
                  AND digested_at IS NULL
+                 AND blocked_reason IS NULL
                ORDER BY created_at"""
         )
         rows = await cursor.fetchall()
