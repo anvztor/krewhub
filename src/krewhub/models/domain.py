@@ -263,6 +263,9 @@ class Task(BaseModel, frozen=True):
     # the orchestrator can replay a Brief (respawn) or validate a Report.
     brief: dict | None = None
     report: dict | None = None
+    # Orch mode (O2): controller bookkeeping for Brief-managed tasks —
+    # {respawns, last_respawn_at, accepted_at, report_invalid, halted}.
+    orch: dict | None = None
     # Bundle lifecycle: drives frontend active/idle bucket. Bumped by
     # TaskRepo on create + every update. Nullable on legacy rows that
     # the migration backfills.

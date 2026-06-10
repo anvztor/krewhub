@@ -6,6 +6,7 @@ import aiosqlite
 
 from krewhub.controllers.base import BaseController
 from krewhub.controllers.graph_runner import GraphRunnerController
+from krewhub.controllers.orch_controller import OrchController
 from krewhub.controllers.planner_dispatch import PlannerDispatchController
 from krewhub.controllers.presence_controller import PresenceController
 from krewhub.controllers.task_dispatch import TaskDispatchController
@@ -27,6 +28,10 @@ class ControllerManager:
         watch: WatchService,
         *,
         heartbeat_timeout: float = 30.0,
+        orch_enabled: bool = True,
+        orch_interval: float = 5.0,
+        orch_liveness_timeout: float = 60.0,
+        orch_max_respawns: int = 3,
     ) -> None:
         # Phase 12 step (d.1): BundleController removed. Bundle FSM is
         # now OPEN ↔ CLOSED and not derived from tasks, so the
@@ -37,6 +42,18 @@ class ControllerManager:
             GraphRunnerController(db, watch, interval=2.0, max_concurrent=4),
             PresenceController(db, watch, interval=5.0, heartbeat_timeout=heartbeat_timeout),
         ]
+        # Orch mode (O2): supervises Brief-managed tasks only; legacy
+        # tasks (no brief_json) are untouched. KREWHUB_ORCH_ENABLED=0
+        # disables it entirely.
+        if orch_enabled:
+            self._controllers.append(
+                OrchController(
+                    db, watch,
+                    interval=orch_interval,
+                    liveness_timeout=orch_liveness_timeout,
+                    max_respawns=orch_max_respawns,
+                ),
+            )
 
     async def start_all(self) -> None:
         for controller in self._controllers:

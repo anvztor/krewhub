@@ -458,6 +458,11 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     await _add_column_if_missing(db, "tasks", "report_json", "TEXT")
     await _migrate_tasks_add_blocked_on_review_status(db)
     await _migrate_events_add_orch_types(db)
+    # O2 bookkeeping column — added AFTER the tasks rebuild so a pre-O1 DB
+    # rebuilds first; the rebuild DDL also lists orch_json (belt-and-
+    # suspenders: the INSERT uses the live column list, missing cols
+    # default to NULL).
+    await _add_column_if_missing(db, "tasks", "orch_json", "TEXT")
     await _create_table_if_missing(db, "task_reviews", """
         CREATE TABLE IF NOT EXISTS task_reviews (
             id            TEXT PRIMARY KEY,
@@ -1077,6 +1082,7 @@ async def _migrate_tasks_add_blocked_on_review_status(
             sandbox_id TEXT,
             brief_json TEXT,
             report_json TEXT,
+            orch_json TEXT,
             updated_at TEXT
         );
         INSERT INTO tasks_new ({col_list})
