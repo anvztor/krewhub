@@ -21,6 +21,17 @@ class Settings(BaseSettings):
     retention_days: int = 7
     heartbeat_timeout_seconds: int = 30
 
+    # Orch mode (O2): minimal orchestration loop. Only acts on tasks that
+    # carry a Brief (brief_json IS NOT NULL) — zero effect on legacy tasks.
+    orch_enabled: bool = True
+    orch_interval_seconds: float = 5.0
+    # Runtime considered dead when agent_runtimes.last_seen_at is older
+    # than this (daemon heartbeats every ~15s; 60s = 4 missed beats).
+    orch_liveness_timeout_seconds: int = 60
+    # After this many Brief-replay respawns the task is parked BLOCKED
+    # with a blocker event (failure discipline: no retry-bombing).
+    orch_max_respawns: int = 3
+
     # ERC-8004 on GOAT Testnet3
     erc8004_chain_id: int = 48816
     erc8004_rpc_url: str = "https://rpc.testnet3.goat.network"

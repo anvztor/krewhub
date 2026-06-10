@@ -57,6 +57,10 @@ async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
     manager = ControllerManager(
         db, watch,
         heartbeat_timeout=settings.heartbeat_timeout_seconds,
+        orch_enabled=settings.orch_enabled,
+        orch_interval=settings.orch_interval_seconds,
+        orch_liveness_timeout=settings.orch_liveness_timeout_seconds,
+        orch_max_respawns=settings.orch_max_respawns,
     )
     set_controller_manager(manager)
     await manager.start_all()

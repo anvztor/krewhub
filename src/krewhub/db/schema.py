@@ -102,6 +102,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- (hand-back) as JSON. Null on legacy/non-orch tasks.
     brief_json TEXT,
     report_json TEXT,
+    -- Orch mode (O2): controller bookkeeping for Brief-managed tasks —
+    -- {respawns, last_respawn_at, accepted_at, report_invalid, halted}.
+    orch_json TEXT,
     -- Bundle lifecycle: drives frontend active/idle bucket via
     -- MAX(tasks.updated_at) per bundle. Bumped on create + every update
     -- by TaskRepo. Nullable because the additive migration may run
