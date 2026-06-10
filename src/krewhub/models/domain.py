@@ -60,6 +60,9 @@ class TaskStatus(StrEnum):
     DONE = "done"
     BLOCKED = "blocked"
     CANCELLED = "cancelled"
+    # Orch mode (O1): worker emitted needs_review and is parked at the
+    # review gate until an owner approves/rejects via POST /tasks/{id}/review.
+    BLOCKED_ON_REVIEW = "blocked_on_review"
 
 
 class EventType(StrEnum):
@@ -80,6 +83,14 @@ class EventType(StrEnum):
     TOOL_RESULT = "tool_result"
     AGENT_REPLY = "agent_reply"
     THINKING = "thinking"
+    # Orch mode (O1): semantic observation events a worker self-reports so
+    # the orchestrator drives its control loop on meaning, not screen-scraping.
+    # (milestone above is reused as-is.)
+    PROGRESS = "progress"
+    BLOCKER = "blocker"
+    NEEDS_REVIEW = "needs_review"
+    NEEDS_HUMAN = "needs_human"
+    LOG = "log"
 
 
 class AgentStatus(StrEnum):
@@ -247,6 +258,11 @@ class Task(BaseModel, frozen=True):
     # dispatched to a paired agent runtime via an e2b sandbox.
     assigned_runtime_id: str | None = None
     sandbox_id: str | None = None
+    # Orch mode (O1): structured Brief (hand-off) + Report (hand-back).
+    # None on legacy / non-orch tasks. Stored as JSON, surfaced as dicts so
+    # the orchestrator can replay a Brief (respawn) or validate a Report.
+    brief: dict | None = None
+    report: dict | None = None
     # Bundle lifecycle: drives frontend active/idle bucket. Bumped by
     # TaskRepo on create + every update. Nullable on legacy rows that
     # the migration backfills.

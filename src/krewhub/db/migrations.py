@@ -450,6 +450,29 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         db, "idx_elicits_invocation_status", "elicits", "(invocation_id, status)",
     )
 
+    # ---- Orch mode (O1): contract layer ----------------------------------
+    # Additive columns first (cheap), then the two CHECK widenings (rebuilds),
+    # then the review-audit table. These run LAST so the rebuilds see the
+    # post-step-(e) table shapes (no recipe_id, recipes table dropped).
+    await _add_column_if_missing(db, "tasks", "brief_json", "TEXT")
+    await _add_column_if_missing(db, "tasks", "report_json", "TEXT")
+    await _migrate_tasks_add_blocked_on_review_status(db)
+    await _migrate_events_add_orch_types(db)
+    await _create_table_if_missing(db, "task_reviews", """
+        CREATE TABLE IF NOT EXISTS task_reviews (
+            id            TEXT PRIMARY KEY,
+            task_id       TEXT NOT NULL,
+            action        TEXT NOT NULL CHECK (action IN ('approve', 'reject')),
+            reason        TEXT,
+            diff_summary  TEXT,
+            decided_by    TEXT NOT NULL,
+            decided_at    TEXT NOT NULL
+        )
+    """)
+    await _create_index_if_missing(
+        db, "idx_task_reviews_task", "task_reviews", "(task_id, decided_at)",
+    )
+
     await db.commit()
 
 
@@ -986,6 +1009,162 @@ async def _drop_digests_table(db: aiosqlite.Connection) -> None:
         return
     logger.info("Migration: dropping digests table")
     await db.execute("DROP TABLE IF EXISTS digests")
+
+
+async def _migrate_tasks_add_blocked_on_review_status(
+    db: aiosqlite.Connection,
+) -> None:
+    """Orch mode (O1): widen tasks.status CHECK to include
+    'blocked_on_review'.
+
+    Idempotent: detects via the live CREATE TABLE statement. Rebuilds the
+    table (SQLite can't ALTER a CHECK) following the bundles.status
+    precedent — column list is captured live so every column (incl. the
+    O1 brief_json/report_json added just before this runs) is preserved.
+    """
+    if not await _table_exists(db, "tasks"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    sql = (row["sql"] or "")
+    if "blocked_on_review" in sql:
+        return  # Already widened.
+
+    logger.info(
+        "Migration: rebuilding tasks.status CHECK to include 'blocked_on_review'"
+    )
+    cursor = await db.execute("PRAGMA table_info(tasks)")
+    cols = [r["name"] for r in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    # FK enforcement is ON globally; suspend it so DROP TABLE tasks can run
+    # despite task_usage/sandboxes/events references. DROP IF EXISTS at the
+    # top guards a crash-mid-script from wedging the next boot.
+    await db.executescript(
+        f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS tasks_new;
+        CREATE TABLE tasks_new (
+            id TEXT PRIMARY KEY,
+            bundle_id TEXT NOT NULL REFERENCES bundles(id),
+            title TEXT NOT NULL,
+            description TEXT,
+            status TEXT NOT NULL DEFAULT 'open'
+                CHECK(status IN (
+                    'open', 'claimed', 'working', 'done', 'blocked',
+                    'cancelled', 'blocked_on_review'
+                )),
+            depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
+            assigned_agent_id TEXT,
+            claimed_by_agent_id TEXT,
+            claimed_at TEXT,
+            completed_at TEXT,
+            blocked_reason TEXT,
+            graph_node_id TEXT,
+            resource_version INTEGER NOT NULL DEFAULT 1,
+            generation INTEGER NOT NULL DEFAULT 1,
+            progress_json TEXT,
+            session_id TEXT,
+            work_dir TEXT,
+            artifacts_json TEXT,
+            session_token TEXT,
+            assigned_runtime_id TEXT,
+            sandbox_id TEXT,
+            brief_json TEXT,
+            report_json TEXT,
+            updated_at TEXT
+        );
+        INSERT INTO tasks_new ({col_list})
+            SELECT {col_list} FROM tasks;
+        DROP TABLE tasks;
+        ALTER TABLE tasks_new RENAME TO tasks;
+        CREATE INDEX IF NOT EXISTS idx_tasks_bundle ON tasks(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_assigned ON tasks(assigned_agent_id);
+        CREATE INDEX IF NOT EXISTS idx_tasks_node ON tasks(bundle_id, graph_node_id);
+        PRAGMA foreign_keys = ON;
+        """
+    )
+
+
+async def _migrate_events_add_orch_types(db: aiosqlite.Connection) -> None:
+    """Orch mode (O1): widen events.type CHECK with the semantic event
+    vocabulary (progress/blocker/needs_review/needs_human/log).
+
+    Idempotent: detects 'needs_review' in the live CREATE TABLE. Runs LAST
+    (after step-(e) dropped events.recipe_id + the recipes table), so the
+    rebuilt table matches the post-step-(e) shape (no recipe_id, no FK to
+    recipes). The CHECK is a SUPERSET of every type any prior migration
+    allowed (incl. bundle_* and legacy digest_*), so the INSERT…SELECT can
+    never reject an existing row.
+    """
+    if not await _table_exists(db, "events"):
+        return
+
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='events'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    sql = (row["sql"] or "")
+    if "needs_review" in sql:
+        return  # Already widened.
+
+    logger.info("Migration: rebuilding events.type CHECK for orch semantic types")
+    cursor = await db.execute("PRAGMA table_info(events)")
+    cols = [r["name"] for r in await cursor.fetchall()]
+    col_list = ", ".join(cols)
+
+    await db.executescript(
+        f"""
+        PRAGMA foreign_keys = OFF;
+        DROP TABLE IF EXISTS events_new;
+        CREATE TABLE events_new (
+            id TEXT PRIMARY KEY,
+            cookbook_id TEXT REFERENCES cookbooks(id),
+            bundle_id TEXT REFERENCES bundles(id),
+            task_id TEXT,
+            type TEXT NOT NULL
+                CHECK(type IN (
+                    'prompt', 'plan', 'task_claimed', 'task_working',
+                    'milestone', 'fact_added', 'code_pushed',
+                    'bundle_closed', 'bundle_reopened',
+                    'session_start', 'session_end', 'tool_use', 'tool_result',
+                    'agent_reply', 'thinking',
+                    -- Legacy digest_* tolerated until those rows expire.
+                    'digest_submitted', 'digest_approved', 'digest_rejected',
+                    -- Orch mode (O1) semantic observation events.
+                    'progress', 'blocker', 'needs_review', 'needs_human', 'log'
+                )),
+            actor_id TEXT NOT NULL,
+            actor_type TEXT NOT NULL
+                CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),
+            body TEXT NOT NULL DEFAULT '',
+            payload TEXT NOT NULL DEFAULT '{{}}',
+            sequence INTEGER NOT NULL DEFAULT 0,
+            facts TEXT NOT NULL DEFAULT '[]',
+            code_refs TEXT NOT NULL DEFAULT '[]',
+            visibility TEXT NOT NULL DEFAULT 'system',
+            created_at TEXT NOT NULL,
+            expires_at TEXT
+        );
+        INSERT INTO events_new ({col_list})
+            SELECT {col_list} FROM events;
+        DROP TABLE events;
+        ALTER TABLE events_new RENAME TO events;
+        CREATE INDEX IF NOT EXISTS idx_events_cookbook ON events(cookbook_id);
+        CREATE INDEX IF NOT EXISTS idx_events_bundle ON events(bundle_id);
+        CREATE INDEX IF NOT EXISTS idx_events_expires ON events(expires_at);
+        CREATE INDEX IF NOT EXISTS idx_events_task_sequence
+            ON events(task_id, sequence);
+        PRAGMA foreign_keys = ON;
+        """
+    )
 
 
 async def _migrate_events_add_bundle_lifecycle_types(

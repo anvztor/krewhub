@@ -3,6 +3,38 @@ from __future__ import annotations
 from pydantic import BaseModel, Field
 
 
+# --- Orch mode (O1): Brief / Report contract ----------------------------
+#
+# A Brief is the structured task hand-off the orchestrator gives a worker
+# (replaces the brittle free-text "send --text" of the shell era). A Report
+# is the structured terminal hand-back the worker returns on completion.
+# Both are OPTIONAL everywhere they appear: a task created without a brief,
+# or completed without a report, behaves exactly as before (backward compat).
+# When present, Pydantic validates the shape (e.g. a brief missing `goal`
+# is a 422), giving the orchestrator a contract to rely on.
+
+
+class Brief(BaseModel):
+    """Structured task hand-off (orchestrator → worker)."""
+    goal: str
+    context: str = ""
+    constraints: list[str] = Field(default_factory=list)
+    deliverable: str
+    report_points: list[str] = Field(default_factory=list)
+    # Optional pre-authorized action chain (the orchestrator's "预授权链"):
+    # actions the worker may take without re-escalating. Free-form strings.
+    pre_auth: list[str] | None = None
+
+
+class Report(BaseModel):
+    """Structured terminal hand-back (worker → orchestrator) at completion."""
+    status: str  # e.g. done | blocked | needs_review
+    artifacts: list[str] = Field(default_factory=list)
+    prs: list[str] = Field(default_factory=list)
+    blockers: list[str] = Field(default_factory=list)
+    decisions_needed: list[str] = Field(default_factory=list)
+
+
 class CreateRecipeRequest(BaseModel):
     name: str
     repo_url: str
@@ -51,6 +83,8 @@ class CreateTaskInput(BaseModel):
     title: str
     description: str | None = None
     depends_on_task_ids: list[str] = []
+    # Orch mode (O1): optional structured hand-off. Absent ⇒ legacy behavior.
+    brief: Brief | None = None
 
 
 class CreateBundleRequest(BaseModel):
@@ -163,12 +197,29 @@ class PostTaskCompletionRequest(BaseModel):
     session_id: str | None = None
     work_dir: str | None = None
     artifacts: dict = Field(default_factory=dict)
+    # Orch mode (O1): optional structured Report. Absent ⇒ legacy behavior.
+    report: Report | None = None
 
 
 class AddTaskRequest(BaseModel):
     title: str
     description: str | None = None
     depends_on_task_ids: list[str] = []
+    # Orch mode (O1): optional structured hand-off. Absent ⇒ legacy behavior.
+    brief: Brief | None = None
+
+
+class TaskReviewRequest(BaseModel):
+    """Body of POST /tasks/{id}/review — the orch/owner review-gate verdict.
+
+    A worker that emits a `needs_review` event parks the task at
+    `blocked_on_review`; the owner resolves it here. diff_summary is an
+    optional human/orch-supplied note of what was reviewed (recorded in
+    the audit row).
+    """
+    action: str  # "approve" | "reject"
+    reason: str | None = None
+    diff_summary: str | None = None
 
 
 class AttachGraphRequest(BaseModel):

@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS tasks (
     title TEXT NOT NULL,
     description TEXT,
     status TEXT NOT NULL DEFAULT 'open'
-        CHECK(status IN ('open', 'claimed', 'working', 'done', 'blocked', 'cancelled')),
+        CHECK(status IN ('open', 'claimed', 'working', 'done', 'blocked', 'cancelled',
+                         'blocked_on_review')),
     depends_on_task_ids TEXT NOT NULL DEFAULT '[]',
     assigned_agent_id TEXT,
     claimed_by_agent_id TEXT,
@@ -97,6 +98,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Auth track A2: runtime assignment + sandbox attachment
     assigned_runtime_id TEXT,
     sandbox_id TEXT,
+    -- Orch mode (O1): optional structured Brief (hand-off) + Report
+    -- (hand-back) as JSON. Null on legacy/non-orch tasks.
+    brief_json TEXT,
+    report_json TEXT,
     -- Bundle lifecycle: drives frontend active/idle bucket via
     -- MAX(tasks.updated_at) per bundle. Bumped on create + every update
     -- by TaskRepo. Nullable because the additive migration may run
@@ -166,6 +171,21 @@ CREATE TABLE IF NOT EXISTS task_usage (
 
 CREATE INDEX IF NOT EXISTS idx_task_usage_task ON task_usage(task_id);
 
+-- Orch mode (O1): review-gate audit trail. One row per approve/reject
+-- verdict on a task that emitted needs_review (parked at
+-- blocked_on_review). Records who decided, when, why, and a diff summary.
+CREATE TABLE IF NOT EXISTS task_reviews (
+    id            TEXT PRIMARY KEY,
+    task_id       TEXT NOT NULL,
+    action        TEXT NOT NULL CHECK (action IN ('approve', 'reject')),
+    reason        TEXT,
+    diff_summary  TEXT,
+    decided_by    TEXT NOT NULL,
+    decided_at    TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_reviews_task ON task_reviews(task_id, decided_at);
+
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,
     -- Direct scope after step (e).
@@ -178,7 +198,9 @@ CREATE TABLE IF NOT EXISTS events (
             'fact_added', 'code_pushed',
             'bundle_closed', 'bundle_reopened',
             'session_start', 'session_end', 'tool_use', 'tool_result',
-            'agent_reply', 'thinking'
+            'agent_reply', 'thinking',
+            -- Orch mode (O1): semantic observation events (self-reported).
+            'progress', 'blocker', 'needs_review', 'needs_human', 'log'
         )),
     actor_id TEXT NOT NULL,
     actor_type TEXT NOT NULL CHECK(actor_type IN ('human', 'agent', 'system', 'hook')),

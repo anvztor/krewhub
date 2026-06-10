@@ -314,6 +314,18 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
     except (IndexError, KeyError):
         updated_at = None
 
+    # Orch mode (O1): brief/report columns may not exist on older DBs.
+    try:
+        brief_raw = row["brief_json"]
+        brief = json.loads(brief_raw) if brief_raw else None
+    except (IndexError, KeyError):
+        brief = None
+    try:
+        report_raw = row["report_json"]
+        report = json.loads(report_raw) if report_raw else None
+    except (IndexError, KeyError):
+        report = None
+
     return Task(
         id=row["id"],
         bundle_id=row["bundle_id"],
@@ -336,5 +348,7 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         session_token=session_token,
         assigned_runtime_id=assigned_runtime_id,
         sandbox_id=sandbox_id,
+        brief=brief,
+        report=report,
         updated_at=updated_at,
     )
