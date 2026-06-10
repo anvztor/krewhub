@@ -702,7 +702,13 @@ async def cancel_task(
             status_code=400,
             detail=f"Cannot cancel task in status '{task.status}'",
         )
-    return {"task": updated.model_dump(mode="json")}
+
+    # Orch mode (O3b): link cascade — revoke edges, cancel A-born subagent
+    # children, unblock pipe downstreams (design §5.3 / parity `close`).
+    from krewhub.routes.links import cascade_on_task_termination
+    cascade = await cascade_on_task_termination(db, task_id)
+
+    return {"task": updated.model_dump(mode="json"), "cascade": cascade}
 
 
 @router.get("/tasks/{task_id}/cancel-status")
@@ -918,7 +924,12 @@ async def remove_task(
     removed = await svc.remove_task(task_id)
     if not removed:
         raise HTTPException(status_code=400, detail="Cannot remove task (not found or not open)")
-    return {"removed": True}
+
+    # Orch mode (O3b): link cascade (design §5.3 / parity `close`).
+    from krewhub.routes.links import cascade_on_task_termination
+    cascade = await cascade_on_task_termination(db, task_id)
+
+    return {"removed": True, "cascade": cascade}
 
 
 # ---------------------------------------------------------------------------

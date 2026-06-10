@@ -266,6 +266,9 @@ class Task(BaseModel, frozen=True):
     # Orch mode (O2): controller bookkeeping for Brief-managed tasks —
     # {respawns, last_respawn_at, accepted_at, report_invalid, halted}.
     orch: dict | None = None
+    # Orch mode (O3b): provenance — the orch task that created this one
+    # as its downstream (new-cell). None for human/board-created tasks.
+    created_by_task: str | None = None
     # Bundle lifecycle: drives frontend active/idle bucket. Bumped by
     # TaskRepo on create + every update. Nullable on legacy rows that
     # the migration backfills.
