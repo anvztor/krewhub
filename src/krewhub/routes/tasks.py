@@ -26,6 +26,7 @@ from krewhub.watch.globals import get_watch_service
 from krewhub.auth import (
     CallerContext,
     authorize_task_mutation,
+    require_bundle_owner,
     resolve_caller_or_cookie,
 )
 from krewhub.db.connection import get_db
@@ -41,10 +42,31 @@ from krewhub.routes.schemas import (
     PostTaskCompletionRequest,
     PostTaskProgressRequest,
     PostTaskUsageRequest,
+    TaskReviewRequest,
     UpdateTaskStatusRequest,
 )
 
 router = APIRouter(tags=["tasks"], dependencies=[Depends(resolve_caller_or_cookie)])
+
+
+async def _park_for_review_if_needed(db, task, event_types: list[str]) -> None:
+    """Orch mode (O1): a `needs_review` event parks the task at the review
+    gate (blocked_on_review) so an owner must approve/reject before it
+    proceeds. No-op for terminal tasks. Idempotent on re-emit.
+    """
+    if EventType.NEEDS_REVIEW not in event_types:
+        return
+    if task.status in (
+        TaskStatus.DONE, TaskStatus.CANCELLED, TaskStatus.BLOCKED_ON_REVIEW,
+    ):
+        return
+    updated = await TaskRepo(db).update(
+        task.id, status=TaskStatus.BLOCKED_ON_REVIEW,
+    )
+    if updated is not None:
+        await get_watch_service().record_resource(
+            "task", task.id, WatchEventType.MODIFIED, updated,
+        )
 
 
 @router.get("/tasks/{task_id}")
@@ -452,6 +474,8 @@ async def post_task_event(
         )
     except SessionTokenMismatch:
         raise HTTPException(status_code=409, detail="Session token mismatch")
+
+    await _park_for_review_if_needed(db, task, [req.type])
     return {"event": event.model_dump(mode="json")}
 
 
@@ -499,6 +523,10 @@ async def post_task_events_batch(
         )
     except SessionTokenMismatch:
         raise HTTPException(status_code=409, detail="Session token mismatch")
+
+    await _park_for_review_if_needed(
+        db, task, [e.get("type") for e in redacted_events],
+    )
     return {"events": [e.model_dump(mode="json") for e in created]}
 
 
@@ -554,12 +582,16 @@ async def post_task_completion(
     await authorize_task_mutation(caller, task, db)
 
     artifacts_json = _json.dumps(req.artifacts)
+    # Orch mode (O1): persist the structured Report if supplied. COALESCE so
+    # a completion without a report never wipes a previously-stored one.
+    report_json = req.report.model_dump_json() if req.report is not None else None
 
     await db.execute(
         """UPDATE tasks
-           SET session_id = ?, work_dir = ?, artifacts_json = ?
+           SET session_id = ?, work_dir = ?, artifacts_json = ?,
+               report_json = COALESCE(?, report_json)
            WHERE id = ?""",
-        (req.session_id, req.work_dir, artifacts_json, task_id),
+        (req.session_id, req.work_dir, artifacts_json, report_json, task_id),
     )
     await db.commit()
 
@@ -887,6 +919,94 @@ async def remove_task(
     if not removed:
         raise HTTPException(status_code=400, detail="Cannot remove task (not found or not open)")
     return {"removed": True}
+
+
+# ---------------------------------------------------------------------------
+# Orch mode (O1): review gate — approve/reject a task parked at
+# blocked_on_review (it emitted a needs_review event).
+# ---------------------------------------------------------------------------
+
+
+@router.post("/tasks/{task_id}/review")
+async def review_task(
+    task_id: str,
+    req: TaskReviewRequest,
+    db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
+):
+    """Resolve a task's review gate. Owner-only verdict.
+
+    AUTHZ: deliberately stricter than other task mutations — uses
+    `require_bundle_owner` (the bundle OWNER or a legacy service api-key),
+    NOT `authorize_task_mutation`. The assigned runtime (the worker) must
+    never approve its own review (red line: "worker 无生产合并权"). Every
+    verdict is written to task_reviews (who / when / reason / diff summary).
+
+    Both verdicts return the worker to `working`: on approve it proceeds to
+    finalize and post completion(Report) → done; on reject the reason is
+    appended to the task description so the worker revises.
+    """
+    action = (req.action or "").strip().lower()
+    if action not in ("approve", "reject"):
+        raise HTTPException(
+            status_code=400, detail="action must be 'approve' or 'reject'",
+        )
+
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    # Owner-only (or legacy service api-key). 403 for anyone else, 404 if the
+    # bundle is missing — handled inside require_bundle_owner.
+    await require_bundle_owner(task.bundle_id, caller, db)
+
+    if task.status != TaskStatus.BLOCKED_ON_REVIEW:
+        raise HTTPException(
+            status_code=400,
+            detail=f"task is {task.status}, not blocked_on_review",
+        )
+
+    # Audit row first (the verdict is authoritative even if the downstream
+    # status update races).
+    review_id = f"rev_{uuid4().hex[:12]}"
+    now = datetime.now(timezone.utc).isoformat()
+    await db.execute(
+        "INSERT INTO task_reviews "
+        "(id, task_id, action, reason, diff_summary, decided_by, decided_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (review_id, task_id, action, req.reason, req.diff_summary,
+         caller.account_id, now),
+    )
+
+    # Reject carries the reason forward so the worker sees it on the next run.
+    new_description = None
+    if action == "reject" and req.reason:
+        base = (task.description or "").rstrip()
+        new_description = (
+            base + f"\n\n[REVIEW REJECTED by {caller.account_id}]\n{req.reason}"
+        ).strip()
+
+    updated = await TaskRepo(db).update(
+        task_id,
+        status=TaskStatus.WORKING,
+        description=new_description,  # None ⇒ unchanged (approve path)
+    )
+    await db.commit()
+
+    if updated is not None:
+        await get_watch_service().record_resource(
+            "task", task_id, WatchEventType.MODIFIED, updated,
+        )
+
+    return {
+        "task": updated.model_dump(mode="json") if updated else None,
+        "review": {
+            "id": review_id,
+            "action": action,
+            "decided_by": caller.account_id,
+            "decided_at": now,
+        },
+    }
 
 
 @router.get("/tasks/{task_id}/stream")

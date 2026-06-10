@@ -71,6 +71,16 @@ async def create_bundle_under_cookbook(
         (caller.account_id, bundle.id),
     )
 
+    # Orch mode (O1): persist any structured Briefs on the created tasks.
+    # create_bundle() preserves input order, so req.tasks zips 1:1 with the
+    # returned tasks. Absent brief ⇒ no write (legacy behavior).
+    for _inp, _created in zip(req.tasks, tasks):
+        if _inp.brief is not None:
+            await db.execute(
+                "UPDATE tasks SET brief_json = ? WHERE id = ?",
+                (_inp.brief.model_dump_json(), _created.id),
+            )
+
     # Default-runtime binding (same as the legacy path).
     runtime_cursor = await db.execute(
         "SELECT id FROM agent_runtimes "
@@ -329,6 +339,15 @@ async def add_task_to_bundle(
         description=req.description,
         depends_on_task_ids=req.depends_on_task_ids,
     )
+
+    # Orch mode (O1): persist the structured Brief (orch dispatch hand-off).
+    # Absent ⇒ no write (legacy behavior).
+    if req.brief is not None:
+        await db.execute(
+            "UPDATE tasks SET brief_json = ? WHERE id = ?",
+            (req.brief.model_dump_json(), task.id),
+        )
+        await db.commit()
 
     if is_legacy_apikey or bundle.default_agent_runtime_id is None:
         # Legacy path — no sandbox.
