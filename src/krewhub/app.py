@@ -15,7 +15,8 @@ from krewhub.db.connection import close_db, init_db
 from krewhub.routes import (
     a2a_callback, a2a_gateway, agent_runtimes, agents, aggregate, auth_web,
     bundles, cookbook_sharing, cookbooks, credential_relay, credentials,
-    git_http, hooks, invocations, oauth, proxy_krewauth, stream, tapes, tasks,
+    git_http, hooks, invocations, links, oauth, proxy_krewauth, stream,
+    tapes, tasks,
 )
 from krewhub.watch.service import WatchService
 from krewhub.watch.globals import set_watch_service, clear_watch_service
@@ -180,6 +181,7 @@ def create_app() -> FastAPI:
     app.include_router(cookbook_sharing.router, prefix="/api/v1")
     app.include_router(bundles.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
+    app.include_router(links.router, prefix="/api/v1")
     app.include_router(agents.router, prefix="/api/v1")
     app.include_router(agent_runtimes.router, prefix="/api/v1")
     app.include_router(tapes.router, prefix="/api/v1")

@@ -330,6 +330,10 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         orch = json.loads(orch_raw) if orch_raw else None
     except (IndexError, KeyError):
         orch = None
+    try:
+        created_by_task = row["created_by_task"]
+    except (IndexError, KeyError):
+        created_by_task = None
 
     return Task(
         id=row["id"],
@@ -356,5 +360,6 @@ def _row_to_task(row: aiosqlite.Row) -> Task:
         brief=brief,
         report=report,
         orch=orch,
+        created_by_task=created_by_task,
         updated_at=updated_at,
     )

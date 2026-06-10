@@ -105,6 +105,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- Orch mode (O2): controller bookkeeping for Brief-managed tasks —
     -- {respawns, last_respawn_at, accepted_at, report_invalid, halted}.
     orch_json TEXT,
+    -- Orch mode (O3b): provenance — set when an orch task creates this
+    -- one as its downstream (new-cell). NULL for human/board-created tasks.
+    created_by_task TEXT,
     -- Bundle lifecycle: drives frontend active/idle bucket via
     -- MAX(tasks.updated_at) per bundle. Bumped on create + every update
     -- by TaskRepo. Nullable because the additive migration may run
@@ -188,6 +191,30 @@ CREATE TABLE IF NOT EXISTS task_reviews (
 );
 
 CREATE INDEX IF NOT EXISTS idx_task_reviews_task ON task_reviews(task_id, decided_at);
+
+-- Orch mode (O3b): task links — first-class data-flow edges between tasks
+-- (design §5). kind: pipe (A's output -> B's prompt, fires once on A's
+-- completion) | subagent (A delegates Brief to B; B's Report flows back
+-- onto A's tape). Soft-deleted via revoked_at; fired_at is the one-shot
+-- idempotency marker for payload flow. created_by_task = provenance when
+-- an orch task creates its own downstream.
+CREATE TABLE IF NOT EXISTS task_links (
+    id                 TEXT PRIMARY KEY,
+    bundle_id          TEXT NOT NULL,
+    from_task_id       TEXT NOT NULL,
+    to_task_id         TEXT NOT NULL,
+    kind               TEXT NOT NULL CHECK (kind IN ('pipe', 'subagent')),
+    payload_map        TEXT NOT NULL DEFAULT '{}',
+    created_by_account TEXT NOT NULL,
+    created_by_task    TEXT,
+    created_at         TEXT NOT NULL,
+    fired_at           TEXT,
+    revoked_at         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_links_from ON task_links(from_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_links_to ON task_links(to_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_links_bundle ON task_links(bundle_id);
 
 CREATE TABLE IF NOT EXISTS events (
     id TEXT PRIMARY KEY,

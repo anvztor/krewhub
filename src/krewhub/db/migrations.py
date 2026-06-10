@@ -463,6 +463,8 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # suspenders: the INSERT uses the live column list, missing cols
     # default to NULL).
     await _add_column_if_missing(db, "tasks", "orch_json", "TEXT")
+    # O3b provenance: which orch task created this one (new-cell).
+    await _add_column_if_missing(db, "tasks", "created_by_task", "TEXT")
     await _create_table_if_missing(db, "task_reviews", """
         CREATE TABLE IF NOT EXISTS task_reviews (
             id            TEXT PRIMARY KEY,
@@ -476,6 +478,32 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     """)
     await _create_index_if_missing(
         db, "idx_task_reviews_task", "task_reviews", "(task_id, decided_at)",
+    )
+
+    # ---- Orch mode (O3b): task links (data-flow edges, design §5) --------
+    await _create_table_if_missing(db, "task_links", """
+        CREATE TABLE IF NOT EXISTS task_links (
+            id                 TEXT PRIMARY KEY,
+            bundle_id          TEXT NOT NULL,
+            from_task_id       TEXT NOT NULL,
+            to_task_id         TEXT NOT NULL,
+            kind               TEXT NOT NULL CHECK (kind IN ('pipe', 'subagent')),
+            payload_map        TEXT NOT NULL DEFAULT '{}',
+            created_by_account TEXT NOT NULL,
+            created_by_task    TEXT,
+            created_at         TEXT NOT NULL,
+            fired_at           TEXT,
+            revoked_at         TEXT
+        )
+    """)
+    await _create_index_if_missing(
+        db, "idx_task_links_from", "task_links", "(from_task_id)",
+    )
+    await _create_index_if_missing(
+        db, "idx_task_links_to", "task_links", "(to_task_id)",
+    )
+    await _create_index_if_missing(
+        db, "idx_task_links_bundle", "task_links", "(bundle_id)",
     )
 
     await db.commit()
@@ -1083,6 +1111,7 @@ async def _migrate_tasks_add_blocked_on_review_status(
             brief_json TEXT,
             report_json TEXT,
             orch_json TEXT,
+            created_by_task TEXT,
             updated_at TEXT
         );
         INSERT INTO tasks_new ({col_list})

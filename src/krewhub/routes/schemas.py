@@ -222,6 +222,33 @@ class TaskReviewRequest(BaseModel):
     diff_summary: str | None = None
 
 
+class NewLinkedTaskInput(BaseModel):
+    """Inline downstream-task spec for POST /tasks/{id}/links (orch's
+    new-cell: A creates its own downstream with provenance)."""
+    title: str
+    description: str | None = None
+    brief: Brief | None = None
+
+
+class CreateLinkRequest(BaseModel):
+    """Body of POST /tasks/{from_task_id}/links — create a data-flow edge
+    (design §5). Exactly one of to_task_id (link an existing task) or
+    new_task (create the downstream task inline, provenance-stamped with
+    created_by_task = from-task) must be given.
+
+    kind: pipe (A's output -> B's prompt; also appends a dep so B waits
+    for A) | subagent (A delegates a Brief to B; B's Report flows back
+    onto A's tape; no dep — A is waiting on B, not blocked by it).
+
+    payload_map v1 keys: source = report|last_reply (default report),
+    target = followup|brief_context (default followup).
+    """
+    to_task_id: str | None = None
+    new_task: NewLinkedTaskInput | None = None
+    kind: str = "pipe"  # "pipe" | "subagent"
+    payload_map: dict = Field(default_factory=dict)
+
+
 class AttachGraphRequest(BaseModel):
     """Body of POST /bundles/{id}/graph — orchestrator-emitted graph code."""
     code: str
