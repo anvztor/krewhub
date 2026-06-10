@@ -172,14 +172,22 @@ async def test_agent_can_only_hold_one_active_task(client):
 
 
 @pytest.mark.asyncio
-async def test_cancel_task_via_cookie_auth(client, cookie_client):
-    """Browser cancel-task POST must accept the krew_session cookie."""
-    resp = await client.post("/api/v1/cookbooks", json={
+async def test_cancel_task_via_cookie_auth(cookie_client):
+    """Browser cancel-task POST must accept the krew_session cookie — for
+    the bundle's OWNER.
+
+    The cookie principal (acc_test_cookie) owns the cookbook + bundle, so
+    the cookie-authenticated cancel succeeds. (Previously this test
+    cancelled a bundle owned by acc_legacy_apikey from a *different* cookie
+    principal; that cross-account cancel is now a 403 — see
+    test_cancel_task_denied_for_non_owner.)
+    """
+    resp = await cookie_client.post("/api/v1/cookbooks", json={
         "name": "test-task-cookie-cookbook",
-        "owner_id": "acc_legacy_apikey",
+        "owner_id": "acc_test_cookie",
     })
     cookbook_id = resp.json()["cookbook"]["id"]
-    resp = await client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
+    resp = await cookie_client.post(f"/api/v1/cookbooks/{cookbook_id}/bundles", json={
         "prompt": "Cancel-via-cookie smoke",
         "tasks": [{"title": "Will be cancelled"}],
     })

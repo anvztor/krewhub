@@ -25,7 +25,7 @@ import aiosqlite
 from krewhub.watch.globals import get_watch_service
 from krewhub.auth import (
     CallerContext,
-    is_assigned_runtime,
+    authorize_task_mutation,
     resolve_caller_or_cookie,
 )
 from krewhub.db.connection import get_db
@@ -33,23 +33,6 @@ from krewhub.models import ActorType, CodeRef, EventType, FactRef, TaskStatus, W
 from krewhub.repositories.task_repo import TaskRepo
 from krewhub.services.bundle_service import BundleService
 from krewhub.services.task_service import SessionTokenMismatch, TaskService
-
-
-async def _enforce_assigned_runtime_or_legacy(
-    caller: CallerContext, task, db,
-) -> None:
-    """A2 ABAC: when a task has a runtime assignment, only that runtime
-    (or its account) can ingest events / claim it. Legacy API-key callers
-    bypass since they predate the auth journey.
-    """
-    if caller.auth_method == "api_key":
-        return
-    runtime_id = getattr(task, "assigned_runtime_id", None)
-    if runtime_id is None:
-        # Task pre-dates auth track A2 — keep the legacy contract.
-        return
-    if not await is_assigned_runtime(caller, task, db):
-        raise HTTPException(status_code=403, detail="not_assigned_runtime")
 from krewhub.routes.schemas import (
     ClaimTaskRequest,
     EditTaskRequest,
@@ -116,17 +99,13 @@ async def append_task_followup(
     if task is None:
         raise HTTPException(status_code=404, detail="task_not_found")
 
-    # ABAC — caller must own the bundle this task lives on.
+    # ABAC — owner / assigned runtime / legacy api-key only.
+    await authorize_task_mutation(caller, task, db)
+
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
     if bundle is None:
         raise HTTPException(status_code=404, detail="bundle_not_found")
-    if (
-        bundle.owner_account_id is not None
-        and caller.account_id != bundle.owner_account_id
-        and caller.auth_method != "api_key"
-    ):
-        raise HTTPException(status_code=403, detail="not_bundle_owner")
 
     now = datetime.now(timezone.utc).isoformat()
     event_id = f"evt_{uuid4().hex[:12]}"
@@ -399,7 +378,7 @@ async def claim_task(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    await _enforce_assigned_runtime_or_legacy(caller, task, db)
+    await authorize_task_mutation(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -445,7 +424,7 @@ async def post_task_event(
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
 
-    await _enforce_assigned_runtime_or_legacy(caller, task, db)
+    await authorize_task_mutation(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -481,6 +460,7 @@ async def post_task_events_batch(
     task_id: str,
     req: PostEventsBatchRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Append multiple events for a single task in one call.
 
@@ -491,6 +471,8 @@ async def post_task_events_batch(
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await authorize_task_mutation(caller, task, db)
 
     from krewhub.repositories.bundle_repo import BundleRepo
     bundle = await BundleRepo(db).get(task.bundle_id)
@@ -525,7 +507,13 @@ async def update_task_status(
     task_id: str,
     req: UpdateTaskStatusRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await authorize_task_mutation(caller, task, db)
+
     watch = get_watch_service()
     svc = TaskService(db, watch)
     status = TaskStatus(req.status)
@@ -550,6 +538,7 @@ async def post_task_completion(
     task_id: str,
     req: PostTaskCompletionRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Record completion metadata — session_id, work_dir, artifacts.
 
@@ -561,6 +550,8 @@ async def post_task_completion(
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await authorize_task_mutation(caller, task, db)
 
     artifacts_json = _json.dumps(req.artifacts)
 
@@ -583,6 +574,7 @@ async def post_task_usage(
     task_id: str,
     req: PostTaskUsageRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Record LLM token usage for a task run.
 
@@ -595,6 +587,8 @@ async def post_task_usage(
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await authorize_task_mutation(caller, task, db)
 
     usage_id = f"usg_{_uuid.uuid4().hex[:12]}"
     now = datetime.now(timezone.utc).isoformat()
@@ -655,6 +649,7 @@ async def get_task_usage(
 async def cancel_task(
     task_id: str,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Cancel an in-flight task.
 
@@ -662,16 +657,18 @@ async def cancel_task(
     Emits a `task:cancelled` watch event so daemons can kill any
     running subprocess associated with this task.
     """
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await authorize_task_mutation(caller, task, db)
+
     svc = TaskService(db, get_watch_service())
     updated = await svc.cancel_task(task_id)
     if updated is None:
-        # Differentiate 404 (no task) vs 400 (bad state)
-        existing = await TaskRepo(db).get(task_id)
-        if existing is None:
-            raise HTTPException(status_code=404, detail="Task not found")
+        # Task exists (checked above) but is in a non-cancellable state.
         raise HTTPException(
             status_code=400,
-            detail=f"Cannot cancel task in status '{existing.status}'",
+            detail=f"Cannot cancel task in status '{task.status}'",
         )
     return {"task": updated.model_dump(mode="json")}
 
@@ -736,6 +733,9 @@ async def post_task_hitl_answer(
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await authorize_task_mutation(caller, task, db)
+
     if task.status != TaskStatus.BLOCKED:
         raise HTTPException(
             status_code=400,
@@ -790,6 +790,7 @@ async def post_task_progress(
     task_id: str,
     req: PostTaskProgressRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Report in-flight progress for a running task.
 
@@ -804,6 +805,8 @@ async def post_task_progress(
     task = await TaskRepo(db).get(task_id)
     if task is None:
         raise HTTPException(status_code=404, detail="Task not found")
+
+    await authorize_task_mutation(caller, task, db)
 
     # Derive percent if step+total given and percent missing
     percent = req.percent
@@ -849,7 +852,13 @@ async def edit_task(
     task_id: str,
     req: EditTaskRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await authorize_task_mutation(caller, task, db)
+
     svc = TaskService(db, get_watch_service())
     updated = await svc.edit_task(
         task_id=task_id,
@@ -866,7 +875,13 @@ async def edit_task(
 async def remove_task(
     task_id: str,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
+    task = await TaskRepo(db).get(task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await authorize_task_mutation(caller, task, db)
+
     svc = TaskService(db, get_watch_service())
     removed = await svc.remove_task(task_id)
     if not removed:

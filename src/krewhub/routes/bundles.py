@@ -255,6 +255,7 @@ async def attach_bundle_graph(
     bundle_id: str,
     req: AttachGraphRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Attach a validated pydantic-graph artifact to an existing bundle.
 
@@ -263,7 +264,13 @@ async def attach_bundle_graph(
     already have graph_code attached, and the code must pass the sandbox.
     On success, the bundle is left in status='open' with graph_code set
     so GraphRunnerController picks it up on the next reconcile.
+
+    ABAC: only the bundle owner (or a legacy API-key integration) may
+    attach a graph — require_bundle_owner 404s a missing bundle and 403s
+    a caller who doesn't own it.
     """
+    await require_bundle_owner(bundle_id, caller, db)
+
     svc = BundleService(db, get_watch_service())
     try:
         bundle, tasks = await svc.attach_graph_artifact(
