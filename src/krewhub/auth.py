@@ -367,3 +367,78 @@ async def is_assigned_runtime(
     )
     row = await cursor.fetchone()
     return bool(row and row["account_id"] == caller.account_id)
+
+
+async def authorize_task_mutation(
+    caller: "CallerContext",
+    task,
+    db,
+) -> None:
+    """Authorize a write against a task, or raise 403.
+
+    A task may be mutated by exactly three classes of caller:
+      1. legacy API-key integrations — they predate the auth journey and
+         are trusted service-to-service callers (mirrors require_bundle_owner)
+      2. the agent runtime assigned to the task — the agent doing the work
+         posts events / status / completion for its own task
+      3. the owner of the bundle the task belongs to — the operator who
+         created the bundle (cancel / edit / follow-up / HITL answer)
+
+    Anyone else authenticated gets 403 (not 401 — they ARE authenticated,
+    they just don't own this task). Legacy-tolerant like
+    require_bundle_owner: a bundle whose owner_account_id was never
+    backfilled falls back to created_by.
+    """
+    # (1) legacy API-key service integrations
+    if caller.account_id == _LEGACY_ACCOUNT_ID or caller.auth_method == "api_key":
+        return
+
+    # (2) the runtime assigned to this task
+    if await is_assigned_runtime(caller, task, db):
+        return
+
+    # (3) the bundle owner
+    from krewhub.repositories.bundle_repo import BundleRepo
+
+    bundle_id = getattr(task, "bundle_id", None)
+    bundle = await BundleRepo(db).get(bundle_id) if bundle_id else None
+    if bundle is None:
+        raise HTTPException(status_code=403, detail="Not authorized for this task")
+
+    owner = bundle.owner_account_id
+    if owner is None:
+        # Legacy bundle, owner backfill missed → fall back to created_by.
+        if bundle.created_by == caller.account_id:
+            return
+        raise HTTPException(status_code=403, detail="Not authorized for this task")
+    if owner != caller.account_id:
+        raise HTTPException(status_code=403, detail="Not authorized for this task")
+
+
+def _agent_owner_identity(caller: "CallerContext") -> str:
+    """The identity an agent presence row is owned by.
+
+    register_agent stamps owner_username = caller.username or
+    caller.account_id; this mirrors that so the ownership comparison is
+    symmetric.
+    """
+    return caller.username or caller.account_id
+
+
+async def authorize_agent_mutation(caller: "CallerContext", presence) -> None:
+    """Anti-hijack guard for agent-presence writes, or raise 403.
+
+    Only the agent's owner (or a legacy API-key integration) may mutate an
+    existing presence. Two cases are deliberately permitted so live flows
+    keep working:
+      * presence is None        — brand-new registration (no owner yet)
+      * owner_username is None   — unclaimed legacy row (pre-ownership)
+    """
+    if caller.account_id == _LEGACY_ACCOUNT_ID or caller.auth_method == "api_key":
+        return
+    if presence is None:
+        return
+    owner = getattr(presence, "owner_username", None)
+    if owner is None or owner == _agent_owner_identity(caller):
+        return
+    raise HTTPException(status_code=403, detail="Not your agent")

@@ -7,7 +7,11 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 import aiosqlite
 
-from krewhub.auth import CallerContext, resolve_caller
+from krewhub.auth import (
+    CallerContext,
+    authorize_agent_mutation,
+    resolve_caller_or_cookie,
+)
 from krewhub.config import Settings, get_settings
 from krewhub.db.connection import get_db
 from krewhub.models import AgentPresence, AgentStatus, WatchEventType
@@ -18,7 +22,10 @@ from krewhub.watch.globals import get_watch_service
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["agents"], dependencies=[Depends(resolve_caller)])
+# resolve_caller_or_cookie (not resolve_caller): GET /agents is consumed by
+# the cookie-authenticated web SPA (party roster); bearer/api-key daemon
+# callers still resolve first. Mirrors the bundles-router cookie fix.
+router = APIRouter(tags=["agents"], dependencies=[Depends(resolve_caller_or_cookie)])
 
 
 @router.get("/agents")
@@ -46,7 +53,7 @@ async def register_agent(
     req: RegisterAgentRequest,
     request: Request,
     db: aiosqlite.Connection = Depends(get_db),
-    caller: CallerContext = Depends(resolve_caller),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
     settings: Settings = Depends(get_settings),
 ):
     """Register an agent node with krewhub.
@@ -58,6 +65,12 @@ async def register_agent(
     cookbook = await CookbookRepo(db).get(req.cookbook_id)
     if cookbook is None:
         raise HTTPException(status_code=404, detail="Cookbook not found")
+
+    # Anti-hijack: a presence already owned by someone else cannot be
+    # re-registered (and thus re-owned) by a different account. A new
+    # agent_id or an unclaimed legacy row passes through.
+    existing = await AgentRepo(db).get(req.agent_id, req.cookbook_id)
+    await authorize_agent_mutation(caller, existing)
 
     now = datetime.now(timezone.utc)
     presence = AgentPresence(
@@ -137,13 +150,16 @@ async def mint_agent(
     agent_id: str,
     req: MintAgentRequest,
     db: aiosqlite.Connection = Depends(get_db),
-    caller: CallerContext = Depends(resolve_caller),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     """Record on-chain ERC-8004 mint for an agent presence row."""
     repo = AgentRepo(db)
     presence = await repo.get(agent_id, req.cookbook_id)
     if presence is None:
         raise HTTPException(status_code=404, detail="Agent presence not found")
+
+    # Only the agent's owner (or legacy api-key) may record its mint.
+    await authorize_agent_mutation(caller, presence)
 
     await db.execute(
         """UPDATE agent_presence
@@ -164,10 +180,16 @@ async def mint_agent(
 async def heartbeat(
     req: HeartbeatRequest,
     db: aiosqlite.Connection = Depends(get_db),
+    caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
     cookbook = await CookbookRepo(db).get(req.cookbook_id)
     if cookbook is None:
         raise HTTPException(status_code=404, detail="Cookbook not found")
+
+    # Anti-hijack: don't let a different account heartbeat (and thus keep
+    # alive / re-own) someone else's agent presence.
+    existing = await AgentRepo(db).get(req.agent_id, req.cookbook_id)
+    await authorize_agent_mutation(caller, existing)
 
     now = datetime.now(timezone.utc)
     status = AgentStatus.BUSY if req.current_task_id else AgentStatus.ONLINE
