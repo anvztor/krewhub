@@ -6,6 +6,7 @@ import aiosqlite
 
 from krewhub.controllers.base import BaseController
 from krewhub.controllers.graph_runner import GraphRunnerController
+from krewhub.controllers.link_reconciler import LinkReconcileController
 from krewhub.controllers.orch_controller import OrchController
 from krewhub.controllers.planner_dispatch import PlannerDispatchController
 from krewhub.controllers.presence_controller import PresenceController
@@ -41,10 +42,15 @@ class ControllerManager:
             PlannerDispatchController(db, watch, interval=2.0),
             GraphRunnerController(db, watch, interval=2.0, max_concurrent=4),
             PresenceController(db, watch, interval=5.0, heartbeat_timeout=heartbeat_timeout),
+            # Link firing (pipe/subagent) is mechanical plumbing — it runs
+            # ALWAYS, independent of the orch flag, so a human's manual pipe
+            # link fires even with KREWHUB_ORCH_ENABLED=0 (S2 B3, hole #3).
+            LinkReconcileController(db, watch, interval=orch_interval),
         ]
-        # Orch mode (O2): supervises Brief-managed tasks only; legacy
-        # tasks (no brief_json) are untouched. KREWHUB_ORCH_ENABLED=0
-        # disables it entirely.
+        # Orch mode (O2): supervises Brief-managed tasks only (decisions:
+        # Report accept/escalate, liveness respawn). Legacy tasks (no
+        # brief_json) are untouched. KREWHUB_ORCH_ENABLED=0 disables only
+        # the decision layer — link firing above stays on.
         if orch_enabled:
             self._controllers.append(
                 OrchController(

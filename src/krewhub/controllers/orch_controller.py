@@ -132,10 +132,10 @@ class OrchController(BaseController):
         for row in rows:
             await self._reconcile_task_id(row["id"])
 
-        # Orch mode (O3b): the link pipeline — fire ready pipes (A's output
-        # into B's prompt) and flow subagent Reports back onto the
-        # delegator's tape. Level-triggered like everything else here.
-        await self._reconcile_links()
+        # Link firing (pipe/subagent) is mechanical plumbing and lives in
+        # LinkReconcileController so it runs regardless of the orch flag
+        # (S2 B3, Notes 1.2 §A.1 hole #3). OrchController keeps decisions
+        # only: Report accept/escalate and liveness respawn.
 
     async def _reconcile_task_id(self, task_id: str) -> None:
         task = await TaskRepo(self._db).get(task_id)
@@ -143,8 +143,8 @@ class OrchController(BaseController):
             return
 
         orch = dict(task.orch or {})
-        if orch.get("accepted_at") or orch.get("halted"):
-            return  # Retired or escalated — nothing left to converge.
+        if orch.get("accepted_at") or orch.get("halted") or orch.get("awaiting_brain"):
+            return  # Retired, escalated, or deferred to the brain (C6).
 
         if task.status == TaskStatus.DONE:
             await self._handle_done(task, orch)
@@ -169,6 +169,29 @@ class OrchController(BaseController):
                 report_ok = False
 
         if report_ok:
+            # C6 (Notes 1.2): OrchController is a safety-net, not the
+            # orchestrator. When an orch-agent brain owns this task, the
+            # brain is authoritative on "done" acceptance — we stand down
+            # and defer rather than auto-accept a Report it hasn't seen.
+            # With no brain attached we fall back to mechanical acceptance
+            # (today's behavior — fully backward-compatible).
+            if self._brain_attached(task):
+                if not orch.get("awaiting_brain"):
+                    orch["awaiting_brain"] = True
+                    await self._write_orch(task.id, orch)
+                    await self._emit(
+                        task,
+                        EventType.LOG,
+                        "orch: Report valid; deferring acceptance to the "
+                        "attached orch-agent (safety-net standing down)",
+                        {"orch": "awaiting_brain"},
+                    )
+                    logger.info(
+                        "OrchController: deferred report acceptance for "
+                        "task %s to attached orch-agent", task.id,
+                    )
+                return
+
             orch["accepted_at"] = datetime.now(timezone.utc).isoformat()
             await self._write_orch(task.id, orch)
             prs = (task.report or {}).get("prs") or []
@@ -280,203 +303,16 @@ class OrchController(BaseController):
         )
 
     # ------------------------------------------------------------------
-    # O3b: the link pipeline (design §5.3) — `send --text`, API-fied
+    # C6: brain-attachment probe (safety-net demotion)
     # ------------------------------------------------------------------
 
-    async def _reconcile_links(self) -> None:
-        """One pass over unfired, unrevoked links whose upstream/downstream
-        has reached the firing condition. Idempotent: fired_at is the
-        one-shot marker; a crash between steps re-converges next tick."""
-        cursor = await self._db.execute(
-            "SELECT * FROM task_links WHERE fired_at IS NULL AND revoked_at IS NULL",
-        )
-        for row in await cursor.fetchall():
-            try:
-                if row["kind"] == "pipe":
-                    await self._maybe_fire_pipe(row)
-                elif row["kind"] == "subagent":
-                    await self._maybe_flow_subagent_report(row)
-            except Exception:
-                logger.exception(
-                    "OrchController: link %s reconcile failed", row["id"],
-                )
-
-    async def _upstream_output(self, task, payload_map: dict) -> str | None:
-        """Render the upstream task's output per payload_map.source.
-        report (default): the structured O1 Report, compactly rendered.
-        last_reply: the task's final agent_reply event body."""
-        source = (payload_map or {}).get("source", "report")
-        if source == "report" and task.report:
-            rep = task.report
-            parts = [f"status: {rep.get('status', '?')}"]
-            for key in ("prs", "artifacts", "blockers", "decisions_needed"):
-                vals = rep.get(key) or []
-                if vals:
-                    parts.append(f"{key}: " + ", ".join(str(v) for v in vals))
-            return "\n".join(parts)
-        # last_reply (or report-less fallback): newest agent_reply body.
-        cursor = await self._db.execute(
-            "SELECT body, payload FROM events WHERE task_id = ? "
-            "AND type = 'agent_reply' ORDER BY sequence DESC LIMIT 1",
-            (task.id,),
-        )
-        row = await cursor.fetchone()
-        if row is None:
-            return None
-        body = row["body"] or ""
-        try:
-            payload = json.loads(row["payload"] or "{}")
-            text = payload.get("text")
-            if isinstance(text, str) and text.strip():
-                body = text
-        except Exception:
-            pass
-        return body or None
-
-    async def _maybe_fire_pipe(self, link) -> None:
-        """pipe: when A completes (orch-accepted if Brief-managed), render
-        A's output and inject it into B's input — the dep added at link
-        creation then lets B dispatch with the upstream context aboard."""
-        repo = TaskRepo(self._db)
-        upstream = await repo.get(link["from_task_id"])
-        if upstream is None or upstream.status != TaskStatus.DONE:
-            return
-        # Brief-managed upstream: fire on orch acceptance, so the payload
-        # is a validated Report, not an unvetted completion.
-        if upstream.brief is not None and not (upstream.orch or {}).get("accepted_at"):
-            return
-
-        downstream = await repo.get(link["to_task_id"])
-        if downstream is None or downstream.status in (
-            TaskStatus.DONE, TaskStatus.CANCELLED,
-        ):
-            # Downstream gone/terminal — mark fired so we stop retrying.
-            await self._mark_link_fired(link["id"])
-            return
-
-        payload_map = json.loads(link["payload_map"] or "{}")
-        content = await self._upstream_output(upstream, payload_map)
-        if content is None:
-            content = f"(upstream task {upstream.id} completed with no rendered output)"
-
-        header = f"[UPSTREAM OUTPUT · {upstream.id} via link {link['id']}]"
-        block = f"{header}\n{content}"
-
-        target = payload_map.get("target", "followup")
-        if target == "brief_context" and downstream.brief is not None:
-            brief = dict(downstream.brief)
-            brief["context"] = ((brief.get("context") or "") + "\n\n" + block).strip()
-            await self._db.execute(
-                "UPDATE tasks SET brief_json = ?, "
-                "resource_version = resource_version + 1 WHERE id = ?",
-                (json.dumps(brief), downstream.id),
-            )
-        else:
-            # followup (default): append to the description — krewcli's
-            # prompt builder concatenates title + description, so the
-            # upstream output rides into B's next prompt.
-            base = (downstream.description or "").rstrip()
-            await self._db.execute(
-                "UPDATE tasks SET description = ?, "
-                "resource_version = resource_version + 1 WHERE id = ?",
-                ((base + "\n\n" + block).strip(), downstream.id),
-            )
-        await self._mark_link_fired(link["id"])
-
-        fresh = await repo.get(downstream.id)
-        if fresh is not None:
-            await self._watch.record_resource(
-                "task", downstream.id, WatchEventType.MODIFIED, fresh,
-            )
-            await self._emit(
-                fresh,
-                EventType.LOG,
-                f"orch: pipe {link['id']} fired — output of {upstream.id} "
-                "injected into this task's prompt",
-                {"orch": "pipe_fired", "link_id": link["id"],
-                 "from_task": upstream.id},
-            )
-        logger.info(
-            "OrchController: pipe %s fired %s -> %s",
-            link["id"], upstream.id, downstream.id,
-        )
-
-    async def _maybe_flow_subagent_report(self, link) -> None:
-        """subagent: when the delegate B completes, project its Report back
-        onto the delegator A's tape as a human-turn event — the same
-        projection convention invocations use (`delegate_answer`), so A's
-        brain threads it on its next prompt build."""
-        repo = TaskRepo(self._db)
-        child = await repo.get(link["to_task_id"])
-        if child is None:
-            await self._mark_link_fired(link["id"])
-            return
-        if child.status != TaskStatus.DONE:
-            return
-        # Brief-managed child: wait for orch acceptance (validated Report).
-        if child.brief is not None and not (child.orch or {}).get("accepted_at"):
-            return
-
-        parent = await repo.get(link["from_task_id"])
-        if parent is None or parent.status in (TaskStatus.CANCELLED,):
-            await self._mark_link_fired(link["id"])
-            return
-
-        content = await self._upstream_output(
-            child, json.loads(link["payload_map"] or "{}"),
-        )
-        if content is None:
-            content = f"(subagent task {child.id} completed with no rendered output)"
-
-        # Project onto A's tape with the established followup convention
-        # (type=agent_reply + actor_type=human) so A's prompt-builder
-        # threads it as an input turn; payload.kind discriminates for UI.
-        from uuid import uuid4
-        cursor = await self._db.execute(
-            "SELECT b.cookbook_id FROM tasks t JOIN bundles b "
-            "ON b.id = t.bundle_id WHERE t.id = ?",
-            (parent.id,),
-        )
-        row = await cursor.fetchone()
-        cookbook_id = row["cookbook_id"] if row else None
-        seq_row = await self._db.execute(
-            "SELECT COALESCE(MAX(sequence), 0) + 1 FROM events WHERE task_id = ?",
-            (parent.id,),
-        )
-        seq = (await seq_row.fetchone())[0] or 1
-        body = f"[SUBAGENT REPORT · {child.id} via link {link['id']}]\n{content}"
-        await self._db.execute(
-            "INSERT INTO events (id, cookbook_id, bundle_id, task_id, type, "
-            "actor_id, actor_type, body, payload, sequence, facts, code_refs, "
-            "visibility, created_at) "
-            "VALUES (?, ?, ?, ?, 'agent_reply', ?, 'human', ?, ?, ?, "
-            "'[]', '[]', 'user', ?)",
-            (f"evt_{uuid4().hex[:12]}", cookbook_id, parent.bundle_id,
-             parent.id, _ORCH_ACTOR, body,
-             json.dumps({
-                 "kind": "subagent_report", "link_id": link["id"],
-                 "from_task": child.id, "report": child.report,
-             }),
-             seq, datetime.now(timezone.utc).isoformat()),
-        )
-        await self._mark_link_fired(link["id"])
-
-        fresh = await repo.get(parent.id)
-        if fresh is not None:
-            await self._watch.record_resource(
-                "task", parent.id, WatchEventType.MODIFIED, fresh,
-            )
-        logger.info(
-            "OrchController: subagent report flowed %s -> %s (link %s)",
-            child.id, parent.id, link["id"],
-        )
-
-    async def _mark_link_fired(self, link_id: str) -> None:
-        await self._db.execute(
-            "UPDATE task_links SET fired_at = ? WHERE id = ?",
-            (datetime.now(timezone.utc).isoformat(), link_id),
-        )
-        await self._db.commit()
+    @staticmethod
+    def _brain_attached(task) -> bool:
+        """True when an orch-agent (the Row-0 brain) owns this task.
+        The brain stamps ``orch.managed_by_agent`` when it claims A
+        (krewcli C1). While attached, OrchController defers decisions
+        to the brain and only runs mechanical safety-net plumbing."""
+        return bool((getattr(task, "orch", None) or {}).get("managed_by_agent"))
 
     # ------------------------------------------------------------------
     # Helpers

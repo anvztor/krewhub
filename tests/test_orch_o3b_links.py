@@ -16,6 +16,7 @@ import json
 
 import pytest
 
+from krewhub.controllers.link_reconciler import LinkReconcileController
 from krewhub.controllers.orch_controller import OrchController
 from krewhub.db.connection import get_db
 from krewhub.repositories.task_repo import TaskRepo
@@ -47,6 +48,19 @@ async def _bundle_with_tasks(client, n=2) -> tuple[str, list[str]]:
 
 def _controller(db) -> OrchController:
     return OrchController(db, get_watch_service(), interval=3600.0)
+
+
+def _link_ctl(db) -> LinkReconcileController:
+    return LinkReconcileController(db, get_watch_service(), interval=3600.0)
+
+
+async def _reconcile(db) -> None:
+    """Run the orch decision pass then the always-on mechanical link pass —
+    the two controllers the manager now runs (OrchController gated by the
+    orch flag, LinkReconcileController always-on). Link *firing* moved out
+    of OrchController in S2 B3."""
+    await _controller(db).reconcile()
+    await _link_ctl(db).reconcile()
 
 
 # ---------------------------------------------------------------------------
@@ -183,7 +197,7 @@ async def test_pipe_fires_upstream_report_into_downstream(client):
     # Plain upstream (no brief): DONE suffices to fire.
     await _force_task(db, a, status="done", report=_REPORT)
 
-    ctl = _controller(db)
+    ctl = _link_ctl(db)
     await ctl.reconcile()
 
     task_b = await TaskRepo(db).get(b)
@@ -205,11 +219,10 @@ async def test_pipe_waits_for_orch_acceptance_on_brief_upstream(client):
     # Brief-managed upstream, done but NOT yet orch-accepted.
     await _force_task(db, a, status="done", report=_REPORT, brief=_BRIEF)
 
-    ctl = _controller(db)
-    # First reconcile both accepts A (O2 done-handling) and may then fire
-    # the pipe on the same pass or the next — assert convergence.
-    await ctl.reconcile()
-    await ctl.reconcile()
+    # Orch accepts A (decision), then the link reconciler fires the pipe
+    # (mechanical). Two passes converge regardless of ordering.
+    await _reconcile(db)
+    await _reconcile(db)
     task_b = await TaskRepo(db).get(b)
     assert "UPSTREAM OUTPUT" in (task_b.description or "")
 
@@ -220,7 +233,7 @@ async def test_pipe_does_not_fire_before_done(client):
     _, (a, b) = await _bundle_with_tasks(client)
     await client.post(f"/api/v1/tasks/{a}/links", json={
         "to_task_id": b, "kind": "pipe"})
-    await _controller(db).reconcile()
+    await _link_ctl(db).reconcile()
     task_b = await TaskRepo(db).get(b)
     assert "UPSTREAM OUTPUT" not in (task_b.description or "")
 
@@ -235,7 +248,7 @@ async def test_pipe_brief_context_target(client):
         "payload_map": {"source": "report", "target": "brief_context"},
     })
     await _force_task(db, a, status="done", report=_REPORT)
-    await _controller(db).reconcile()
+    await _link_ctl(db).reconcile()
 
     task_b = await TaskRepo(db).get(b)
     assert "UPSTREAM OUTPUT" in task_b.brief["context"]
@@ -259,9 +272,8 @@ async def test_subagent_report_flows_back_to_parent_tape(client):
     # Child completes with a valid Report; orch accepts, then flows it up.
     await _force_task(db, child_id, status="done", report=_REPORT)
 
-    ctl = _controller(db)
-    await ctl.reconcile()
-    await ctl.reconcile()  # acceptance pass + flow pass; converges
+    await _reconcile(db)
+    await _reconcile(db)  # acceptance pass + flow pass; converges
 
     cur = await db.execute(
         "SELECT body, payload, actor_type FROM events WHERE task_id = ? "
@@ -278,7 +290,7 @@ async def test_subagent_report_flows_back_to_parent_tape(client):
     assert row["actor_type"] == "human"
 
     # Idempotent: link fired once.
-    await ctl.reconcile()
+    await _reconcile(db)
     cur = await db.execute(
         "SELECT COUNT(*) AS n FROM events WHERE task_id = ? AND "
         "payload LIKE '%subagent_report%'", (a,),
