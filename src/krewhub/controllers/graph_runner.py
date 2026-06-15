@@ -324,9 +324,21 @@ class GraphRunnerController(BaseController):
                 "graph runner: failed to emit milestone event for %s", bundle_id,
             )
 
+        # Stamp the terminal marker so this bundle leaves the runnable set.
+        # Without this the level-triggered runner re-executes the bundle on
+        # every reconcile cycle (every 2s) forever — re-emitting this same
+        # milestone and (in v3) re-driving the graph so tasks accumulate
+        # without bound: the alert#34 / testnet3 runaway. Status is left
+        # untouched (step d.1: bundle stays a dumb OPEN container); only the
+        # runnable-filter marker is set (digested_at on success,
+        # blocked_reason on failure).
+        updated = await BundleRepo(self._db).mark_graph_terminal(
+            bundle_id, success=success, reason=evt_body,
+        )
+
         try:
             await self._watch.record_resource(
-                "bundle", bundle_id, WatchEventType.MODIFIED, bundle,
+                "bundle", bundle_id, WatchEventType.MODIFIED, updated or bundle,
                 cookbook_id=bundle.cookbook_id,
             )
         except Exception:

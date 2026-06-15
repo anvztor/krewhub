@@ -425,6 +425,101 @@ class TestReconcileSpawning:
             await runner.stop()
 
     @pytest.mark.asyncio
+    async def test_completed_bundle_is_not_rerun(self):
+        """Regression (alert#34 / testnet3 runaway): a bundle whose graph ran
+        to a terminal outcome must NOT be returned by list_runnable again, or
+        the level-triggered runner re-executes it every reconcile cycle
+        forever — emitting an unbounded stream of identical milestones and
+        re-driving the graph so tasks pile up without bound (43+ observed;
+        1M+ rows / 5GB historically). The bundle stays OPEN (step d.1) but is
+        excluded from the runnable set via its terminal marker.
+        """
+        bundle_id, task_ids = await _seed_runnable_bundle()
+        db = await get_db()
+
+        runner = GraphRunnerController(
+            db, get_watch_service(),
+            poll_interval=0.01, task_timeout=2.0,
+        )
+        runner._startup_grace = 0
+        runner._http = AsyncMock(spec=httpx.AsyncClient)
+        runner._http.post.return_value = _mock_post_response(state="working")
+        runner._http.aclose = AsyncMock()
+
+        async def flipper():
+            task_repo = TaskRepo(db)
+            for tid in task_ids:
+                for _ in range(200):
+                    t = await task_repo.get(tid)
+                    if t and t.status == TaskStatus.CLAIMED:
+                        break
+                    await asyncio.sleep(0.01)
+                await task_repo.update(tid, status=TaskStatus.DONE)
+
+        flip_task = asyncio.create_task(flipper())
+        try:
+            await runner._execute_bundle(bundle_id)
+            await flip_task
+
+            bundle = await BundleRepo(db).get(bundle_id)
+            assert bundle is not None
+            # Dumb-container invariant preserved: still OPEN.
+            assert bundle.status == BundleStatus.OPEN
+            # But a terminal marker must be stamped so the next reconcile skips it.
+            runnable_ids = [b.id for b in await BundleRepo(db).list_runnable()]
+            assert bundle_id not in runnable_ids, (
+                "completed bundle is still runnable -> infinite re-run loop"
+            )
+
+            # A fresh reconcile must not re-spawn it.
+            await runner.reconcile()
+            assert bundle_id not in runner._in_flight
+        finally:
+            await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_failed_bundle_is_not_rerun(self):
+        """Regression (alert#34): a terminal *failure* must also leave the
+        runnable set, otherwise compile/dispatch failures loop forever too.
+        """
+        bundle_id, _task_ids = await _seed_runnable_bundle()
+        db = await get_db()
+
+        runner = GraphRunnerController(
+            db, get_watch_service(),
+            poll_interval=0.01, task_timeout=0.2,
+        )
+        runner._startup_grace = 0
+        runner._http = AsyncMock(spec=httpx.AsyncClient)
+        runner._http.post.return_value = _mock_post_response(status_code=500)
+        runner._http.aclose = AsyncMock()
+        try:
+            await runner._execute_bundle(bundle_id)
+            runnable_ids = [b.id for b in await BundleRepo(db).list_runnable()]
+            assert bundle_id not in runnable_ids, (
+                "failed bundle is still runnable -> infinite re-run loop"
+            )
+        finally:
+            await runner.stop()
+
+    @pytest.mark.asyncio
+    async def test_reopen_for_rerun_clears_terminal_marker(self):
+        """reopen_for_rerun must clear BOTH terminal markers so an
+        intentionally re-queued bundle becomes runnable again."""
+        bundle_id, _task_ids = await _seed_runnable_bundle()
+        db = await get_db()
+        repo = BundleRepo(db)
+
+        await repo.mark_graph_terminal(bundle_id, success=True)
+        assert bundle_id not in [b.id for b in await repo.list_runnable()]
+
+        await repo.reopen_for_rerun(bundle_id)
+        bundle = await repo.get(bundle_id)
+        assert bundle is not None and bundle.digested_at is None
+        assert bundle.blocked_reason is None
+        assert bundle_id in [b.id for b in await repo.list_runnable()]
+
+    @pytest.mark.asyncio
     async def test_reconcile_does_not_double_spawn(self):
         bundle_id, _task_ids = await _seed_runnable_bundle()
         db = await get_db()
