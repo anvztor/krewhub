@@ -37,7 +37,10 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["links"], dependencies=[Depends(resolve_caller_or_cookie)])
 
-_VALID_KINDS = ("pipe", "subagent")
+# v3 collapses orchestration to a single 'drives' primitive ("A drives B":
+# Brief↓ / Report↑). Legacy 'pipe'/'subagent' rows are still accepted and
+# fire under their old semantics so in-flight links don't break.
+_VALID_KINDS = ("drives", "pipe", "subagent")
 _VALID_SOURCES = ("report", "last_reply")
 _VALID_TARGETS = ("followup", "brief_context")
 
@@ -82,6 +85,33 @@ async def _would_cycle(db, bundle_id: str, from_id: str, to_id: str) -> bool:
     return False
 
 
+async def _would_cycle_links(db, bundle_id: str, from_id: str, to_id: str) -> bool:
+    """True if adding the drives edge from_id→to_id would close a cycle in
+    the LINK graph. v3 drives links carry no dep edge, so the dep-based
+    `_would_cycle` can't see them — and runtime adoption links two
+    pre-existing tasks with no provenance — so cascade/cycle/authz must all
+    walk the link graph itself (notes 2.2 §2). "A drives B" flows from→to;
+    a cycle exists iff `to` can already reach `from` along active edges."""
+    cursor = await db.execute(
+        "SELECT from_task_id, to_task_id FROM task_links "
+        "WHERE bundle_id = ? AND revoked_at IS NULL",
+        (bundle_id,),
+    )
+    adj: dict[str, list[str]] = {}
+    for r in await cursor.fetchall():
+        adj.setdefault(r["from_task_id"], []).append(r["to_task_id"])
+    stack, seen = [to_id], set()
+    while stack:
+        cur = stack.pop()
+        if cur == from_id:
+            return True
+        if cur in seen:
+            continue
+        seen.add(cur)
+        stack.extend(adj.get(cur, []))
+    return False
+
+
 @router.post("/tasks/{from_task_id}/links")
 async def create_link(
     from_task_id: str,
@@ -89,9 +119,11 @@ async def create_link(
     db: aiosqlite.Connection = Depends(get_db),
     caller: CallerContext = Depends(resolve_caller_or_cookie),
 ):
-    kind = (req.kind or "").strip().lower()
+    kind = (req.kind or "drives").strip().lower()
     if kind not in _VALID_KINDS:
-        raise HTTPException(status_code=400, detail="kind must be 'pipe' or 'subagent'")
+        raise HTTPException(
+            status_code=400, detail="kind must be 'drives' (or legacy 'pipe'|'subagent')",
+        )
     if (req.to_task_id is None) == (req.new_task is None):
         raise HTTPException(
             status_code=400,
@@ -139,6 +171,11 @@ async def create_link(
             raise HTTPException(
                 status_code=400, detail="links cannot cross bundles (v1)",
             )
+        # v3 runtime adoption: B may be working/claimed — "A drives B" is
+        # established live, B is NOT interrupted. No status precondition;
+        # B's subsequent Report↑ flows onto A's tape via the new edge
+        # (notes 2.2 §3). Terminal targets are pointless but harmless
+        # (the link just never fires).
 
     # Reject duplicate active edge (same direction + kind).
     cursor = await db.execute(
@@ -149,13 +186,17 @@ async def create_link(
     if await cursor.fetchone() is not None:
         raise HTTPException(status_code=409, detail="link already exists")
 
-    # Cycle guard applies to ANY edge between two EXISTING tasks, for both
-    # kinds (S2 B2, hole #2). A subagent link Z→X where Z already
-    # (transitively) depends on X closes a provenance/flow loop just as a
-    # pipe dep would — eval E5. Provenance-spawned children (new_task) are
-    # brand-new with no deps, so they can never cycle and are skipped.
-    if req.new_task is None and await _would_cycle(
-        db, from_task.bundle_id, from_task_id, to_task_id,
+    # Cycle guard applies to ANY edge between two EXISTING tasks, every kind
+    # (S2 B2, hole #2). It walks BOTH graphs and rejects if either would
+    # close a loop: the dep graph (legacy pipe links add a dep) AND the
+    # link graph (v3 drives links carry no dep, and runtime adoption has no
+    # provenance — notes 2.2 §2). Provenance-spawned children (new_task) are
+    # brand-new with no edges, so they can never cycle and are skipped.
+    if req.new_task is None and (
+        await _would_cycle(db, from_task.bundle_id, from_task_id, to_task_id)
+        or await _would_cycle_links(
+            db, from_task.bundle_id, from_task_id, to_task_id,
+        )
     ):
         raise HTTPException(
             status_code=400, detail="link would create a dependency cycle",
@@ -201,8 +242,13 @@ async def create_link(
     cursor = await db.execute("SELECT * FROM task_links WHERE id = ?", (link_id,))
     row = await cursor.fetchone()
     fresh_to = await repo.get(to_task_id)
+    link = _row_to_link(row)
+    # created_by: who drew the edge — "human" (FE Shift gesture, cookie
+    # auth) vs "agent" (an orchestrator brain). Provenance lives in
+    # created_by_task; this is the actor class (notes 2.2 §3).
+    link["created_by"] = caller.principal_type
     return {
-        "link": _row_to_link(row),
+        "link": link,
         "to_task": fresh_to.model_dump(mode="json") if fresh_to else None,
     }
 
@@ -277,19 +323,22 @@ async def revoke_link(
 async def cascade_on_task_termination(
     db, task_id: str, _seen: set[str] | None = None,
 ) -> dict:
-    """Design §5.3 cascade, called when a task is removed/cancelled (the
-    parity matrix's `close`):
+    """§5.3 cascade, called when a task is removed/cancelled (parity `close`).
+    v3 traverses LINK EDGES, not provenance:
       * all links touching the task are soft-revoked
-      * subagent children CREATED BY this task (provenance) that are not
-        terminal are cancelled — the delegator is gone, the delegation
-        dies — AND the cascade RECURSES into each cancelled child so the
-        whole subagent SUBTREE (grandchildren, great-grandchildren, …) is
-        reclaimed, not just the direct children (S2 B1, hole #1)
-      * pipe downstream tasks are LEFT ALIVE (产出物独立存活 red line); only
-        the dep on the dead upstream is removed so they aren't gated forever
-    Provenance subtrees are acyclic by construction; ``_seen`` is a
-    defensive guard against re-visiting a node so the recursion always
-    terminates. Returns an aggregated summary for the route response.
+      * down each outgoing 'drives' edge, a non-terminal `to`-task is
+        cancelled — "A drives B": the driver is gone, so the driven task
+        dies — and the cascade RECURSES along edges to reclaim the whole
+        subtree. This is edge- (not provenance-) based ON PURPOSE: a
+        runtime-adopted child has created_by_task != task_id, so a
+        provenance walk would MISS it (notes 2.2 §2). Terminal (DONE)
+        children are kept — their Report survives (产出物独立存活).
+      * LEGACY 'subagent' keeps its provenance gate (created_by_task);
+        LEGACY 'pipe' downstream is left alive and only its implied dep on
+        the dead upstream is removed so it isn't gated forever.
+    Cycles in the link graph are guarded at creation, but ``_seen`` makes
+    the recursion terminate defensively regardless. Returns an aggregated
+    summary for the route response.
     """
     seen = _seen if _seen is not None else set()
     if task_id in seen:
@@ -318,7 +367,13 @@ async def cascade_on_task_termination(
         child = await repo.get(row["to_task_id"])
         if child is None:
             continue
-        if row["kind"] == "subagent" and row["created_by_task"] == task_id:
+        kind = row["kind"]
+        # v3 'drives' (edge-based, NO provenance) OR legacy 'subagent' that
+        # this task provenance-created: the driven/delegated child dies.
+        drives_child = kind == "drives" or (
+            kind == "subagent" and row["created_by_task"] == task_id
+        )
+        if drives_child:
             if child.status not in (
                 TaskStatus.DONE, TaskStatus.CANCELLED,
             ):
@@ -326,13 +381,14 @@ async def cascade_on_task_termination(
                 svc = TaskService(db, get_watch_service())
                 if await svc.cancel_task(child.id) is not None:
                     cancelled_children.append(child.id)
-                    # Recurse: the delegator is gone, so the child's own
-                    # delegations die too — reclaim the entire subtree.
+                    # Recurse along EDGES: the driver is gone, so the
+                    # child's own driven tasks die too — reclaim the whole
+                    # subtree (works for adopted children with no provenance).
                     sub = await cascade_on_task_termination(db, child.id, seen)
                     links_revoked += sub["links_revoked"]
                     cancelled_children.extend(sub["children_cancelled"])
                     unblocked.extend(sub["deps_unblocked"])
-        elif row["kind"] == "pipe":
+        elif kind == "pipe":
             deps = list(child.depends_on_task_ids or [])
             if task_id in deps:
                 updated = await repo.update(

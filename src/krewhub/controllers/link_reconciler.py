@@ -3,10 +3,12 @@
 This owns the *firing* of task_links — pure, idempotent plumbing that is
 deliberately decoupled from the orch brain:
 
-  pipe      when A completes, render A's output and inject it into B's
-            prompt (the dep added at link-creation gates B until then).
-  subagent  when delegate B completes, project its Report back onto the
-            delegator A's tape as a human-turn event.
+  drives    (v3 default) when the to-task B completes, project its Report↑
+            back onto the from-task A's tape as a human-turn event —
+            Report↑ on EVERY link.
+  subagent  (legacy) same as drives — folded into the Report↑ path.
+  pipe      (legacy) when A completes, render A's output and inject it into
+            B's prompt (the dep added at link-creation gates B until then).
 
 S2 hole #3 (Notes 1.2 §A.1): pipe firing used to live inside
 OrchController, which only starts when ``KREWHUB_ORCH_ENABLED=1``. A
@@ -60,10 +62,14 @@ class LinkReconcileController(BaseController):
         )
         for row in await cursor.fetchall():
             try:
+                # v3: 'drives' (and legacy 'subagent') flow the to-task's
+                # Report↑ onto the from-task's tape — Report↑ on EVERY link
+                # (notes 2.2 §1). Legacy 'pipe' keeps its down-flow: A's
+                # output injected into B's prompt.
                 if row["kind"] == "pipe":
                     await self._maybe_fire_pipe(row)
-                elif row["kind"] == "subagent":
-                    await self._maybe_flow_subagent_report(row)
+                else:
+                    await self._maybe_flow_report(row)
             except Exception:
                 logger.exception(
                     "LinkReconcileController: link %s reconcile failed", row["id"],
@@ -181,11 +187,14 @@ class LinkReconcileController(BaseController):
     # subagent up-flow (Report back onto the delegator's tape)
     # ------------------------------------------------------------------
 
-    async def _maybe_flow_subagent_report(self, link) -> None:
-        """subagent: when the delegate B completes, project its Report back
-        onto the delegator A's tape as a human-turn event — the same
-        projection convention invocations use (`delegate_answer`), so A's
-        brain threads it on its next prompt build."""
+    async def _maybe_flow_report(self, link) -> None:
+        """drives / subagent: when the to-task B completes, project its
+        Report↑ back onto the from-task A's tape as a human-turn event —
+        the same projection convention invocations use (`delegate_answer`),
+        so A's brain threads it on its next prompt build. v3 runs this for
+        every drives link (Report↑ on every link), generalizing what used
+        to be subagent-only (notes 2.2 §1). The from-task is the consumer;
+        krewcli renders the projected event as an UNTRUSTED DATA envelope."""
         repo = TaskRepo(self._db)
         child = await repo.get(link["to_task_id"])
         if child is None:

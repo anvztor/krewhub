@@ -487,7 +487,7 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
             bundle_id          TEXT NOT NULL,
             from_task_id       TEXT NOT NULL,
             to_task_id         TEXT NOT NULL,
-            kind               TEXT NOT NULL CHECK (kind IN ('pipe', 'subagent')),
+            kind               TEXT NOT NULL,
             payload_map        TEXT NOT NULL DEFAULT '{}',
             created_by_account TEXT NOT NULL,
             created_by_task    TEXT,
@@ -506,7 +506,59 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
         db, "idx_task_links_bundle", "task_links", "(bundle_id)",
     )
 
+    # v3: drop the kind CHECK so the converging 'drives' value (and any
+    # future kinds) inserts cleanly — an over-narrow enum CHECK is a
+    # crash-loop risk on a live DB (cf. _migrate_events_type_* / PR #11).
+    await _migrate_task_links_drop_kind_check(db)
+
     await db.commit()
+
+
+async def _migrate_task_links_drop_kind_check(db: aiosqlite.Connection) -> None:
+    """v3: rebuild task_links without the kind CHECK so 'drives' (and any
+    future kind) inserts without tripping a stale enum constraint. No-op
+    once the live DDL already lacks ``CHECK (kind``."""
+    if not await _table_exists(db, "task_links"):
+        return
+    cursor = await db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='task_links'"
+    )
+    row = await cursor.fetchone()
+    if row is None:
+        return
+    ddl = (row["sql"] or "")
+    if "CHECK (kind" not in ddl and "CHECK(kind" not in ddl:
+        return  # already migrated / fresh DB created from schema.py
+
+    logger.info("Migration: rebuilding task_links to drop the kind CHECK (v3 'drives')")
+    await db.executescript(
+        """
+        ALTER TABLE task_links RENAME TO task_links_old_kind_migration;
+        CREATE TABLE task_links (
+            id                 TEXT PRIMARY KEY,
+            bundle_id          TEXT NOT NULL,
+            from_task_id       TEXT NOT NULL,
+            to_task_id         TEXT NOT NULL,
+            kind               TEXT NOT NULL,
+            payload_map        TEXT NOT NULL DEFAULT '{}',
+            created_by_account TEXT NOT NULL,
+            created_by_task    TEXT,
+            created_at         TEXT NOT NULL,
+            fired_at           TEXT,
+            revoked_at         TEXT
+        );
+        INSERT INTO task_links
+            (id, bundle_id, from_task_id, to_task_id, kind, payload_map,
+             created_by_account, created_by_task, created_at, fired_at, revoked_at)
+        SELECT id, bundle_id, from_task_id, to_task_id, kind, payload_map,
+               created_by_account, created_by_task, created_at, fired_at, revoked_at
+        FROM task_links_old_kind_migration;
+        DROP TABLE task_links_old_kind_migration;
+        CREATE INDEX IF NOT EXISTS idx_task_links_from ON task_links(from_task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_links_to ON task_links(to_task_id);
+        CREATE INDEX IF NOT EXISTS idx_task_links_bundle ON task_links(bundle_id);
+        """
+    )
 
 
 async def _migrate_events_actor_type_hook(db: aiosqlite.Connection) -> None:
