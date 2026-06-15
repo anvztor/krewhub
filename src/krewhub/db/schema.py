@@ -192,18 +192,23 @@ CREATE TABLE IF NOT EXISTS task_reviews (
 
 CREATE INDEX IF NOT EXISTS idx_task_reviews_task ON task_reviews(task_id, decided_at);
 
--- Orch mode (O3b): task links — first-class data-flow edges between tasks
--- (design §5). kind: pipe (A's output -> B's prompt, fires once on A's
--- completion) | subagent (A delegates Brief to B; B's Report flows back
--- onto A's tape). Soft-deleted via revoked_at; fired_at is the one-shot
+-- Orch mode: task links — first-class data-flow edges between tasks
+-- (design §5). v3 collapses kind to a single 'drives' primitive:
+-- "A drives B" — A sends Brief↓, B returns Report↑ onto A's tape. Legacy
+-- rows ('pipe' = A's output -> B's prompt + implied dep; 'subagent' =
+-- delegate + Report↑) still read and fire under their old semantics.
+-- The kind column is kept but has NO CHECK constraint: kind is converging
+-- and an over-narrow enum CHECK is a crash-loop risk (cf. PR #11, the
+-- events.type widening) — correctness is enforced in app code
+-- (_VALID_KINDS). Soft-deleted via revoked_at; fired_at is the one-shot
 -- idempotency marker for payload flow. created_by_task = provenance when
--- an orch task creates its own downstream.
+-- an orch task creates its own downstream (null for runtime adoption).
 CREATE TABLE IF NOT EXISTS task_links (
     id                 TEXT PRIMARY KEY,
     bundle_id          TEXT NOT NULL,
     from_task_id       TEXT NOT NULL,
     to_task_id         TEXT NOT NULL,
-    kind               TEXT NOT NULL CHECK (kind IN ('pipe', 'subagent')),
+    kind               TEXT NOT NULL,
     payload_map        TEXT NOT NULL DEFAULT '{}',
     created_by_account TEXT NOT NULL,
     created_by_task    TEXT,

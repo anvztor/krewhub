@@ -236,16 +236,18 @@ class CreateLinkRequest(BaseModel):
     new_task (create the downstream task inline, provenance-stamped with
     created_by_task = from-task) must be given.
 
-    kind: pipe (A's output -> B's prompt; also appends a dep so B waits
-    for A) | subagent (A delegates a Brief to B; B's Report flows back
-    onto A's tape; no dep — A is waiting on B, not blocked by it).
+    kind (v3): defaults to 'drives' — "A drives B": A sends Brief↓, B
+    returns Report↑ onto A's tape; no implied dep (sequencing rides in the
+    Brief content, not a dep edge). Legacy values still accepted:
+    'pipe' (A's output -> B's prompt; appends a dep) and 'subagent'
+    (delegate + Report↑). New callers omit kind.
 
     payload_map v1 keys: source = report|last_reply (default report),
     target = followup|brief_context (default followup).
     """
     to_task_id: str | None = None
     new_task: NewLinkedTaskInput | None = None
-    kind: str = "pipe"  # "pipe" | "subagent"
+    kind: str = "drives"  # v3 default; legacy: "pipe" | "subagent"
     payload_map: dict = Field(default_factory=dict)
 
 
