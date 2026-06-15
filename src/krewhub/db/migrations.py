@@ -1205,10 +1205,22 @@ async def _migrate_events_add_orch_types(db: aiosqlite.Connection) -> None:
 async def _migrate_events_add_bundle_lifecycle_types(
     db: aiosqlite.Connection,
 ) -> None:
-    """Step (d): replace digest_* event types with bundle_closed/reopened
-    in events.type CHECK constraint.
+    """Step (d): widen events.type CHECK to the bundle-lifecycle vocabulary
+    (bundle_closed/reopened) AND the O1 orch semantic types
+    (progress/blocker/needs_review/needs_human/log), keeping digest_* as
+    legacy-tolerant. The rebuilt CHECK MUST be a superset of schema.py:226
+    so every existing row copies cleanly.
 
-    Idempotent: detects via the current CREATE TABLE statement.
+    Idempotent + re-runnable: detects "already on the fixed shape" via the
+    live CREATE TABLE statement.
+
+    Regression fix (testnet3, 2026-06-15): the previous CHECK omitted the
+    five O1 semantic types that schema.py already allows and OrchController
+    already writes, so the row-copy raised IntegrityError on any DB that had
+    accumulated such events — crash-looping startup. The old guard
+    (`digest_submitted not in sql`) also never tripped, because the rebuild
+    keeps digest_* tolerated, so this migration re-ran every startup; the
+    guard now keys on the O1 sentinel instead.
     """
     if not await _table_exists(db, "events"):
         return
@@ -1220,8 +1232,11 @@ async def _migrate_events_add_bundle_lifecycle_types(
     if row is None:
         return
     sql = (row["sql"] or "")
-    if "bundle_closed" in sql and "digest_submitted" not in sql:
-        # Already on the new shape.
+    # Already on the fixed shape: allows bundle lifecycle AND the O1 types.
+    # If the live table already permits the O1 types, there is nothing to
+    # widen and a rebuild would be pure risk — skip (this is the path that
+    # un-bricks a DB whose events already hold O1-typed rows).
+    if "bundle_closed" in sql and "needs_human" in sql:
         return
 
     logger.info("Migration: rebuilding events.type CHECK for bundle lifecycle")
@@ -1249,6 +1264,10 @@ async def _migrate_events_add_bundle_lifecycle_types(
                     'bundle_closed', 'bundle_reopened',
                     'session_start', 'session_end', 'tool_use', 'tool_result',
                     'agent_reply', 'thinking',
+                    -- Orch mode (O1): semantic observation events. MUST stay
+                    -- in lockstep with schema.py:226 so existing rows of
+                    -- these types copy cleanly during the rebuild.
+                    'progress', 'blocker', 'needs_review', 'needs_human', 'log',
                     -- Tolerate legacy rows still using digest_* until they
                     -- expire/are deleted; new writes use the new vocabulary.
                     'digest_submitted', 'digest_approved', 'digest_rejected'
