@@ -176,25 +176,25 @@ class BundleRepo:
         runnable set.
 
         GraphRunnerController is level-triggered: every reconcile it re-runs
-        any bundle list_runnable() returns. Until the d.1 refactor the digest
-        layer set digested_at on completion (which list_runnable filters on);
-        deleting that layer left nothing marking a bundle as "graph already
-        ran", so a completed-but-still-OPEN bundle re-executed every 2s
-        forever — alert#34 / the testnet3 runaway (identical milestone +
-        events + tape_entries + watch_log written each cycle; tasks piling up
-        without bound).
+        any bundle list_runnable() returns. Nothing marking a bundle as
+        "graph already ran" makes a completed-but-still-OPEN bundle re-execute
+        every 2s forever — alert#34 / the testnet3 runaway (identical
+        milestone + events + tape_entries + watch_log each cycle; tasks
+        piling up without bound).
 
-        Restores the terminal marker WITHOUT changing status — the bundle
-        stays a dumb OPEN container (step d.1); a downstream observer still
-        owns the OPEN→CLOSED transition. success -> digested_at (the existing
-        runnable filter, COALESCE so a real digest time isn't clobbered);
-        failure -> blocked_reason (also filtered, cleared by
-        reopen_for_rerun). Bumps resource_version so SSE refreshes."""
+        The marker is graph-native: success -> graph_terminal_at (COALESCE so
+        a re-stamp doesn't clobber the original time); failure ->
+        blocked_reason. Both are filtered by list_runnable and cleared by
+        reopen_for_rerun. (Until #13 this borrowed the deprecated digested_at
+        column; graph_terminal_at replaced it — digested_at is now an untouched
+        tombstone.) Status is left untouched — the bundle stays a dumb OPEN
+        container (step d.1); a downstream observer owns the OPEN→CLOSED
+        transition. Bumps resource_version so SSE refreshes."""
         now = datetime.now(timezone.utc)
         if success:
             await self._db.execute(
                 """UPDATE bundles
-                   SET digested_at = COALESCE(digested_at, ?),
+                   SET graph_terminal_at = COALESCE(graph_terminal_at, ?),
                        resource_version = resource_version + 1
                    WHERE id = ?""",
                 (now.isoformat(), bundle_id),
@@ -211,11 +211,14 @@ class BundleRepo:
         return await self.get(bundle_id)
 
     async def reopen_for_rerun(self, bundle_id: str) -> Bundle | None:
+        # Clear BOTH graph terminal markers so the bundle re-enters the
+        # runnable set. digested_at is intentionally left alone — it is a
+        # deprecated tombstone, no longer part of the graph path.
         await self._db.execute(
             """UPDATE bundles
                SET status = 'open',
                    blocked_reason = NULL,
-                   digested_at = NULL,
+                   graph_terminal_at = NULL,
                    resource_version = resource_version + 1
                WHERE id = ?""",
             (bundle_id,),
@@ -255,17 +258,19 @@ class BundleRepo:
         Ordered by created_at so older bundles run first (FIFO fairness).
 
         Excludes bundles the runner already drove to a terminal outcome:
-        digested_at marks a successful graph run, blocked_reason marks a
-        terminal failure (both stamped by mark_graph_terminal). Without both
-        guards the level-triggered runner re-executes completed bundles
-        every cycle forever (alert#34). reopen_for_rerun clears both to put
-        a bundle back in the runnable set.
+        graph_terminal_at marks a successful graph run, blocked_reason marks
+        a terminal failure (both stamped by mark_graph_terminal). Without both
+        guards the level-triggered runner re-executes completed bundles every
+        cycle forever (alert#34). reopen_for_rerun clears both to put a bundle
+        back in the runnable set. (digested_at is no longer consulted — it was
+        the borrowed marker before #13's follow-up; graph_terminal_at is the
+        graph-native replacement.)
         """
         cursor = await self._db.execute(
             """SELECT * FROM bundles
                WHERE graph_code IS NOT NULL
                  AND status = 'open'
-                 AND digested_at IS NULL
+                 AND graph_terminal_at IS NULL
                  AND blocked_reason IS NULL
                ORDER BY created_at"""
         )
@@ -298,6 +303,11 @@ def _row_to_bundle(row: aiosqlite.Row) -> Bundle:
         claimed_at=datetime.fromisoformat(row["claimed_at"]) if row["claimed_at"] else None,
         cooked_at=datetime.fromisoformat(row["cooked_at"]) if row["cooked_at"] else None,
         digested_at=datetime.fromisoformat(row["digested_at"]) if row["digested_at"] else None,
+        graph_terminal_at=(
+            datetime.fromisoformat(row["graph_terminal_at"])
+            if "graph_terminal_at" in keys and row["graph_terminal_at"]
+            else None
+        ),
         blocked_reason=row["blocked_reason"],
         graph_code=row["graph_code"] if "graph_code" in keys else None,
         graph_mermaid=row["graph_mermaid"] if "graph_mermaid" in keys else None,

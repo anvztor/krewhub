@@ -44,8 +44,18 @@ CREATE TABLE IF NOT EXISTS bundles (
     created_at TEXT NOT NULL,
     claimed_at TEXT,
     cooked_at TEXT,
+    -- digested_at: DEPRECATED tombstone. Was the digest-layer completion
+    -- stamp; the graph runner borrowed it as its terminal marker until the
+    -- graph-native graph_terminal_at column replaced it. No longer read or
+    -- written by the graph path; kept only so old rows survive until a
+    -- dedicated cleanup migration drops it.
     digested_at TEXT,
     blocked_reason TEXT,
+    -- graph_terminal_at: the graph runner's own "graph already ran to a
+    -- terminal success" marker. NULL => still runnable; set => leaves
+    -- list_runnable(). Failures use blocked_reason. Backfilled from
+    -- digested_at on first migration (see _migrate_bundles_graph_terminal_at).
+    graph_terminal_at TEXT,
     graph_code TEXT,
     graph_mermaid TEXT,
     resource_version INTEGER NOT NULL DEFAULT 1,

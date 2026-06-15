@@ -60,6 +60,9 @@ async def run_migrations(db: aiosqlite.Connection) -> None:
     # bundle, and tag tasks with the graph node they correspond to.
     await _add_column_if_missing(db, "bundles", "graph_code", "TEXT")
     await _add_column_if_missing(db, "bundles", "graph_mermaid", "TEXT")
+    # Tech-debt: give the graph runner its own terminal marker instead of
+    # borrowing the deprecated digest column. One-shot add + backfill.
+    await _migrate_bundles_graph_terminal_at(db)
     await _add_column_if_missing(db, "tasks", "graph_node_id", "TEXT")
     await _create_index_if_missing(
         db, "idx_tasks_node", "tasks", "(bundle_id, graph_node_id)",
@@ -807,6 +810,7 @@ async def _drop_recipe_id_columns_and_tables(
                 claimed_at TEXT,
                 cooked_at TEXT,
                 digested_at TEXT,
+                graph_terminal_at TEXT,
                 blocked_reason TEXT,
                 graph_code TEXT,
                 graph_mermaid TEXT,
@@ -927,6 +931,47 @@ async def _drop_recipe_id_columns_and_tables(
         await db.execute("DROP TABLE IF EXISTS recipes")
 
 
+async def _migrate_bundles_graph_terminal_at(db: aiosqlite.Connection) -> None:
+    """Give the graph runner a native terminal marker, replacing the
+    deprecated `digested_at` it had been borrowing (alert#34 fix #13).
+
+    ONE-SHOT, guarded by column existence so it runs exactly once — on the
+    migration that first introduces the column — and never again. That is
+    what makes the backfill safe to leave unconditional.
+
+    CRITICAL ORDERING (do not reorder): the column is added AND backfilled
+    here, and run_migrations() completes before the ControllerManager (and
+    thus GraphRunnerController.list_runnable) starts (app.lifespan: init_db →
+    start_all). If we added the column without backfilling, every already-
+    terminal bundle would read graph_terminal_at IS NULL once list_runnable
+    switched to the new column → re-enter the runnable set → the alert#34
+    runaway recurs. So: backfill graph_terminal_at = digested_at for every
+    row the old digest/graph path had stamped, atomically, before serving.
+    """
+    if not await _table_exists(db, "bundles"):
+        return  # fresh DB — schema.py creates the column (and nothing to backfill)
+    cursor = await db.execute("PRAGMA table_info(bundles)")
+    existing = {row["name"] for row in await cursor.fetchall()}
+    if "graph_terminal_at" in existing:
+        return  # already added + backfilled
+
+    await db.execute("ALTER TABLE bundles ADD COLUMN graph_terminal_at TEXT")
+    # Backfill BEFORE list_runnable reads the new column. Carry the old
+    # terminal stamp forward so completed bundles stay out of the runnable
+    # set across the cutover.
+    cursor = await db.execute(
+        """UPDATE bundles
+           SET graph_terminal_at = digested_at
+           WHERE digested_at IS NOT NULL
+             AND graph_terminal_at IS NULL"""
+    )
+    await db.commit()
+    logger.info(
+        "Migration: added bundles.graph_terminal_at and backfilled %d row(s) "
+        "from digested_at (alert#34 runaway guard)", cursor.rowcount,
+    )
+
+
 async def _collapse_bundles_status_to_open_closed(
     db: aiosqlite.Connection,
 ) -> None:
@@ -988,6 +1033,7 @@ async def _collapse_bundles_status_to_open_closed(
             claimed_at TEXT,
             cooked_at TEXT,
             digested_at TEXT,
+            graph_terminal_at TEXT,
             blocked_reason TEXT,
             graph_code TEXT,
             graph_mermaid TEXT,
@@ -1061,6 +1107,7 @@ async def _migrate_bundles_add_closed_status(
             claimed_at TEXT,
             cooked_at TEXT,
             digested_at TEXT,
+            graph_terminal_at TEXT,
             blocked_reason TEXT,
             graph_code TEXT,
             graph_mermaid TEXT,
@@ -1410,6 +1457,7 @@ async def _relax_bundles_recipe_id_nullable(
             claimed_at TEXT,
             cooked_at TEXT,
             digested_at TEXT,
+            graph_terminal_at TEXT,
             blocked_reason TEXT,
             graph_code TEXT,
             graph_mermaid TEXT,

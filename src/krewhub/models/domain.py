@@ -195,8 +195,15 @@ class Bundle(BaseModel, frozen=True):
     created_at: datetime
     claimed_at: datetime | None = None
     cooked_at: datetime | None = None
+    # DEPRECATED tombstone (was the digest-layer stamp; the graph runner
+    # borrowed it as its terminal marker). Replaced by graph_terminal_at;
+    # no longer read/written by the graph path. Kept for old rows.
     digested_at: datetime | None = None
     blocked_reason: str | None = None
+    # Graph runner's native terminal-success marker (replaces the borrowed
+    # digested_at). NULL => runnable; set => already ran. Failures use
+    # blocked_reason.
+    graph_terminal_at: datetime | None = None
     # Graph runtime: validated pydantic-graph source + rendered mermaid.
     # Set by the orchestrator/bundle service after the LLM-generated code
     # passes the sandbox; consumed by GraphRunnerController.
