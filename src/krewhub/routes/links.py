@@ -149,10 +149,20 @@ async def create_link(
     if await cursor.fetchone() is not None:
         raise HTTPException(status_code=409, detail="link already exists")
 
-    # pipe implies a dep (B waits for A) — design §5.1 choice B. Guard cycles.
+    # Cycle guard applies to ANY edge between two EXISTING tasks, for both
+    # kinds (S2 B2, hole #2). A subagent link Z→X where Z already
+    # (transitively) depends on X closes a provenance/flow loop just as a
+    # pipe dep would — eval E5. Provenance-spawned children (new_task) are
+    # brand-new with no deps, so they can never cycle and are skipped.
+    if req.new_task is None and await _would_cycle(
+        db, from_task.bundle_id, from_task_id, to_task_id,
+    ):
+        raise HTTPException(
+            status_code=400, detail="link would create a dependency cycle",
+        )
+
+    # pipe implies a dep (B waits for A) — design §5.1 choice B.
     if kind == "pipe":
-        if await _would_cycle(db, from_task.bundle_id, from_task_id, to_task_id):
-            raise HTTPException(status_code=400, detail="link would create a dependency cycle")
         to_task = await repo.get(to_task_id)
         if to_task is None:
             raise HTTPException(status_code=404, detail="to task not found")
@@ -264,20 +274,33 @@ async def revoke_link(
     return {"link": _row_to_link(await cursor.fetchone())}
 
 
-async def cascade_on_task_termination(db, task_id: str) -> dict:
+async def cascade_on_task_termination(
+    db, task_id: str, _seen: set[str] | None = None,
+) -> dict:
     """Design §5.3 cascade, called when a task is removed/cancelled (the
     parity matrix's `close`):
       * all links touching the task are soft-revoked
       * subagent children CREATED BY this task (provenance) that are not
-        terminal are cancelled — the delegator is gone, the delegation dies
+        terminal are cancelled — the delegator is gone, the delegation
+        dies — AND the cascade RECURSES into each cancelled child so the
+        whole subagent SUBTREE (grandchildren, great-grandchildren, …) is
+        reclaimed, not just the direct children (S2 B1, hole #1)
       * pipe downstream tasks are LEFT ALIVE (产出物独立存活 red line); only
         the dep on the dead upstream is removed so they aren't gated forever
-    Returns a summary dict for the route response / event narration.
+    Provenance subtrees are acyclic by construction; ``_seen`` is a
+    defensive guard against re-visiting a node so the recursion always
+    terminates. Returns an aggregated summary for the route response.
     """
+    seen = _seen if _seen is not None else set()
+    if task_id in seen:
+        return {"links_revoked": 0, "children_cancelled": [], "deps_unblocked": []}
+    seen.add(task_id)
+
     now = datetime.now(timezone.utc).isoformat()
     repo = TaskRepo(db)
     cancelled_children: list[str] = []
     unblocked: list[str] = []
+    links_revoked = 0
 
     cursor = await db.execute(
         "SELECT * FROM task_links WHERE (from_task_id = ? OR to_task_id = ?) "
@@ -289,6 +312,7 @@ async def cascade_on_task_termination(db, task_id: str) -> dict:
         await db.execute(
             "UPDATE task_links SET revoked_at = ? WHERE id = ?", (now, row["id"]),
         )
+        links_revoked += 1
         if row["from_task_id"] != task_id:
             continue
         child = await repo.get(row["to_task_id"])
@@ -302,6 +326,12 @@ async def cascade_on_task_termination(db, task_id: str) -> dict:
                 svc = TaskService(db, get_watch_service())
                 if await svc.cancel_task(child.id) is not None:
                     cancelled_children.append(child.id)
+                    # Recurse: the delegator is gone, so the child's own
+                    # delegations die too — reclaim the entire subtree.
+                    sub = await cascade_on_task_termination(db, child.id, seen)
+                    links_revoked += sub["links_revoked"]
+                    cancelled_children.extend(sub["children_cancelled"])
+                    unblocked.extend(sub["deps_unblocked"])
         elif row["kind"] == "pipe":
             deps = list(child.depends_on_task_ids or [])
             if task_id in deps:
@@ -318,10 +348,10 @@ async def cascade_on_task_termination(db, task_id: str) -> dict:
     if links:
         logger.info(
             "link cascade for task %s: %d link(s) revoked, %d child cancelled, %d unblocked",
-            task_id, len(links), len(cancelled_children), len(unblocked),
+            task_id, links_revoked, len(cancelled_children), len(unblocked),
         )
     return {
-        "links_revoked": len(links),
+        "links_revoked": links_revoked,
         "children_cancelled": cancelled_children,
         "deps_unblocked": unblocked,
     }

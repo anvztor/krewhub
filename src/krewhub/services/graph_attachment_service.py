@@ -10,7 +10,6 @@ import aiosqlite
 from krewhub.models import (
     ActorType,
     Bundle,
-    BundleStatus,
     Event,
     EventType,
     Task,
@@ -52,6 +51,44 @@ def _humanize_node(node_id: str) -> str:
     """Convert `scope_review` / `FeatureScope` → `Scope Review` / `Feature Scope`."""
     spaced = re.sub(r"(?<!^)(?=[A-Z])", " ", node_id)
     return spaced.replace("_", " ").title()
+
+
+def _edges_have_cycle(node_ids: list[str], edges: list[tuple[str, str]]) -> bool:
+    """True if the directed graph (node_ids, edges) contains a cycle.
+
+    The graph-attachment path derives ``depends_on_task_ids`` straight from
+    LLM-authored graph edges (an unguarded raw-dep write path — S2 B2,
+    hole #2). A cyclic edge set would persist a dependency loop that gates
+    the involved tasks forever. We reject it up front. Iterative DFS with a
+    three-colour marking (white→grey→black); a grey-on-grey hit = back edge
+    = cycle. Self-loops (x→x) count as cycles.
+    """
+    adj: dict[str, list[str]] = {nid: [] for nid in node_ids}
+    for src, dst in edges:
+        adj.setdefault(src, []).append(dst)
+        adj.setdefault(dst, [])
+    WHITE, GREY, BLACK = 0, 1, 2
+    colour = {nid: WHITE for nid in adj}
+    for root in list(adj):
+        if colour[root] != WHITE:
+            continue
+        stack = [(root, iter(adj[root]))]
+        colour[root] = GREY
+        while stack:
+            node, it = stack[-1]
+            advanced = False
+            for nxt in it:
+                if colour[nxt] == GREY:
+                    return True
+                if colour[nxt] == WHITE:
+                    colour[nxt] = GREY
+                    stack.append((nxt, iter(adj[nxt])))
+                    advanced = True
+                    break
+            if not advanced:
+                colour[node] = BLACK
+                stack.pop()
+    return False
 
 
 class GraphAttachmentService:
@@ -120,6 +157,13 @@ class GraphAttachmentService:
         node_ids, edges = extract_graph_structure(graph)
         if not node_ids:
             raise GraphArtifactError(422, "graph contains no executable steps")
+
+        # Guard the raw-dep write path (step 5): a cyclic edge set would
+        # persist a dependency loop that gates these tasks forever (S2 B2).
+        if _edges_have_cycle(node_ids, edges):
+            raise GraphArtifactError(
+                422, "graph contains a dependency cycle (depends_on would loop)",
+            )
 
         rendered = render_graph(graph, direction="LR")
 
