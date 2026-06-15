@@ -209,9 +209,22 @@ async def heartbeat(
     repo = AgentRepo(db)
     updated = await repo.upsert_presence(presence)
 
+    # R1 (alert#34): heartbeats were 84% of watch_log because every one
+    # appended a full agent snapshot to the durable replay buffer. Presence
+    # is current-state, not history — agent_presence (upserted above) is the
+    # source of truth. Persist a durable watch event only on a status
+    # transition (new/offline -> online, online <-> busy); routine
+    # same-status heartbeats publish ephemerally so the UI stays live
+    # without growing watch_log.
     watch = get_watch_service()
-    await watch.record_resource(
-        "agent", req.agent_id, WatchEventType.MODIFIED, updated,
-    )
+    prev_status = existing.status if existing is not None else None
+    if prev_status != updated.status:
+        await watch.record_resource(
+            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+        )
+    else:
+        await watch.notify_ephemeral(
+            "agent", req.agent_id, WatchEventType.MODIFIED, updated,
+        )
 
     return {"presence": updated.model_dump(mode="json")}

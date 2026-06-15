@@ -73,6 +73,48 @@ class WatchService:
             cookbook_id=cookbook_id,
         )
 
+    async def notify_ephemeral(
+        self,
+        resource_type: str,
+        resource_id: str,
+        event_type: WatchEventType,
+        resource: Any,
+        cookbook_id: str | None = None,
+    ) -> WatchEvent:
+        """Notify live subscribers WITHOUT persisting to watch_log.
+
+        For high-frequency current-state telemetry (e.g. agent heartbeats)
+        the UI wants live updates, but those must not bloat the durable
+        replay buffer (R1, alert#34: heartbeats were 84% of watch_log). On
+        reconnect the client re-derives current state from the API, so a
+        dropped ephemeral event is harmless. The event carries the current
+        max durable seq so it never advances or regresses a subscriber's
+        replay cursor.
+        """
+        from krewhub.services.watch_channels import derive_channel
+
+        payload = (
+            resource.model_dump(mode="json")
+            if hasattr(resource, "model_dump") else resource
+        )
+        obj = payload if isinstance(payload, dict) else {}
+        rv = obj.get("resource_version", 1)
+        seq = await self._store.latest_seq()
+        event = WatchEvent(
+            event_type=event_type,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            resource_version=rv,
+            object=obj,
+            cookbook_id=cookbook_id,
+            seq=seq,
+            channel=derive_channel(
+                resource_type=resource_type, event_type=event_type, obj=obj,
+            ),
+        )
+        await self._notify(event)
+        return event
+
     async def publish_legacy(
         self,
         cookbook_id: str,
