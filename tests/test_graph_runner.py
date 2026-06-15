@@ -465,7 +465,11 @@ class TestReconcileSpawning:
             assert bundle is not None
             # Dumb-container invariant preserved: still OPEN.
             assert bundle.status == BundleStatus.OPEN
-            # But a terminal marker must be stamped so the next reconcile skips it.
+            # Graph-native terminal marker is stamped (NOT the deprecated
+            # digested_at, which the graph path no longer writes).
+            assert bundle.graph_terminal_at is not None
+            assert bundle.digested_at is None
+            # ...so the next reconcile skips it.
             runnable_ids = [b.id for b in await BundleRepo(db).list_runnable()]
             assert bundle_id not in runnable_ids, (
                 "completed bundle is still runnable -> infinite re-run loop"
@@ -503,9 +507,25 @@ class TestReconcileSpawning:
             await runner.stop()
 
     @pytest.mark.asyncio
+    async def test_mark_graph_terminal_uses_graph_native_column(self):
+        """Success stamps graph_terminal_at and leaves the deprecated
+        digested_at tombstone untouched (decoupled from the graph path)."""
+        bundle_id, _task_ids = await _seed_runnable_bundle()
+        db = await get_db()
+        repo = BundleRepo(db)
+
+        await repo.mark_graph_terminal(bundle_id, success=True)
+        bundle = await repo.get(bundle_id)
+        assert bundle is not None
+        assert bundle.graph_terminal_at is not None
+        assert bundle.digested_at is None          # tombstone not written
+        assert bundle_id not in [b.id for b in await repo.list_runnable()]
+
+    @pytest.mark.asyncio
     async def test_reopen_for_rerun_clears_terminal_marker(self):
-        """reopen_for_rerun must clear BOTH terminal markers so an
-        intentionally re-queued bundle becomes runnable again."""
+        """reopen_for_rerun clears the graph terminal markers
+        (graph_terminal_at + blocked_reason) so an intentionally re-queued
+        bundle becomes runnable again."""
         bundle_id, _task_ids = await _seed_runnable_bundle()
         db = await get_db()
         repo = BundleRepo(db)
@@ -515,8 +535,24 @@ class TestReconcileSpawning:
 
         await repo.reopen_for_rerun(bundle_id)
         bundle = await repo.get(bundle_id)
-        assert bundle is not None and bundle.digested_at is None
+        assert bundle is not None and bundle.graph_terminal_at is None
         assert bundle.blocked_reason is None
+        assert bundle_id in [b.id for b in await repo.list_runnable()]
+
+    @pytest.mark.asyncio
+    async def test_failed_then_reopen_clears_blocked_reason(self):
+        """A terminal failure (blocked_reason) also leaves the runnable set,
+        and reopen restores it."""
+        bundle_id, _task_ids = await _seed_runnable_bundle()
+        db = await get_db()
+        repo = BundleRepo(db)
+
+        await repo.mark_graph_terminal(bundle_id, success=False, reason="boom")
+        bundle = await repo.get(bundle_id)
+        assert bundle is not None and bundle.blocked_reason == "boom"
+        assert bundle_id not in [b.id for b in await repo.list_runnable()]
+
+        await repo.reopen_for_rerun(bundle_id)
         assert bundle_id in [b.id for b in await repo.list_runnable()]
 
     @pytest.mark.asyncio
